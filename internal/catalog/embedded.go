@@ -45,6 +45,23 @@ var vmOSCatalogCSV string
 //go:embed mdb_catalog.csv
 var mdbCatalogCSV string
 
+// oracleCatalogCSV is the wave-2 Oracle Cloud (OCI) catalog snapshot. The live
+// provider-catalog ETL has no OCI rows yet (the censused `region` /
+// `virtual_machine` / `virtual_machine_operating_system` / `managed_database`
+// tables are AWS/GCP/DO only), so — exactly as documented in the PR and per
+// SPEC §4 ("missing data / unverifiable resource → clean plan-time error;
+// author from the public OCI catalog + document the gap") — these rows are
+// authored from Oracle's public OCI shape / region / image / MySQL-shape
+// catalogs. They live in ONE new file (not spread across the wave-1 CSVs) so a
+// future live OCI ETL replaces this file wholesale and the wave-1 snapshots stay
+// untouched. It is NOT a hand-authored provider map embedded in the binary: it is
+// the SAME catalog shape (region/vm/os/mdb rows), just sourced manually until the
+// ETL lands. The first column is a row KIND tag (region|vm|os|mdb) so all four
+// row types share one snapshot; the remaining columns mirror the wave-1 CSVs.
+//
+//go:embed oracle_catalog.csv
+var oracleCatalogCSV string
+
 // EmbeddedCatalog resolves regions, virtual_machine SKUs, and OS images against
 // the embedded snapshots.
 type EmbeddedCatalog struct {
@@ -122,7 +139,87 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 		k := mdbRegionEngineKey(r.CSP, r.CSPRegion, r.Engine)
 		c.mdbByRegionEng[k] = append(c.mdbByRegionEng[k], r)
 	}
+
+	// Wave-2 Oracle Cloud (OCI) rows. One combined snapshot (region/vm/os/mdb)
+	// merged into the SAME indexes the wave-1 rows use, so OCI resolves through
+	// the identical ResolveRegion / ResolveSKU / ResolveImage / ResolveDBClass
+	// path — no separate OCI engine.
+	if err := c.loadOracleCatalog(oracleCatalogCSV); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// loadOracleCatalog parses the combined wave-2 OCI snapshot (region/vm/os/mdb
+// rows distinguished by a leading KIND column) and merges every row into the
+// same maps/slices the wave-1 catalog populates. A malformed row is a hard error
+// (a build-time invariant via MustEmbedded), never a silent skip.
+func (c *EmbeddedCatalog) loadOracleCatalog(data string) error {
+	r := csv.NewReader(strings.NewReader(data))
+	r.FieldsPerRecord = -1 // variable: each KIND has its own column count
+	records, err := r.ReadAll()
+	if err != nil {
+		return fmt.Errorf("parse oracle catalog: %w", err)
+	}
+	for i, rec := range records {
+		if i == 0 {
+			continue // header
+		}
+		if len(rec) == 0 || strings.TrimSpace(rec[0]) == "" {
+			continue // blank separator line
+		}
+		kind := strings.ToLower(strings.TrimSpace(rec[0]))
+		switch kind {
+		case "region":
+			if len(rec) != 7 {
+				return fmt.Errorf("parse oracle catalog: region row %d wants 7 fields, got %d", i, len(rec))
+			}
+			row := RegionRow{
+				MacroRegion: rec[1], Country: rec[2], RegionName: rec[3],
+				CSPRegion: rec[4], CSPRegionDescription: rec[5], CSP: rec[6],
+			}
+			c.rows = append(c.rows, row)
+			k := key(row.CSP, row.RegionName)
+			if _, exists := c.byCSPRegion[k]; !exists {
+				c.byCSPRegion[k] = row
+			}
+		case "vm":
+			if len(rec) != 10 {
+				return fmt.Errorf("parse oracle catalog: vm row %d wants 10 fields, got %d", i, len(rec))
+			}
+			row := VMRow{
+				Name: rec[1], Family: rec[2], CSP: rec[3], CSPRegion: rec[4],
+				Architecture: rec[5], CPU: atoiOrZero(rec[6]), RAM: atoiOrZero(rec[7]),
+				GPU: rec[8], SupportsAutoscale: strings.EqualFold(strings.TrimSpace(rec[9]), "true"),
+			}
+			c.vmRows = append(c.vmRows, row)
+			k := vmRegionArchKey(row.CSP, row.CSPRegion, row.Architecture)
+			c.vmByRegionArch[k] = append(c.vmByRegionArch[k], row)
+		case "os":
+			if len(rec) != 7 {
+				return fmt.Errorf("parse oracle catalog: os row %d wants 7 fields, got %d", i, len(rec))
+			}
+			row := OSImageRow{
+				CSP: rec[1], CSPRegion: rec[2], OSName: rec[3], OSVersion: rec[4],
+				Architecture: rec[5], Image: rec[6],
+			}
+			c.osByKey[osKey(row.CSP, row.CSPRegion, row.OSName, row.OSVersion, row.Architecture)] = row
+		case "mdb":
+			if len(rec) != 8 {
+				return fmt.Errorf("parse oracle catalog: mdb row %d wants 8 fields, got %d", i, len(rec))
+			}
+			row := MDBRow{
+				Name: rec[1], Family: rec[2], CSP: rec[3], CSPRegion: rec[4],
+				Engine: rec[5], CPU: atoiOrZero(rec[6]), RAM: atoiOrZero(rec[7]),
+			}
+			c.mdbRows = append(c.mdbRows, row)
+			k := mdbRegionEngineKey(row.CSP, row.CSPRegion, row.Engine)
+			c.mdbByRegionEng[k] = append(c.mdbByRegionEng[k], row)
+		default:
+			return fmt.Errorf("parse oracle catalog: row %d has unknown kind %q (region|vm|os|mdb)", i, kind)
+		}
+	}
+	return nil
 }
 
 func mdbRegionEngineKey(csp, cspRegion, engine string) string {
@@ -318,7 +415,7 @@ func (c *EmbeddedCatalog) ResolveRegion(_ context.Context, regionName, provider 
 	csp, ok := ProviderToCSP(provider)
 	if !ok {
 		return RegionRow{}, fmt.Errorf(
-			"unknown provider %q: wave-1 launch providers are aws, gcp, digitalocean", provider)
+			"unknown provider %q: supported providers are aws, gcp, digitalocean, oracle", provider)
 	}
 	row, ok := c.byCSPRegion[key(csp, regionName)]
 	if !ok {

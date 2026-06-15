@@ -21,6 +21,8 @@ func RenderHCL(plan NetworkPlan) (string, error) {
 		return renderGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderDO(plan), nil
+	case ProviderOracle:
+		return renderOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -114,6 +116,8 @@ func RenderSGHCL(plan SecurityGroupPlan) (string, error) {
 		return renderSGGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderSGDO(plan), nil
+	case ProviderOracle:
+		return renderSGOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -272,6 +276,8 @@ func RenderVMHCL(plan VMPlan) (string, error) {
 		return renderVMGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderVMDO(plan), nil
+	case ProviderOracle:
+		return renderVMOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -386,6 +392,8 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 		return renderASGAWS(plan), nil
 	case ProviderGCP:
 		return renderASGGCP(plan), nil
+	case ProviderOracle:
+		return renderASGOCI(plan), nil
 	case ProviderDigitalOcean:
 		return "", fmt.Errorf(
 			"render: virtual-machine-scale-group is unsupported on digitalocean " +
@@ -561,6 +569,8 @@ func RenderLoadBalancerHCL(plan LoadBalancerPlan) (string, error) {
 		return renderLBGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderLBDO(plan), nil
+	case ProviderOracle:
+		return renderLBOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -896,6 +906,8 @@ func RenderManagedDatabaseHCL(plan ManagedDatabasePlan) (string, error) {
 		return renderMDBGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderMDBDO(plan), nil
+	case ProviderOracle:
+		return renderMDBOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -1080,6 +1092,8 @@ func RenderObjectStorageHCL(plan ObjectStoragePlan) (string, error) {
 		return renderObjectStorageGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderObjectStorageDO(plan), nil
+	case ProviderOracle:
+		return renderObjectStorageOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}

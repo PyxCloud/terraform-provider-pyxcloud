@@ -251,6 +251,14 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		plan.ResourceType = "google_sql_database_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_database_cluster"
+	case ProviderOracle:
+		// OCI's managed-database split: PostgreSQL -> oci_psql_db_system,
+		// MySQL -> oci_mysql_mysql_db_system. Both are encrypted at rest by default.
+		if engine == DBEngineMySQL {
+			plan.ResourceType = "oci_mysql_mysql_db_system"
+		} else {
+			plan.ResourceType = "oci_psql_db_system"
+		}
 	}
 	return plan, nil
 }

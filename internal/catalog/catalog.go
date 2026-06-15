@@ -26,6 +26,9 @@ const (
 	cspAWS = "aws"
 	cspGCP = "gcp"
 	cspDO  = "do"
+	// cspOracle is the catalog csp token for Oracle Cloud Infrastructure (wave-2).
+	// The provider-facing name is "oracle"; the catalog token is "oci".
+	cspOracle = "oci"
 )
 
 // Provider-facing names (Terraform `provider` attribute / ENABLED_LAUNCH_PROVIDERS).
@@ -33,6 +36,10 @@ const (
 	ProviderAWS          = "aws"
 	ProviderGCP          = "gcp"
 	ProviderDigitalOcean = "digitalocean"
+	// ProviderOracle is the wave-2 Oracle Cloud Infrastructure provider. It
+	// descends to the oracle/oci Terraform provider (oci_* resources). The
+	// provider-facing name is "oracle"; the catalog csp token is "oci".
+	ProviderOracle = "oracle"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -40,6 +47,7 @@ var providerToCSP = map[string]string{
 	ProviderAWS:          cspAWS,
 	ProviderGCP:          cspGCP,
 	ProviderDigitalOcean: cspDO,
+	ProviderOracle:       cspOracle,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

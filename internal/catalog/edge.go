@@ -90,6 +90,8 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		plan.ResourceType = "google_dns_managed_zone"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_domain"
+	case ProviderOracle:
+		plan.ResourceType = "oci_dns_zone"
 	}
 	return plan, nil
 }
@@ -159,6 +161,20 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 		return CDNPlan{}, err
 	}
 	provider := lc(spec.Provider)
+	if provider == ProviderOracle {
+		// OCI has no clean, first-class CDN Terraform resource (its edge/WAF and
+		// object-storage pre-authenticated/public access cover adjacent needs, but
+		// there is no managed CDN-distribution resource in oracle/oci to descend
+		// `cdn-service` to). Per SPEC §1/§4 we surface a clean plan-time error
+		// rather than invent a resource.
+		return CDNPlan{}, ErrComponentUnsupported{
+			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Oracle Cloud has no first-class CDN distribution resource in the oracle/oci " +
+				"Terraform provider; use AWS CloudFront or GCP Cloud CDN for the CDN tier, or front " +
+				"the OCI origin with a third-party CDN (the object-storage bucket can serve public " +
+				"objects directly where that suffices)",
+		}
+	}
 	if provider == ProviderDigitalOcean && originKind != CDNOriginObjectStorage {
 		return CDNPlan{}, ErrComponentUnsupported{
 			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
@@ -267,6 +283,13 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 				"Cloud Armor policy attached to a backend service",
 		}
 	}
+	if provider == ProviderOracle && scope == WAFScopeCloudFront {
+		return WAFPlan{}, ErrComponentUnsupported{
+			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "the cloudfront WAF scope is AWS-specific; on Oracle Cloud the WAF " +
+				"(oci_waf_web_app_firewall) attaches to a load balancer — use the default (regional) scope",
+		}
+	}
 	plan := WAFPlan{
 		Provider:      provider,
 		CSP:           row.CSP,
@@ -281,6 +304,8 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 		plan.ResourceType = "aws_wafv2_web_acl"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_security_policy"
+	case ProviderOracle:
+		plan.ResourceType = "oci_waf_web_app_firewall"
 	}
 	return plan, nil
 }

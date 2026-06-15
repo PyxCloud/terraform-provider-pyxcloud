@@ -90,6 +90,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "google_compute_network"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_vpc"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_vcn"
 	}
 	return plan, nil
 }
@@ -118,6 +120,17 @@ func deriveZones(provider, cspRegion string, n int) []string {
 		}
 	case ProviderDigitalOcean:
 		return nil
+	case ProviderOracle:
+		// OCI availability domains carry an opaque, tenancy-specific prefix
+		// (e.g. "Uocm:PHX-AD-1"), so they cannot be derived from the region name
+		// the way AWS AZs / GCP zones can; the concrete AD name is only known at
+		// apply time via the oci_identity_availability_domains data source. We
+		// therefore carry the AD ORDINAL ("1","2","3"...) as the zone, and the
+		// renderer indexes the data source by (ordinal-1). This keeps the multi-AD
+		// spread deterministic and catalog-free without inventing an AD name.
+		for i := 0; i < n; i++ {
+			zones = append(zones, fmt.Sprintf("%d", i+1))
+		}
 	}
 	return zones
 }
@@ -127,10 +140,10 @@ func validateSpec(spec NetworkSpec) error {
 		return fmt.Errorf("network: region (abstract pyx region_name) is required")
 	}
 	if strings.TrimSpace(spec.Provider) == "" {
-		return fmt.Errorf("network: provider is required (aws | gcp | digitalocean)")
+		return fmt.Errorf("network: provider is required (aws | gcp | digitalocean | oracle)")
 	}
 	if _, ok := ProviderToCSP(spec.Provider); !ok {
-		return fmt.Errorf("network: unknown provider %q (aws | gcp | digitalocean)", spec.Provider)
+		return fmt.Errorf("network: unknown provider %q (aws | gcp | digitalocean | oracle)", spec.Provider)
 	}
 	if strings.TrimSpace(spec.CIDR) == "" {
 		return fmt.Errorf("network: cidr is required, e.g. 10.0.0.0/16")

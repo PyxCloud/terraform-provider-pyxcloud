@@ -242,6 +242,8 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		plan.ResourceType = "google_compute_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_droplet"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_instance"
 	}
 	return plan, nil
 }
