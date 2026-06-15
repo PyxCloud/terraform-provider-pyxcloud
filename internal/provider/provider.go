@@ -10,6 +10,7 @@ import (
 
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
+	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/migration"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -27,6 +28,10 @@ const envToken = "PYXCLOUD_TOKEN"
 type providerData struct {
 	client  client.Client
 	catalog catalog.Catalog
+	// migration configures the provider-side opaque migration client
+	// (pd-TF-PROVIDER-MIGRATION). It carries only endpoint + bearer token; no
+	// migration logic lives provider-side.
+	migration migration.Config
 }
 
 // pyxCloudProvider is the framework provider implementation.
@@ -114,7 +119,11 @@ func (p *pyxCloudProvider) Configure(ctx context.Context, req provider.Configure
 		return
 	}
 
-	pd := &providerData{client: c, catalog: cat}
+	pd := &providerData{
+		client:    c,
+		catalog:   cat,
+		migration: migration.Config{Endpoint: endpoint, Token: token},
+	}
 	resp.DataSourceData = pd
 	resp.ResourceData = pd
 }
@@ -122,6 +131,7 @@ func (p *pyxCloudProvider) Configure(ctx context.Context, req provider.Configure
 func (p *pyxCloudProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewTopologyResource,
+		NewMigrationResource,
 	}
 }
 
