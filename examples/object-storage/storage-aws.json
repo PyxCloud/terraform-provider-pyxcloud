@@ -1,0 +1,10 @@
+{
+  "name": "production",
+  "region": "Frankfurt",
+  "object_storage": {
+    "name": "app-assets",
+    "versioning": true,
+    "public": false,
+    "force_destroy": true
+  }
+}

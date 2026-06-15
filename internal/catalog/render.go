@@ -1051,6 +1051,121 @@ func renderMDBDO(p ManagedDatabasePlan) string {
 	return b.String()
 }
 
+// RenderObjectStorageHCL renders a resolved ObjectStoragePlan into concrete
+// cloud-provider Terraform HCL. Mirrors the other renderers (§8): translation
+// returns a structured plan, rendering to .tf happens here and drives the
+// per-provider `terraform plan` / real apply round-trip tests (SPEC §6).
+//
+//   - AWS: aws_s3_bucket + aws_s3_bucket_versioning + aws_s3_bucket_public_access_block.
+//     PRIVATE BY DEFAULT (SPEC §5.7): when the plan is not public, ALL FOUR
+//     public-access-block flags are true (block_public_acls / block_public_policy
+//     / ignore_public_acls / restrict_public_buckets) so the bucket can never be
+//     made world-readable by an errant ACL/policy. force_destroy follows the plan
+//     (false in production; the TEST fixture sets it true for clean teardown).
+//   - GCP: google_storage_bucket with uniform_bucket_level_access = true (no
+//     per-object ACLs — the GCP private-by-default analogue) and versioning. The
+//     location is the catalog-resolved csp_region.
+//   - DigitalOcean: digitalocean_spaces_bucket with acl = "private" by default
+//     (acl = "public-read" only when public), region-mapped, versioning via the
+//     versioning block.
+//
+// The renderer re-asserts the private-by-default invariant from the plan: a plan
+// with Public=false ALWAYS emits the full access-block / private ACL, even for a
+// hand-built plan.
+func RenderObjectStorageHCL(plan ObjectStoragePlan) (string, error) {
+	switch plan.Provider {
+	case ProviderAWS:
+		return renderObjectStorageAWS(plan), nil
+	case ProviderGCP:
+		return renderObjectStorageGCP(plan), nil
+	case ProviderDigitalOcean:
+		return renderObjectStorageDO(plan), nil
+	default:
+		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
+	}
+}
+
+func renderObjectStorageAWS(p ObjectStoragePlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "resource \"aws_s3_bucket\" %q {\n", label)
+	fmt.Fprintf(&b, "  bucket        = %q\n", p.BucketName)
+	fmt.Fprintf(&b, "  force_destroy = %t\n", p.ForceDestroy)
+	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.BucketName)
+	b.WriteString("}\n\n")
+
+	// Versioning is a separate resource on the AWS provider v4+. Emit it always so
+	// the desired state (enabled OR suspended) is explicit and idempotent.
+	versioningStatus := "Suspended"
+	if p.Versioning {
+		versioningStatus = "Enabled"
+	}
+	fmt.Fprintf(&b, "resource \"aws_s3_bucket_versioning\" %q {\n", label)
+	fmt.Fprintf(&b, "  bucket = aws_s3_bucket.%s.id\n", label)
+	b.WriteString("  versioning_configuration {\n")
+	fmt.Fprintf(&b, "    status = %q\n", versioningStatus)
+	b.WriteString("  }\n")
+	b.WriteString("}\n\n")
+
+	// PRIVATE BY DEFAULT (SPEC §5.7): unless explicitly public, block ALL public
+	// access at the bucket level so an errant ACL/policy can never expose it.
+	blockPublic := !p.Public
+	fmt.Fprintf(&b, "resource \"aws_s3_bucket_public_access_block\" %q {\n", label)
+	fmt.Fprintf(&b, "  bucket                  = aws_s3_bucket.%s.id\n", label)
+	fmt.Fprintf(&b, "  block_public_acls       = %t\n", blockPublic)
+	fmt.Fprintf(&b, "  block_public_policy     = %t\n", blockPublic)
+	fmt.Fprintf(&b, "  ignore_public_acls      = %t\n", blockPublic)
+	fmt.Fprintf(&b, "  restrict_public_buckets = %t\n", blockPublic)
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func renderObjectStorageGCP(p ObjectStoragePlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "resource \"google_storage_bucket\" %q {\n", label)
+	fmt.Fprintf(&b, "  name          = %q\n", p.BucketName)
+	fmt.Fprintf(&b, "  location      = %q\n", strings.ToUpper(p.CSPRegion))
+	fmt.Fprintf(&b, "  force_destroy = %t\n", p.ForceDestroy)
+	// PRIVATE BY DEFAULT: uniform bucket-level access disables per-object ACLs so
+	// the bucket is governed solely by IAM (no accidental public-read object ACL).
+	// Public access, when opted in, is granted out-of-band via an IAM binding; the
+	// bucket resource itself stays uniform/private.
+	b.WriteString("  uniform_bucket_level_access = true\n")
+	if !p.Public {
+		b.WriteString("  public_access_prevention    = \"enforced\"\n")
+	}
+	b.WriteString("  versioning {\n")
+	fmt.Fprintf(&b, "    enabled = %t\n", p.Versioning)
+	b.WriteString("  }\n")
+	fmt.Fprintf(&b, "  labels = { pyxcloud = \"true\" }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func renderObjectStorageDO(p ObjectStoragePlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+
+	// PRIVATE BY DEFAULT: acl = "private" unless explicitly public-read.
+	acl := "private"
+	if p.Public {
+		acl = "public-read"
+	}
+	fmt.Fprintf(&b, "resource \"digitalocean_spaces_bucket\" %q {\n", label)
+	fmt.Fprintf(&b, "  name          = %q\n", p.BucketName)
+	fmt.Fprintf(&b, "  region        = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "  acl           = %q\n", acl)
+	fmt.Fprintf(&b, "  force_destroy = %t\n", p.ForceDestroy)
+	b.WriteString("  versioning {\n")
+	fmt.Fprintf(&b, "    enabled = %t\n", p.Versioning)
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
 // splitCIDRs partitions CIDRs into IPv4 and IPv6 (AWS uses distinct attributes).
 func splitCIDRs(cidrs []string) (v4, v6 []string) {
 	for _, c := range cidrs {

@@ -560,3 +560,83 @@ func TestResourceDataSafetyGuardWiring(t *testing.T) {
 		t.Errorf("fresh create should be safe, got %v", err)
 	}
 }
+
+// TestResourceTranslateObjectStorage exercises the resource's object-storage
+// translation wiring end-to-end: catalog-resolved location, globally-unique-safe
+// bucket name, private-by-default, and the production-safe force_destroy default.
+func TestResourceTranslateObjectStorage(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+
+	m := topologyModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Frankfurt"), // AWS -> eu-central-1
+		ObjectStorage: &objectStorageModel{
+			Name:       types.StringValue("app-assets"),
+			Versioning: types.BoolValue(true),
+		},
+	}
+
+	plan, err := r.translateObjectStorage(context.Background(), m)
+	if err != nil {
+		t.Fatalf("translateObjectStorage: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected an object-storage plan, got nil")
+	}
+	if plan.CSPRegion.ValueString() != "eu-central-1" {
+		t.Errorf("csp_region = %q, want eu-central-1", plan.CSPRegion.ValueString())
+	}
+	if plan.ResourceType.ValueString() != "aws_s3_bucket" {
+		t.Errorf("resource_type = %q, want aws_s3_bucket", plan.ResourceType.ValueString())
+	}
+	// PRIVATE BY DEFAULT when public is unset.
+	if plan.Public.ValueBool() {
+		t.Error("public should default to false (private-by-default)")
+	}
+	if !plan.Versioning.ValueBool() {
+		t.Error("versioning should be carried")
+	}
+	// Production-safe default: force_destroy false unless overridden.
+	if plan.ForceDestroy.ValueBool() {
+		t.Error("force_destroy should default to false")
+	}
+}
+
+// TestResourceTranslateObjectStorageForceDestroyOverride asserts the test-only
+// override flips force_destroy through the resource wiring.
+func TestResourceTranslateObjectStorageForceDestroyOverride(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	m := topologyModel{
+		Name: types.StringValue("production"), Provider: types.StringValue("aws"),
+		Region: types.StringValue("Frankfurt"),
+		ObjectStorage: &objectStorageModel{
+			Name:         types.StringValue("app-assets"),
+			ForceDestroy: types.BoolValue(true),
+		},
+	}
+	plan, err := r.translateObjectStorage(context.Background(), m)
+	if err != nil {
+		t.Fatalf("translateObjectStorage: %v", err)
+	}
+	if !plan.ForceDestroy.ValueBool() {
+		t.Error("test override should enable force_destroy")
+	}
+}
+
+// TestResourceTranslateObjectStorageNil returns no plan when none declared.
+func TestResourceTranslateObjectStorageNil(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	plan, err := r.translateObjectStorage(context.Background(), topologyModel{
+		Provider: types.StringValue("aws"), Region: types.StringValue("Frankfurt"),
+	})
+	if err != nil {
+		t.Fatalf("translateObjectStorage: %v", err)
+	}
+	if plan != nil {
+		t.Errorf("expected nil plan when no object_storage declared, got %+v", plan)
+	}
+}

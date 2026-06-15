@@ -44,6 +44,20 @@ type fixture struct {
 	LoadBalancer *lbFixture `json:"load_balancer,omitempty"`
 	// ManagedDatabase is the optional canonical managed-database.
 	ManagedDatabase *mdbFixture `json:"managed_database,omitempty"`
+	// ObjectStorage is the optional canonical object/blob-storage.
+	ObjectStorage *objectStorageFixture `json:"object_storage,omitempty"`
+}
+
+// objectStorageFixture is the canonical object/blob-storage description embedded
+// in a fixture. PRIVATE BY DEFAULT: `public` omitted => false (the secure
+// default). `force_destroy` is a pointer so an omitted value takes the
+// production-safe default (false); the TEST fixture sets it true ONLY so a
+// just-created bucket tears down cleanly — that override is test-only.
+type objectStorageFixture struct {
+	Name         string `json:"name"`
+	Versioning   bool   `json:"versioning"`
+	Public       bool   `json:"public"`
+	ForceDestroy *bool  `json:"force_destroy,omitempty"`
 }
 
 // mdbFixture is the canonical managed-database description embedded in a fixture.
@@ -143,7 +157,7 @@ type ruleFixture struct {
 func main() {
 	fixturePath := flag.String("fixture", "", "path to canonical fixture JSON")
 	provider := flag.String("provider", "", "target provider: aws | gcp | digitalocean")
-	component := flag.String("component", "network", "component to render: network | security-group | virtual-machine | scale-group | load-balancer | managed-database")
+	component := flag.String("component", "network", "component to render: network | security-group | virtual-machine | scale-group | load-balancer | managed-database | object-storage")
 	flag.Parse()
 
 	if *fixturePath == "" || *provider == "" {
@@ -174,9 +188,38 @@ func main() {
 		renderLoadBalancer(cat, f, *provider)
 	case "managed-database", "mdb", "database", "db":
 		renderManagedDatabase(cat, f, *provider)
+	case "object-storage", "blob-storage", "storage", "s3":
+		renderObjectStorage(cat, f, *provider)
 	default:
-		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine | scale-group | load-balancer | managed-database)", *component))
+		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine | scale-group | load-balancer | managed-database | object-storage)", *component))
 	}
+}
+
+func renderObjectStorage(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.ObjectStorage == nil {
+		fatal(fmt.Errorf("fixture has no object_storage block"))
+	}
+	os := f.ObjectStorage
+	name := os.Name
+	if name == "" {
+		name = f.Name
+	}
+	plan, err := catalog.TranslateObjectStorage(context.Background(), cat, catalog.ObjectStorageSpec{
+		Name:         name,
+		Region:       f.Region,
+		Provider:     provider,
+		Versioning:   os.Versioning,
+		Public:       os.Public,
+		ForceDestroy: os.ForceDestroy,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	hcl, err := catalog.RenderObjectStorageHCL(plan)
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Print(hcl)
 }
 
 func renderManagedDatabase(cat catalog.MDBCatalog, f fixture, provider string) {

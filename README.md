@@ -379,6 +379,67 @@ with the visible test-only teardown override — RDS costs money and takes minut
 so the harness destroys immediately); gcp/do use the production `db.json`
 (Frankfurt → `europe-west3` / `fra1`).
 
+### Object/blob storage (`pd-TF-S3`)
+
+A topology can declare an **abstract object/blob-storage** bucket placed in its
+region. The user declares `name`, `versioning`, and `public` (default `false`);
+the provider **resolves it down** to each cloud's object-store resource. There is
+no sizing catalog — a bucket is region/location-scoped and billed per-usage — so
+the only catalog lookup is the region (`region_name` + provider → `csp_region`;
+a missing region is a hard plan-time error).
+
+```hcl
+resource "pyxcloud_topology" "app" {
+  name     = "production"
+  provider = "aws"        # aws | gcp | digitalocean
+  region   = "Frankfurt"
+
+  object_storage = {
+    name       = "app-assets"
+    versioning = true
+    public     = false     # PRIVATE BY DEFAULT — enforces the public-access-block
+    # force_destroy defaults to false (refuse to drop a non-empty bucket). The
+    # TEST round-trip sets it true ONLY for clean teardown — that override is
+    # test-only.
+  }
+}
+
+output "bucket_plan" { value = pyxcloud_topology.app.object_storage_plan }
+```
+
+**Private by default (security invariant, SPEC §5.7).** `public` defaults to
+`false`, and the provider **never** emits a world-readable bucket by default:
+
+- **AWS** — `aws_s3_bucket` + `aws_s3_bucket_versioning` +
+  `aws_s3_bucket_public_access_block`. When not public, **all four** block flags
+  (`block_public_acls`, `block_public_policy`, `ignore_public_acls`,
+  `restrict_public_buckets`) are `true`, so an errant ACL/policy can never expose
+  the bucket.
+- **GCP** — `google_storage_bucket` with `uniform_bucket_level_access = true`
+  (no per-object ACLs) and, when not public, `public_access_prevention = enforced`.
+- **DigitalOcean** — `digitalocean_spaces_bucket` with `acl = private` (only
+  `public-read` when explicitly public), region-mapped, versioning block.
+
+Making a bucket public is an **explicit opt-in** (`public = true`).
+
+**Globally-unique-safe bucket naming.** S3/GCS/Spaces share a global (or
+per-provider-global) bucket namespace, so a bare logical name would collide
+across accounts/regions/providers. The concrete `bucket_name` is derived
+deterministically: the logical name is lower-cased and reduced to the DNS-bucket
+charset `[a-z0-9-]`, then suffixed with a short hex hash of
+`(csp | csp_region | name)` and clamped to the 63-char cross-provider limit. The
+**same** logical name in two regions/providers yields **distinct** global names,
+and the derivation is pure/stable so plans are idempotent (e.g. `app-assets` →
+`app-assets-05c5013263` for AWS Frankfurt).
+
+Run [`examples/object-storage/roundtrip.sh`](examples/object-storage) to plan all
+three and apply→verify→destroy where creds exist. AWS uses `storage-aws.json`
+(Frankfurt → `eu-central-1`, with the visible test-only `force_destroy = true`
+override so a just-created bucket tears down cleanly); verification reads back
+`get-bucket-versioning` (Enabled) and `get-public-access-block` (all four flags
+true). gcp/do use the production `storage.json` (Frankfurt → `europe-west3` /
+`fra1`).
+
 ### Round-trip testing (SPEC §6)
 
 ```sh
@@ -389,6 +450,7 @@ examples/virtual-machine/roundtrip.sh   # virtual-machine
 examples/scale-group/roundtrip.sh       # virtual-machine-scale-group
 examples/load-balancer/roundtrip.sh     # load-balancer
 examples/managed-database/roundtrip.sh  # managed-database
+examples/object-storage/roundtrip.sh    # object/blob storage
 ```
 
 The harness generates the concrete `.tf` from the canonical fixture
