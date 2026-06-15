@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 
+	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -19,6 +20,14 @@ import (
 
 // envToken is the environment fallback for the auth token.
 const envToken = "PYXCLOUD_TOKEN"
+
+// providerData is the shared dependency bundle handed to resources and data
+// sources: the PyxCloud API client plus the region catalog used for the
+// abstract→concrete network translation (pd-TF-REGION-VPC).
+type providerData struct {
+	client  client.Client
+	catalog catalog.RegionCatalog
+}
 
 // pyxCloudProvider is the framework provider implementation.
 type pyxCloudProvider struct {
@@ -94,8 +103,20 @@ func (p *pyxCloudProvider) Configure(ctx context.Context, req provider.Configure
 	}
 
 	c := client.NewStub(client.Config{Endpoint: endpoint, Token: token})
-	resp.DataSourceData = c
-	resp.ResourceData = c
+
+	// Region catalog used by the network translation (pd-TF-REGION-VPC). The
+	// backend catalog currently delegates to the embedded `region` snapshot
+	// (same data, no network) until the live BE endpoint is wired — see
+	// internal/catalog/catalog_backend.go.
+	cat, err := catalog.NewBackend(endpoint, token)
+	if err != nil {
+		resp.Diagnostics.AddError("Region catalog init failed", err.Error())
+		return
+	}
+
+	pd := &providerData{client: c, catalog: cat}
+	resp.DataSourceData = pd
+	resp.ResourceData = pd
 }
 
 func (p *pyxCloudProvider) Resources(_ context.Context) []func() resource.Resource {

@@ -16,7 +16,15 @@ provider "pyxcloud" {
 resource "pyxcloud_topology" "web" {
   name     = "web-stack"
   provider = "aws"
-  region   = "EU West"
+  region   = "Frankfurt" # abstract pyx region_name; resolved to a csp_region via the catalog
+
+  # Abstract network for the place (pd-TF-REGION-VPC): provider-neutral VPC CIDR
+  # + subnet CIDRs. The provider resolves region -> csp_region from the catalog
+  # and derives multi-AZ subnets, exposed back as `network_plan`.
+  network = {
+    cidr    = "10.0.0.0/16"
+    subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  }
 
   components {
     name  = "app"
@@ -88,4 +96,9 @@ output "all_options" {
 
 output "cheapest" {
   value = data.pyxcloud_compare.options.cheapest
+}
+
+# The catalog-resolved concrete network plan (csp_region + multi-AZ subnets).
+output "network_plan" {
+  value = pyxcloud_topology.web.network_plan
 }
