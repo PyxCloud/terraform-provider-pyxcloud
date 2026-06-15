@@ -97,9 +97,9 @@ func TestEmbeddedSnapshotWellFormed(t *testing.T) {
 			t.Errorf("malformed row: %+v", r)
 		}
 		switch r.CSP {
-		case "aws", "gcp", "do":
+		case "aws", "gcp", "do", "ubicloud": // ubicloud added in wave-2 (pd-TF-W2-UBICLOUD)
 		default:
-			t.Errorf("unexpected csp %q in wave-1 snapshot (row %+v)", r.CSP, r)
+			t.Errorf("unexpected csp %q in catalog snapshot (row %+v)", r.CSP, r)
 		}
 	}
 }

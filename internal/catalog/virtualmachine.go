@@ -242,6 +242,8 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		plan.ResourceType = "google_compute_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_droplet"
+	case ProviderUbicloud:
+		plan.ResourceType = "ubicloud_vm"
 	}
 	return plan, nil
 }
@@ -306,14 +308,15 @@ func nearestSizes(candidates []VMRow, cpu, ram, n int) []VMRow {
 // not an instance-type map — the candidate set still comes entirely from the
 // `virtual_machine` catalog snapshot.
 var preferredFamilies = map[string]int{
-	"t3":      0, // AWS x86_64 burstable (t3.medium etc.)
-	"t4g":     0, // AWS arm64 burstable (Graviton)
-	"e2":      0, // GCP general-purpose
-	"Droplet": 0, // DigitalOcean standard droplet
-	"t3a":     1, // AWS AMD burstable
-	"m5":      2, // AWS general-purpose
-	"n2":      2, // GCP general-purpose
-	"c5":      3, // AWS compute-optimised
+	"t3":       0, // AWS x86_64 burstable (t3.medium etc.)
+	"t4g":      0, // AWS arm64 burstable (Graviton)
+	"e2":       0, // GCP general-purpose
+	"Droplet":  0, // DigitalOcean standard droplet
+	"t3a":      1, // AWS AMD burstable
+	"m5":       2, // AWS general-purpose
+	"n2":       2, // GCP general-purpose
+	"c5":       3, // AWS compute-optimised
+	"standard": 0, // Ubicloud standard dedicated-CPU line (wave-2)
 }
 
 func familyRank(r VMRow) int {

@@ -122,6 +122,14 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 		k := mdbRegionEngineKey(r.CSP, r.CSPRegion, r.Engine)
 		c.mdbByRegionEng[k] = append(c.mdbByRegionEng[k], r)
 	}
+
+	// Wave-2: merge the Ubicloud catalog snapshot (ubicloud_catalog.csv) into the
+	// same indexes. Kept in its own loader/file so the wave-2 Ubicloud PR is
+	// conflict-free against the concurrently-edited wave-1 snapshots
+	// (loadUbicloud -> render_ubicloud.go).
+	if err := c.loadUbicloud(); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 

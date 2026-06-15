@@ -251,6 +251,11 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		plan.ResourceType = "google_sql_database_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_database_cluster"
+	case ProviderUbicloud:
+		// Ubicloud Managed Database is PostgreSQL-only (ubicloud_postgres). A MySQL
+		// engine has no Ubicloud resource; the render step rejects it cleanly. We
+		// still set the postgres resource type here so a postgres plan is concrete.
+		plan.ResourceType = "ubicloud_postgres"
 	}
 	return plan, nil
 }

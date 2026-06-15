@@ -192,6 +192,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "google_compute_firewall"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_firewall"
+	case ProviderUbicloud:
+		plan.ResourceType = "ubicloud_firewall"
 	}
 	return plan, nil
 }
