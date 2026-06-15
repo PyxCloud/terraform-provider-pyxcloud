@@ -273,6 +273,8 @@ func RenderDNSZoneHCL(plan DNSZonePlan) (string, error) {
 		return renderDNSDO(plan), nil
 	case ProviderAzure:
 		return renderDNSZoneAzure(plan), nil
+	case ProviderLinode:
+		return renderDNSLinode(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for dns-zone", plan.Provider)
 	}
@@ -524,6 +526,8 @@ func RenderKubernetesHCL(plan K8sPlan) (string, error) {
 		return renderK8sDO(plan), nil
 	case ProviderAzure:
 		return renderKubernetesAzure(plan), nil
+	case ProviderLinode:
+		return renderK8sLinode(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for managed-kubernetes", plan.Provider)
 	}

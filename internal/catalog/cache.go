@@ -87,6 +87,18 @@ func TranslateCache(ctx context.Context, cat RegionCatalog, spec CacheSpec) (Cac
 	}
 	provider := lc(spec.Provider)
 
+	// Linode has no managed Redis/Valkey cache resource in the linode provider — the
+	// `linode_database_*` resources cover PostgreSQL/MySQL only, not an in-memory
+	// cache. Clean plan-time error rather than an invented resource.
+	if provider == ProviderLinode {
+		return CachePlan{}, ErrComponentUnsupported{
+			Component: TypeCache, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Linode has no managed Redis/Valkey resource (linode_database_* covers " +
+				"PostgreSQL/MySQL only); use a cache on AWS (ElastiCache) or GCP (Memorystore), " +
+				"or run self-managed Redis/Valkey on a linode_instance",
+		}
+	}
+
 	mem := spec.MemoryGB
 	if mem <= 0 {
 		mem = 1

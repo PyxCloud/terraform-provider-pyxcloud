@@ -133,6 +133,8 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 		plan.ResourceType = "digitalocean_spaces_bucket"
 	case ProviderAzure:
 		plan.ResourceType = "azurerm_storage_account"
+	case ProviderLinode:
+		plan.ResourceType = "linode_object_storage_bucket"
 	}
 	return plan, nil
 }

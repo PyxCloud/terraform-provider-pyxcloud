@@ -197,6 +197,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "digitalocean_firewall"
 	case ProviderAzure:
 		plan.ResourceType = "azurerm_network_security_group"
+	case ProviderLinode:
+		plan.ResourceType = "linode_firewall"
 	}
 	return plan, nil
 }
@@ -206,15 +208,22 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 // only tcp/udp/icmp protocols — there is no "all" protocol — so an `all` rule on
 // DO must be expressed explicitly per protocol/port instead.
 func enforceProviderCapabilities(provider string, rules []RulePlan) error {
-	if strings.ToLower(provider) != ProviderDigitalOcean {
+	p := strings.ToLower(provider)
+	// DigitalOcean and Linode firewalls support only tcp/udp/icmp — there is no
+	// "all" protocol — so an `all` rule must be expressed explicitly per protocol.
+	if p != ProviderDigitalOcean && p != ProviderLinode {
 		return nil
+	}
+	provName := "DigitalOcean"
+	if p == ProviderLinode {
+		provName = "Linode"
 	}
 	for _, r := range rules {
 		if r.Protocol == ProtoAll {
 			return fmt.Errorf(
-				"security-group: DigitalOcean firewalls do not support the %q protocol; "+
+				"security-group: %s firewalls do not support the %q protocol; "+
 					"declare explicit tcp/udp/icmp rules instead (this is a hard plan-time "+
-					"error, never a silent fallback)", ProtoAll)
+					"error, never a silent fallback)", provName, ProtoAll)
 		}
 	}
 	return nil
@@ -253,6 +262,13 @@ func enforceRuleLimits(provider string, rules []RulePlan) error {
 	case ProviderAzure:
 		if len(rules) > azureRulesPerNSGMax {
 			return fmt.Errorf("security-group: %d rules exceed the Azure NSG limit of %d", len(rules), azureRulesPerNSGMax)
+		}
+	case ProviderLinode:
+		if ingress > linodeRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d inbound rules exceed the Linode firewall limit of %d per direction", ingress, linodeRulesPerDirectionMax)
+		}
+		if egress > linodeRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d outbound rules exceed the Linode firewall limit of %d per direction", egress, linodeRulesPerDirectionMax)
 		}
 	}
 	return nil

@@ -90,15 +90,20 @@ type ErrAutoscaleUnsupported struct {
 }
 
 func (e ErrAutoscaleUnsupported) Error() string {
+	// Name the provider's managed-kubernetes alternative (DOKS / LKE node-pool
+	// autoscaling) so the error directs the user to the supported mapping.
+	alt := "a `managed-kubernetes` component (DOKS node-pool autoscaling)"
+	if strings.EqualFold(e.Provider, ProviderLinode) {
+		alt = "a `managed-kubernetes` component (LKE node-pool autoscaling)"
+	}
 	return fmt.Sprintf(
 		"virtual-machine-scale-group is not supported on provider %q (csp=%q, csp_region=%q): "+
-			"DigitalOcean has no native VM autoscaling primitive (its `virtual_machine` catalog "+
+			"this provider has no native VM autoscaling primitive (its `virtual_machine` catalog "+
 			"rows are marked supports_autoscale=false), and PyxCloud does not invent a "+
-			"non-existent resource. For autoscaled compute on DigitalOcean use a "+
-			"`managed-kubernetes` component (DOKS node-pool autoscaling), or pin a fixed-size "+
+			"non-existent resource. For autoscaled compute use %s, or pin a fixed-size "+
 			"set of `virtual-machine` instances via `count`. "+
 			"(this is a hard plan-time error, never a silent fallback)",
-		e.Provider, e.CSP, e.CSPRegion,
+		e.Provider, e.CSP, e.CSPRegion, alt,
 	)
 }
 
@@ -121,10 +126,10 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 
 	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
 
-	// DigitalOcean has no native VM autoscaling primitive — clean plan-time error
-	// rather than an invented resource. This mirrors the catalog, whose DO
-	// virtual_machine rows are marked supports_autoscale=false.
-	if provider == ProviderDigitalOcean {
+	// DigitalOcean and Linode have no native VM autoscaling primitive — clean
+	// plan-time error rather than an invented resource. This mirrors the catalog,
+	// whose DO/Linode virtual_machine rows are marked supports_autoscale=false.
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
 		return ScaleGroupPlan{}, ErrAutoscaleUnsupported{
 			Provider:  provider,
 			CSP:       row.CSP,

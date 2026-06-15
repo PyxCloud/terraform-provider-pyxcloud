@@ -257,6 +257,8 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		} else {
 			plan.ResourceType = "azurerm_postgresql_flexible_server"
 		}
+	case ProviderLinode:
+		plan.ResourceType = "linode_database_postgresql_v2"
 	}
 	return plan, nil
 }

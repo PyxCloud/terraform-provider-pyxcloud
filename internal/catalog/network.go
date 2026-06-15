@@ -92,6 +92,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "digitalocean_vpc"
 	case ProviderAzure:
 		plan.ResourceType = "azurerm_virtual_network"
+	case ProviderLinode:
+		plan.ResourceType = "linode_vpc"
 	}
 	return plan, nil
 }
@@ -118,7 +120,8 @@ func deriveZones(provider, cspRegion string, n int) []string {
 		for i := 0; i < n; i++ {
 			zones = append(zones, cspRegion+"-"+letters[i%len(letters)])
 		}
-	case ProviderDigitalOcean:
+	case ProviderDigitalOcean, ProviderLinode:
+		// DigitalOcean and Linode VPCs are region-scoped with no sub-zones.
 		return nil
 	}
 	return zones
