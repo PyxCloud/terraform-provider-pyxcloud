@@ -251,6 +251,12 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		plan.ResourceType = "google_sql_database_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_database_cluster"
+	case ProviderAzure:
+		if engine == DBEngineMySQL {
+			plan.ResourceType = "azurerm_mysql_flexible_server"
+		} else {
+			plan.ResourceType = "azurerm_postgresql_flexible_server"
+		}
 	}
 	return plan, nil
 }

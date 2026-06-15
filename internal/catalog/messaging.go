@@ -130,6 +130,8 @@ func TranslateQueue(ctx context.Context, cat RegionCatalog, spec QueueSpec) (Mes
 		plan.ResourceType = "aws_sqs_queue"
 	case ProviderGCP:
 		plan.ResourceType = "google_pubsub_subscription"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_servicebus_queue"
 	}
 	return plan, nil
 }
@@ -176,6 +178,8 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 		plan.ResourceType = "aws_kinesis_stream"
 	case ProviderGCP:
 		plan.ResourceType = "google_pubsub_topic"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_eventhub"
 	}
 	return plan, nil
 }

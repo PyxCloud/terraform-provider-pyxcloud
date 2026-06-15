@@ -90,6 +90,12 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		plan.ResourceType = "google_dns_managed_zone"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_domain"
+	case ProviderAzure:
+		if plan.Private {
+			plan.ResourceType = "azurerm_private_dns_zone"
+		} else {
+			plan.ResourceType = "azurerm_dns_zone"
+		}
 	}
 	return plan, nil
 }
@@ -187,6 +193,9 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 		}
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_cdn"
+	case ProviderAzure:
+		// Azure Front Door fronts any origin (object-storage or load-balancer).
+		plan.ResourceType = "azurerm_cdn_frontdoor_profile"
 	}
 	return plan, nil
 }
@@ -281,6 +290,8 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 		plan.ResourceType = "aws_wafv2_web_acl"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_security_policy"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_cdn_frontdoor_firewall_policy"
 	}
 	return plan, nil
 }

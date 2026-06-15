@@ -90,6 +90,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "google_compute_network"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_vpc"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_virtual_network"
 	}
 	return plan, nil
 }

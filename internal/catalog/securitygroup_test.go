@@ -126,7 +126,7 @@ func TestSecurityGroupValidation(t *testing.T) {
 	}{
 		{"missing region", SecurityGroupSpec{Provider: "aws", Expose: []int{80}}},
 		{"missing provider", SecurityGroupSpec{Region: "Dublin", Expose: []int{80}}},
-		{"unknown provider", SecurityGroupSpec{Region: "Dublin", Provider: "azure", Expose: []int{80}}},
+		{"unknown provider", SecurityGroupSpec{Region: "Dublin", Provider: "oracle", Expose: []int{80}}},
 		{"empty rules and expose", SecurityGroupSpec{Region: "Dublin", Provider: "aws"}},
 		{"expose port out of range", SecurityGroupSpec{Region: "Dublin", Provider: "aws", Expose: []int{70000}}},
 		{"bad direction", SecurityGroupSpec{Region: "Dublin", Provider: "aws", Rules: []SecurityRule{{Direction: "sideways", Protocol: "tcp", FromPort: 1, ToPort: 1, CIDRs: []string{"0.0.0.0/0"}}}}},

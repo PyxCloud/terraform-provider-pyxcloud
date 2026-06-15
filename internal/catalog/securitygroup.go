@@ -21,6 +21,9 @@ const (
 	awsRulesPerDirectionMax = 60
 	gcpRulesPerFirewallMax  = 100
 	doRulesPerDirectionMax  = 50
+	// Azure NSGs default to 1000 rules per NSG (across both directions); we budget
+	// conservatively below the hard cap to leave room for Azure's default rules.
+	azureRulesPerNSGMax = 900
 )
 
 // Protocol tokens (canonical, provider-neutral).
@@ -192,6 +195,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "google_compute_firewall"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_firewall"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_network_security_group"
 	}
 	return plan, nil
 }
@@ -244,6 +249,10 @@ func enforceRuleLimits(provider string, rules []RulePlan) error {
 		}
 		if egress > doRulesPerDirectionMax {
 			return fmt.Errorf("security-group: %d outbound rules exceed the DigitalOcean firewall limit of %d", egress, doRulesPerDirectionMax)
+		}
+	case ProviderAzure:
+		if len(rules) > azureRulesPerNSGMax {
+			return fmt.Errorf("security-group: %d rules exceed the Azure NSG limit of %d", len(rules), azureRulesPerNSGMax)
 		}
 	}
 	return nil

@@ -60,4 +60,17 @@ else
   echo ">>> SKIP DO apply/destroy: no DIGITALOCEAN_TOKEN (plan only)"
 fi
 
+# --- Azure (wave-2) ---
+# Azure expects no test creds here; we generate + init + validate only (plan/apply
+# are gated on ARM_SUBSCRIPTION_ID and SKIPPED EXPLICITLY when absent).
+gen azure azure
+( cd azure && terraform init -input=false >/dev/null && terraform validate -no-color )
+if [[ -n "${ARM_SUBSCRIPTION_ID:-}" ]]; then
+  echo ">>> Azure creds present: real plan + apply + destroy"
+  ( cd azure && terraform plan -input=false -no-color )
+  apply_destroy azure
+else
+  echo ">>> SKIP Azure plan/apply/destroy: no ARM_SUBSCRIPTION_ID (validate only)"
+fi
+
 echo "round-trip complete."

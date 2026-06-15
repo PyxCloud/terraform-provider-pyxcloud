@@ -129,6 +129,11 @@ func TranslateCache(ctx context.Context, cat RegionCatalog, spec CacheSpec) (Cac
 		if plan.Version == "" {
 			plan.Version = "7"
 		}
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_redis_cache"
+		if plan.Version == "" {
+			plan.Version = "6" // Azure Cache for Redis major line
+		}
 	}
 	return plan, nil
 }

@@ -133,6 +133,8 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 		plan.ResourceType = "google_cloudfunctions2_function"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_app"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_linux_function_app"
 	}
 	return plan, nil
 }
