@@ -161,6 +161,49 @@ type virtualMachinePlanModel struct {
 	Instances     []vmInstancePlanModel `tfsdk:"instances"`
 }
 
+// scaleGroupModel maps the abstract `scale_group` block of a place: canonical
+// sizing (architecture, cpu, ram, os) + autoscale bounds (min/max/desired) +
+// health, placed in the place's network (spread multi-AZ across its subnets) and
+// attached to its security-group (pd-TF-ASG).
+type scaleGroupModel struct {
+	Name         types.String `tfsdk:"name"`
+	Architecture types.String `tfsdk:"architecture"`
+	CPU          types.Int64  `tfsdk:"cpu"`
+	RAM          types.Int64  `tfsdk:"ram"`
+	OS           types.String `tfsdk:"os"`
+	OSVersion    types.String `tfsdk:"os_version"`
+	Min          types.Int64  `tfsdk:"min"`
+	Max          types.Int64  `tfsdk:"max"`
+	Desired      types.Int64  `tfsdk:"desired"`
+	Health       types.String `tfsdk:"health"`
+}
+
+// scaleGroupPlanModel is the computed, catalog-resolved concrete scale-group plan
+// (the abstract→concrete launch-template + autoscaling-group translation).
+type scaleGroupPlanModel struct {
+	Provider      types.String   `tfsdk:"provider"`
+	CSP           types.String   `tfsdk:"csp"`
+	RegionName    types.String   `tfsdk:"region_name"`
+	CSPRegion     types.String   `tfsdk:"csp_region"`
+	GroupName     types.String   `tfsdk:"group_name"`
+	InstanceType  types.String   `tfsdk:"instance_type"`
+	Architecture  types.String   `tfsdk:"architecture"`
+	CPU           types.Int64    `tfsdk:"cpu"`
+	RAM           types.Int64    `tfsdk:"ram"`
+	OSName        types.String   `tfsdk:"os_name"`
+	OSVersion     types.String   `tfsdk:"os_version"`
+	Image         types.String   `tfsdk:"image"`
+	Min           types.Int64    `tfsdk:"min"`
+	Max           types.Int64    `tfsdk:"max"`
+	Desired       types.Int64    `tfsdk:"desired"`
+	Health        types.String   `tfsdk:"health"`
+	Zones         []types.String `tfsdk:"zones"`
+	NetworkName   types.String   `tfsdk:"network_name"`
+	SubnetNames   []types.String `tfsdk:"subnet_names"`
+	SecurityGroup types.String   `tfsdk:"security_group"`
+	ResourceType  types.String   `tfsdk:"resource_type"`
+}
+
 // topologyModel maps the pyxcloud_topology resource state.
 type topologyModel struct {
 	ID                 types.String             `tfsdk:"id"`
@@ -174,6 +217,8 @@ type topologyModel struct {
 	SecurityGroupPlan  *securityGroupPlanModel  `tfsdk:"security_group_plan"`
 	VirtualMachine     *virtualMachineModel     `tfsdk:"virtual_machine"`
 	VirtualMachinePlan *virtualMachinePlanModel `tfsdk:"virtual_machine_plan"`
+	ScaleGroup         *scaleGroupModel         `tfsdk:"scale_group"`
+	ScaleGroupPlan     *scaleGroupPlanModel     `tfsdk:"scale_group_plan"`
 }
 
 func (r *topologyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -464,6 +509,102 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					},
 				},
 			},
+			"scale_group": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Abstract virtual-machine-scale-group for the place " +
+					"(pd-TF-ASG): canonical sizing (`architecture`, `cpu`, `ram`, `os`) plus " +
+					"autoscale bounds (`min`, `max`, `desired`) and a `health` kind, placed in " +
+					"the place's `network` (spread multi-AZ across its subnets) and attached to " +
+					"its `security_group`. Resolved to `aws_launch_template` + " +
+					"`aws_autoscaling_group` / `google_compute_instance_template` + " +
+					"`google_compute_region_instance_group_manager` + autoscaler for the " +
+					"topology's provider at plan time. The instance type reuses the same " +
+					"`virtual_machine` SKU resolution as the virtual-machine component. " +
+					"DigitalOcean has no native VM autoscaling primitive, so it is a hard " +
+					"plan-time error (use `managed-kubernetes` instead).",
+				Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Scale-group/component name; defaults to the topology name.",
+					},
+					"architecture": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "CPU architecture: `x86_64` (default) or `arm64`.",
+					},
+					"cpu": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Abstract vCPU count per instance. Resolved to a concrete instance type.",
+					},
+					"ram": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Abstract RAM in GiB per instance. Resolved to a concrete instance type.",
+					},
+					"os": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Operating system: `ubuntu` (default) or `debian`.",
+					},
+					"os_version": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "OS version; defaults to the catalog default " +
+							"(ubuntu `24.04` / debian `12`).",
+					},
+					"min": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Minimum instances (>= 0).",
+					},
+					"max": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Maximum instances (>= `min`, >= 1).",
+					},
+					"desired": schema.Int64Attribute{
+						Optional: true,
+						MarkdownDescription: "Desired instances within [`min`, `max`]; " +
+							"defaults to `min`.",
+					},
+					"health": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "Health-check kind: `ec2` (instance liveness, " +
+							"default) or `elb` (load-balancer health, which also replaces " +
+							"unhealthy instances).",
+					},
+				},
+			},
+			"scale_group_plan": schema.SingleNestedAttribute{
+				Computed: true,
+				MarkdownDescription: "Computed concrete scale-group plan: the catalog-resolved " +
+					"translation of the abstract `scale_group` for the topology's provider " +
+					"(instance type from the `virtual_machine` catalog, image from the OS " +
+					"catalog, multi-AZ zones from the region catalog).",
+				Attributes: map[string]schema.Attribute{
+					"provider":      schema.StringAttribute{Computed: true},
+					"csp":           schema.StringAttribute{Computed: true},
+					"region_name":   schema.StringAttribute{Computed: true},
+					"csp_region":    schema.StringAttribute{Computed: true},
+					"group_name":    schema.StringAttribute{Computed: true},
+					"instance_type": schema.StringAttribute{Computed: true},
+					"architecture":  schema.StringAttribute{Computed: true},
+					"cpu":           schema.Int64Attribute{Computed: true},
+					"ram":           schema.Int64Attribute{Computed: true},
+					"os_name":       schema.StringAttribute{Computed: true},
+					"os_version":    schema.StringAttribute{Computed: true},
+					"image":         schema.StringAttribute{Computed: true},
+					"min":           schema.Int64Attribute{Computed: true},
+					"max":           schema.Int64Attribute{Computed: true},
+					"desired":       schema.Int64Attribute{Computed: true},
+					"health":        schema.StringAttribute{Computed: true},
+					"zones": schema.ListAttribute{
+						Computed:    true,
+						ElementType: types.StringType,
+					},
+					"network_name": schema.StringAttribute{Computed: true},
+					"subnet_names": schema.ListAttribute{
+						Computed:    true,
+						ElementType: types.StringType,
+					},
+					"security_group": schema.StringAttribute{Computed: true},
+					"resource_type":  schema.StringAttribute{Computed: true},
+				},
+			},
 		},
 	}
 }
@@ -526,6 +667,15 @@ func (r *topologyResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 			)
 		}
 	}
+	if plan.ScaleGroup != nil {
+		if _, err := r.translateScaleGroup(ctx, plan); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("scale_group"),
+				"Virtual-machine-scale-group not resolvable / unsupported against the PyxCloud catalog",
+				err.Error(),
+			)
+		}
+	}
 }
 
 func (r *topologyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -550,6 +700,11 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Virtual-machine translation failed", err.Error())
 		return
 	}
+	asgPlan, err := r.translateScaleGroup(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Virtual-machine-scale-group translation failed", err.Error())
+		return
+	}
 
 	created, err := r.client.CreateTopology(ctx, modelToTopology(plan))
 	if err != nil {
@@ -564,6 +719,8 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 	state.SecurityGroupPlan = sgPlan
 	state.VirtualMachine = plan.VirtualMachine
 	state.VirtualMachinePlan = vmPlan
+	state.ScaleGroup = plan.ScaleGroup
+	state.ScaleGroupPlan = asgPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
@@ -756,6 +913,88 @@ func (r *topologyResource) translateVM(ctx context.Context, m topologyModel) (*v
 	return out, nil
 }
 
+// translateScaleGroup resolves the abstract scale_group block into a concrete
+// plan via the catalog. The instance type reuses the SAME `virtual_machine` SKU
+// resolution as the virtual-machine component; the multi-AZ zones come from the
+// region catalog. Returns (nil, nil) when no scale_group is declared.
+func (r *topologyResource) translateScaleGroup(ctx context.Context, m topologyModel) (*scaleGroupPlanModel, error) {
+	if m.ScaleGroup == nil {
+		return nil, nil
+	}
+	sg := m.ScaleGroup
+
+	name := sg.Name.ValueString()
+	if name == "" {
+		name = m.Name.ValueString()
+	}
+	network, sgName := "", ""
+	var subnets []string
+	if m.Network != nil {
+		network = m.Name.ValueString()
+		// Spread the group across all the network's subnets (multi-AZ).
+		for i := range m.Network.Subnets {
+			subnets = append(subnets, fmt.Sprintf("%s-subnet-%d", m.Name.ValueString(), i+1))
+		}
+	}
+	if m.SecurityGroup != nil {
+		sgName = m.SecurityGroup.Name.ValueString()
+		if sgName == "" {
+			sgName = m.Name.ValueString()
+		}
+	}
+
+	spec := catalog.ScaleGroupSpec{
+		Name:          name,
+		Region:        m.Region.ValueString(),
+		Provider:      m.Provider.ValueString(),
+		Architecture:  sg.Architecture.ValueString(),
+		CPU:           int(sg.CPU.ValueInt64()),
+		RAM:           int(sg.RAM.ValueInt64()),
+		OS:            sg.OS.ValueString(),
+		OSVersion:     sg.OSVersion.ValueString(),
+		Min:           int(sg.Min.ValueInt64()),
+		Max:           int(sg.Max.ValueInt64()),
+		Desired:       int(sg.Desired.ValueInt64()),
+		Health:        sg.Health.ValueString(),
+		Network:       network,
+		Subnets:       subnets,
+		SecurityGroup: sgName,
+	}
+	cp, err := catalog.TranslateScaleGroup(ctx, r.catalog, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &scaleGroupPlanModel{
+		Provider:      types.StringValue(cp.Provider),
+		CSP:           types.StringValue(cp.CSP),
+		RegionName:    types.StringValue(cp.RegionName),
+		CSPRegion:     types.StringValue(cp.CSPRegion),
+		GroupName:     types.StringValue(cp.GroupName),
+		InstanceType:  types.StringValue(cp.InstanceType),
+		Architecture:  types.StringValue(cp.Architecture),
+		CPU:           types.Int64Value(int64(cp.CPU)),
+		RAM:           types.Int64Value(int64(cp.RAM)),
+		OSName:        types.StringValue(cp.OSName),
+		OSVersion:     types.StringValue(cp.OSVersion),
+		Image:         types.StringValue(cp.Image),
+		Min:           types.Int64Value(int64(cp.Min)),
+		Max:           types.Int64Value(int64(cp.Max)),
+		Desired:       types.Int64Value(int64(cp.Desired)),
+		Health:        types.StringValue(cp.Health),
+		NetworkName:   types.StringValue(cp.NetworkName),
+		SecurityGroup: types.StringValue(cp.SecurityGroup),
+		ResourceType:  types.StringValue(cp.ResourceType),
+	}
+	for _, z := range cp.Zones {
+		out.Zones = append(out.Zones, types.StringValue(z))
+	}
+	for _, s := range cp.SubnetNames {
+		out.SubnetNames = append(out.SubnetNames, types.StringValue(s))
+	}
+	return out, nil
+}
+
 func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state topologyModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -803,6 +1042,15 @@ func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, r
 		}
 		refreshed.VirtualMachinePlan = vmPlan
 	}
+	refreshed.ScaleGroup = state.ScaleGroup
+	if refreshed.ScaleGroup != nil {
+		asgPlan, terr := r.translateScaleGroup(ctx, refreshed)
+		if terr != nil {
+			resp.Diagnostics.AddError("Virtual-machine-scale-group translation failed", terr.Error())
+			return
+		}
+		refreshed.ScaleGroupPlan = asgPlan
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, refreshed)...)
 }
 
@@ -837,6 +1085,11 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Virtual-machine translation failed", err.Error())
 		return
 	}
+	asgPlan, err := r.translateScaleGroup(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Virtual-machine-scale-group translation failed", err.Error())
+		return
+	}
 
 	updated, err := r.client.UpdateTopology(ctx, desired)
 	if err != nil {
@@ -851,6 +1104,8 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 	newState.SecurityGroupPlan = sgPlan
 	newState.VirtualMachine = plan.VirtualMachine
 	newState.VirtualMachinePlan = vmPlan
+	newState.ScaleGroup = plan.ScaleGroup
+	newState.ScaleGroupPlan = asgPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
 

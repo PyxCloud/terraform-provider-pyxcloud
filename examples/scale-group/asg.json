@@ -1,0 +1,25 @@
+{
+  "name": "production",
+  "region": "Frankfurt",
+  "cidr": "10.0.0.0/16",
+  "subnets": ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"],
+  "security_group": {
+    "name": "production-web",
+    "description": "PyxCloud web tier - HTTP/HTTPS public, SSH from VPC",
+    "expose": [80, 443],
+    "rules": [
+      { "direction": "ingress", "protocol": "tcp", "from_port": 22, "to_port": 22, "cidrs": ["10.0.0.0/16"] }
+    ]
+  },
+  "scale_group": {
+    "name": "web",
+    "architecture": "x86_64",
+    "cpu": 2,
+    "ram": 4,
+    "os": "ubuntu",
+    "min": 2,
+    "max": 6,
+    "desired": 3,
+    "health": "elb"
+  }
+}

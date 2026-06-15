@@ -227,3 +227,102 @@ func TestResourceTranslateVMSKUNoMatch(t *testing.T) {
 		t.Fatal("expected hard SKU no-match error, got nil")
 	}
 }
+
+// TestResourceTranslateScaleGroup exercises the scale-group translation wiring
+// end-to-end through the embedded catalog (pd-TF-ASG): instance type from the
+// virtual_machine catalog (reused VM SKU), multi-AZ spread across the network's
+// subnets, min/max/desired + health wired into the plan.
+func TestResourceTranslateScaleGroup(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+
+	m := topologyModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Dublin"),
+		Network: &networkModel{
+			CIDR: types.StringValue("10.0.0.0/16"),
+			Subnets: []types.String{
+				types.StringValue("10.0.1.0/24"),
+				types.StringValue("10.0.2.0/24"),
+				types.StringValue("10.0.3.0/24"),
+			},
+		},
+		SecurityGroup: &securityGroupModel{
+			Name:   types.StringValue("production-web"),
+			Expose: []types.Int64{types.Int64Value(80)},
+		},
+		ScaleGroup: &scaleGroupModel{
+			Architecture: types.StringValue("x86_64"),
+			CPU:          types.Int64Value(2),
+			RAM:          types.Int64Value(4),
+			OS:           types.StringValue("ubuntu"),
+			Min:          types.Int64Value(2),
+			Max:          types.Int64Value(6),
+			Desired:      types.Int64Value(3),
+			Health:       types.StringValue("elb"),
+		},
+	}
+
+	plan, err := r.translateScaleGroup(context.Background(), m)
+	if err != nil {
+		t.Fatalf("translateScaleGroup: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected a scale-group plan, got nil")
+	}
+	if plan.CSPRegion.ValueString() != "eu-west-1" {
+		t.Errorf("csp_region = %q, want eu-west-1", plan.CSPRegion.ValueString())
+	}
+	if plan.InstanceType.ValueString() != "t3.medium" {
+		t.Errorf("instance_type = %q, want t3.medium (reused VM SKU)", plan.InstanceType.ValueString())
+	}
+	if plan.ResourceType.ValueString() != "aws_autoscaling_group" {
+		t.Errorf("resource_type = %q, want aws_autoscaling_group", plan.ResourceType.ValueString())
+	}
+	if plan.Min.ValueInt64() != 2 || plan.Max.ValueInt64() != 6 || plan.Desired.ValueInt64() != 3 {
+		t.Errorf("bounds = %d/%d/%d, want 2/6/3", plan.Min.ValueInt64(), plan.Max.ValueInt64(), plan.Desired.ValueInt64())
+	}
+	if plan.Health.ValueString() != "elb" {
+		t.Errorf("health = %q, want elb", plan.Health.ValueString())
+	}
+	if len(plan.SubnetNames) != 3 || len(plan.Zones) != 3 {
+		t.Errorf("want 3-way multi-AZ spread, got %d subnets / %d zones", len(plan.SubnetNames), len(plan.Zones))
+	}
+	if plan.SecurityGroup.ValueString() != "production-web" {
+		t.Errorf("security_group = %q, want production-web", plan.SecurityGroup.ValueString())
+	}
+}
+
+// TestResourceTranslateScaleGroupNil returns no plan when none declared.
+func TestResourceTranslateScaleGroupNil(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	plan, err := r.translateScaleGroup(context.Background(), topologyModel{
+		Provider: types.StringValue("aws"), Region: types.StringValue("Dublin"),
+	})
+	if err != nil {
+		t.Fatalf("translateScaleGroup: %v", err)
+	}
+	if plan != nil {
+		t.Errorf("expected nil plan when no scale_group declared, got %+v", plan)
+	}
+}
+
+// TestResourceTranslateScaleGroupDOUnsupported surfaces the DO hard error.
+func TestResourceTranslateScaleGroupDOUnsupported(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	_, err := r.translateScaleGroup(context.Background(), topologyModel{
+		Name:     types.StringValue("x"),
+		Provider: types.StringValue("digitalocean"),
+		Region:   types.StringValue("Frankfurt"),
+		ScaleGroup: &scaleGroupModel{
+			CPU: types.Int64Value(2), RAM: types.Int64Value(4),
+			Min: types.Int64Value(1), Max: types.Int64Value(3),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected DO unsupported error, got nil")
+	}
+}

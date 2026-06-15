@@ -38,6 +38,24 @@ type fixture struct {
 	SecurityGroup *sgFixture `json:"security_group,omitempty"`
 	// VirtualMachine is the optional canonical virtual-machine for this place.
 	VirtualMachine *vmFixture `json:"virtual_machine,omitempty"`
+	// ScaleGroup is the optional canonical virtual-machine-scale-group.
+	ScaleGroup *sgScaleFixture `json:"scale_group,omitempty"`
+}
+
+// sgScaleFixture is the canonical virtual-machine-scale-group description.
+type sgScaleFixture struct {
+	Name         string `json:"name"`
+	Architecture string `json:"architecture"`
+	CPU          int    `json:"cpu"`
+	RAM          int    `json:"ram"`
+	OS           string `json:"os"`
+	OSVersion    string `json:"os_version"`
+	Min          int    `json:"min"`
+	Max          int    `json:"max"`
+	Desired      int    `json:"desired"`
+	Health       string `json:"health"`
+	// SecurityGroup is the canonical SG name to attach; defaults to the fixture SG.
+	SecurityGroup string `json:"security_group"`
 }
 
 // vmFixture is the canonical virtual-machine description embedded in a fixture.
@@ -100,9 +118,56 @@ func main() {
 		renderSecurityGroup(cat, f, *provider)
 	case "virtual-machine", "vm":
 		renderVM(cat, f, *provider)
+	case "scale-group", "virtual-machine-scale-group", "asg":
+		renderScaleGroup(cat, f, *provider)
 	default:
-		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine)", *component))
+		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine | scale-group)", *component))
 	}
+}
+
+func renderScaleGroup(cat catalog.VMCatalog, f fixture, provider string) {
+	if f.ScaleGroup == nil {
+		fatal(fmt.Errorf("fixture has no scale_group block"))
+	}
+	sg := f.ScaleGroup
+	name := sg.Name
+	if name == "" {
+		name = f.Name
+	}
+	// Spread the group across all the network's subnets (multi-AZ).
+	subnets := make([]string, 0, len(f.Subnets))
+	for i := range f.Subnets {
+		subnets = append(subnets, fmt.Sprintf("%s-subnet-%d", f.Name, i+1))
+	}
+	secGroup := sg.SecurityGroup
+	if secGroup == "" && f.SecurityGroup != nil {
+		secGroup = f.SecurityGroup.Name
+	}
+	plan, err := catalog.TranslateScaleGroup(context.Background(), cat, catalog.ScaleGroupSpec{
+		Name:          name,
+		Region:        f.Region,
+		Provider:      provider,
+		Architecture:  sg.Architecture,
+		CPU:           sg.CPU,
+		RAM:           sg.RAM,
+		OS:            sg.OS,
+		OSVersion:     sg.OSVersion,
+		Min:           sg.Min,
+		Max:           sg.Max,
+		Desired:       sg.Desired,
+		Health:        sg.Health,
+		Network:       f.Name,
+		Subnets:       subnets,
+		SecurityGroup: secGroup,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	hcl, err := catalog.RenderScaleGroupHCL(plan)
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Print(hcl)
 }
 
 func renderVM(cat catalog.VMCatalog, f fixture, provider string) {
