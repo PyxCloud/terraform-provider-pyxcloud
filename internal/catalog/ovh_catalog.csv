@@ -1,0 +1,48 @@
+# OVHcloud catalog snapshot (wave-2, pd-TF-PROVIDERS-WAVE2: ovh).
+#
+# CATALOG GAP / PROVENANCE: the live PyxCloud catalog ETL does not yet census the
+# OVHcloud Public Cloud catalog (no `region`/`managed_database` rows with csp="ovh"
+# exist in the materialized tables the wizard/Compare page read). Until that ETL
+# lands, these rows are AUTHORED from the public OVHcloud catalog
+# (https://www.ovhcloud.com/en/public-cloud/prices/ and the ovh/ovh Terraform
+# provider docs) so the wave-2 OVH renderers are deterministic and testable. They
+# follow the SAME flat shape as region_catalog.csv / mdb_catalog.csv so that, when
+# the live OVH ETL appears, these embedded rows are replaced wholesale with no code
+# change (the resolver is identical). They are NOT a hand-maintained provider map in
+# the binary — they are a snapshot stand-in for a not-yet-censused catalog slice.
+#
+# Two record kinds share this file, discriminated by the first column `kind`:
+#   region : macro_region,country,region_name,csp_region,csp_region_description
+#   flavor : engine/"node",flavor_name,cpu,ram,plan   (DB flavor or kube node flavor)
+#
+# OVH csp_region tokens are OVH's macro datacenter codes (GRA, SBG, DE, UK, WAW,
+# BHS, US-EAST-VA, US-WEST-OR, SGP, SYD). Managed-database and object-storage take
+# these macro codes directly; managed-kubernetes takes the regional variant
+# (e.g. GRA11 / GRA7) which we derive deterministically from the macro code.
+kind,a,b,c,d,e
+region,Western Europe,France,Gravelines,GRA,OVH Gravelines FR
+region,Western Europe,France,Strasbourg,SBG,OVH Strasbourg FR
+region,Western Europe,Germany,Frankfurt,DE,OVH Frankfurt DE
+region,Western Europe,United Kingdom,London,UK,OVH London UK
+region,Central Europe,Poland,Warsaw,WAW,OVH Warsaw PL
+region,North America (ex US),Canada,Beauharnois,BHS,OVH Beauharnois CA
+region,United States,East Coast,Virginia,US-EAST-VA,OVH Vint Hill US
+region,United States,West Coast,Oregon,US-WEST-OR,OVH Hillsboro US
+region,Asia Pacific,Singapore,Singapore,SGP,OVH Singapore SG
+region,Asia Pacific,Australia,Sydney,SYD,OVH Sydney AU
+# Managed-database flavors (ovh_cloud_project_database `flavor` + `plan`). cpu/ram
+# from the public OVH DB pricing page; `plan` is the OVH cluster plan tier.
+flavor,db,db1-4,2,4,essential
+flavor,db,db1-7,2,7,essential
+flavor,db,db1-15,4,15,business
+flavor,db,db1-30,8,30,business
+flavor,db,db2-15,4,15,business
+flavor,db,db2-30,8,30,enterprise
+# Managed-kubernetes node flavors (ovh_cloud_project_kube_nodepool `flavor_name`).
+# cpu/ram from the public OVH Public Cloud compute pricing (b3 general-purpose line).
+flavor,node,b3-8,2,8,
+flavor,node,b3-16,4,16,
+flavor,node,b3-32,8,32,
+flavor,node,b3-64,16,64,
+flavor,node,d2-4,2,4,
+flavor,node,d2-8,4,8,
