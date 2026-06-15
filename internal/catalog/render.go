@@ -868,6 +868,189 @@ func renderLBDO(p LoadBalancerPlan) string {
 	return b.String()
 }
 
+// RenderManagedDatabaseHCL renders a resolved ManagedDatabasePlan into concrete
+// cloud-provider Terraform HCL. Mirrors RenderLoadBalancerHCL: translation returns
+// a structured plan, rendering to .tf happens here and drives the per-provider
+// `terraform plan` / real apply round-trip tests (SPEC §6).
+//
+//   - AWS: aws_db_subnet_group (multi-AZ across the region's subnets) +
+//     aws_db_instance (RDS). storage_encrypted, multi_az (HA),
+//     deletion_protection, and a final snapshot (skip_final_snapshot=false +
+//     final_snapshot_identifier) — the production-safe defaults. The instance
+//     class comes from the catalog.
+//   - GCP: google_sql_database_instance with settings { tier, disk_size,
+//     availability_type REGIONAL when HA }, disk encryption, and
+//     deletion_protection.
+//   - DigitalOcean: digitalocean_database_cluster (size from the catalog, node
+//     count 2 when HA, region + private VPC). DO clusters are encrypted at rest
+//     by default and have no in-place deletion-protection flag, so that intent is
+//     carried as a lifecycle prevent_destroy when deletion_protection is on.
+//
+// The replacement-forcing data-safety guard runs at PLAN time (ModifyPlan), not
+// here; this renderer always emits the production-safe shape.
+func RenderManagedDatabaseHCL(plan ManagedDatabasePlan) (string, error) {
+	switch plan.Provider {
+	case ProviderAWS:
+		return renderMDBAWS(plan), nil
+	case ProviderGCP:
+		return renderMDBGCP(plan), nil
+	case ProviderDigitalOcean:
+		return renderMDBDO(plan), nil
+	default:
+		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
+	}
+}
+
+// mdbAWSEngine maps the canonical engine to the AWS RDS engine token.
+func mdbAWSEngine(engine string) string {
+	if engine == DBEngineMySQL {
+		return "mysql"
+	}
+	return "postgres"
+}
+
+func renderMDBAWS(p ManagedDatabasePlan) string {
+	name := tfName(p.DBName)
+	sgName := name + "_subnet_group"
+	var b strings.Builder
+
+	// DB subnet group: multi-AZ across the region's subnets (RDS requires >= 2
+	// subnets in distinct AZs). The network component renders the subnets.
+	if len(p.SubnetNames) > 0 {
+		fmt.Fprintf(&b, "resource \"aws_db_subnet_group\" %q {\n", sgName)
+		fmt.Fprintf(&b, "  name       = \"%s-subnets\"\n", name)
+		labels := make([]string, 0, len(p.SubnetNames))
+		for _, s := range p.SubnetNames {
+			labels = append(labels, fmt.Sprintf("aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
+		}
+		fmt.Fprintf(&b, "  subnet_ids = [%s]\n", strings.Join(labels, ", "))
+		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.DBName)
+		b.WriteString("}\n\n")
+	}
+
+	fmt.Fprintf(&b, "resource \"aws_db_instance\" %q {\n", name)
+	fmt.Fprintf(&b, "  identifier              = %q\n", name)
+	fmt.Fprintf(&b, "  engine                  = %q\n", mdbAWSEngine(p.Engine))
+	fmt.Fprintf(&b, "  engine_version          = %q\n", p.EngineVersion)
+	fmt.Fprintf(&b, "  instance_class          = %q\n", p.DBClass)
+	fmt.Fprintf(&b, "  allocated_storage       = %d\n", p.StorageGB)
+	fmt.Fprintf(&b, "  storage_encrypted       = %t\n", p.Encrypted)
+	fmt.Fprintf(&b, "  multi_az                = %t\n", p.HA)
+	// Credentials are managed out-of-band (Secrets Manager / Vault); the username
+	// is fixed and the password is generated/rotated, not committed. The round-trip
+	// fixture provides a throwaway password via a variable.
+	b.WriteString("  username                = \"pyxadmin\"\n")
+	b.WriteString("  password                = var.db_password\n")
+	if len(p.SubnetNames) > 0 {
+		fmt.Fprintf(&b, "  db_subnet_group_name    = aws_db_subnet_group.%s.name\n", sgName)
+	}
+	if p.SecurityGroup != "" {
+		fmt.Fprintf(&b, "  vpc_security_group_ids  = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
+	}
+	// Production-safe defaults: deletion protection + a final snapshot on destroy.
+	fmt.Fprintf(&b, "  deletion_protection     = %t\n", p.DeletionProtection)
+	fmt.Fprintf(&b, "  skip_final_snapshot     = %t\n", p.SkipFinalSnapshot)
+	if !p.SkipFinalSnapshot {
+		fmt.Fprintf(&b, "  final_snapshot_identifier = \"%s-final\"\n", name)
+	}
+	fmt.Fprintf(&b, "  apply_immediately       = false\n")
+	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.DBName)
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// mdbGCPEngine maps the canonical engine to a GCP Cloud SQL database_version
+// token. Cloud SQL pins a major version (e.g. POSTGRES_16 / MYSQL_8_0); we map
+// the resolved engine + version to that form.
+func mdbGCPEngine(engine, version string) string {
+	v := strings.ReplaceAll(strings.TrimSpace(version), ".", "_")
+	if engine == DBEngineMySQL {
+		if v == "" {
+			v = "8_0"
+		}
+		return "MYSQL_" + v
+	}
+	if v == "" {
+		v = "16"
+	}
+	return "POSTGRES_" + v
+}
+
+func renderMDBGCP(p ManagedDatabasePlan) string {
+	name := tfName(p.DBName)
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "resource \"google_sql_database_instance\" %q {\n", name)
+	fmt.Fprintf(&b, "  name                = %q\n", name)
+	fmt.Fprintf(&b, "  region              = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "  database_version    = %q\n", mdbGCPEngine(p.Engine, p.EngineVersion))
+	// Production-safe default: deletion protection on the instance.
+	fmt.Fprintf(&b, "  deletion_protection = %t\n", p.DeletionProtection)
+	b.WriteString("  settings {\n")
+	fmt.Fprintf(&b, "    tier              = %q\n", p.DBClass)
+	fmt.Fprintf(&b, "    disk_size         = %d\n", p.StorageGB)
+	b.WriteString("    disk_type         = \"PD_SSD\"\n")
+	// Regional availability = HA (a standby in another zone); ZONAL otherwise.
+	if p.HA {
+		b.WriteString("    availability_type = \"REGIONAL\"\n")
+	} else {
+		b.WriteString("    availability_type = \"ZONAL\"\n")
+	}
+	b.WriteString("    ip_configuration {\n")
+	if p.NetworkName != "" {
+		fmt.Fprintf(&b, "      private_network = google_compute_network.%s.id\n", tfName(p.NetworkName))
+	}
+	b.WriteString("      ipv4_enabled    = false\n")
+	b.WriteString("    }\n")
+	b.WriteString("    backup_configuration {\n")
+	b.WriteString("      enabled = true\n")
+	b.WriteString("    }\n")
+	b.WriteString("    user_labels = { pyxcloud = \"true\" }\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// mdbDOEngine maps the canonical engine to the DO managed-cluster engine token.
+func mdbDOEngine(engine string) string {
+	if engine == DBEngineMySQL {
+		return "mysql"
+	}
+	return "pg"
+}
+
+func renderMDBDO(p ManagedDatabasePlan) string {
+	name := tfName(p.DBName)
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "resource \"digitalocean_database_cluster\" %q {\n", name)
+	fmt.Fprintf(&b, "  name       = %q\n", name)
+	fmt.Fprintf(&b, "  engine     = %q\n", mdbDOEngine(p.Engine))
+	fmt.Fprintf(&b, "  version    = %q\n", p.EngineVersion)
+	fmt.Fprintf(&b, "  size       = %q\n", p.DBClass)
+	fmt.Fprintf(&b, "  region     = %q\n", p.CSPRegion)
+	// HA = a 2-node cluster (primary + standby); single node otherwise. DO managed
+	// clusters are encrypted at rest by default (no toggle).
+	if p.HA {
+		b.WriteString("  node_count = 2\n")
+	} else {
+		b.WriteString("  node_count = 1\n")
+	}
+	if p.NetworkName != "" {
+		fmt.Fprintf(&b, "  private_network_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+	}
+	fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
+	// DO has no in-place deletion-protection flag; carry the production intent as a
+	// lifecycle prevent_destroy guard when deletion_protection is on.
+	if p.DeletionProtection {
+		b.WriteString("  lifecycle {\n")
+		b.WriteString("    prevent_destroy = true\n")
+		b.WriteString("  }\n")
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
 // splitCIDRs partitions CIDRs into IPv4 and IPv6 (AWS uses distinct attributes).
 func splitCIDRs(cidrs []string) (v4, v6 []string) {
 	for _, c := range cidrs {

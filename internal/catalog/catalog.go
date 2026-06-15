@@ -70,6 +70,20 @@ type RegionCatalog interface {
 	ResolveRegion(ctx context.Context, regionName, provider string) (RegionRow, error)
 }
 
+// Catalog is the full resolution boundary the provider depends on: region + VM
+// SKU/image + managed-database class resolution. Both the embedded snapshot and
+// the live-BE client satisfy it, so the provider holds one catalog handle that
+// every component translation resolves against (no per-component plumbing).
+type Catalog interface {
+	VMCatalog
+	MDBCatalog
+}
+
+var (
+	_ Catalog = (*EmbeddedCatalog)(nil)
+	_ Catalog = (*BackendCatalog)(nil)
+)
+
 // ErrRegionNotFound is returned when no catalog row matches (region_name, provider).
 type ErrRegionNotFound struct {
 	RegionName string

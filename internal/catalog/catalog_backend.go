@@ -31,6 +31,7 @@ type BackendCatalog struct {
 var (
 	_ RegionCatalog = (*BackendCatalog)(nil)
 	_ VMCatalog     = (*BackendCatalog)(nil)
+	_ MDBCatalog    = (*BackendCatalog)(nil)
 )
 
 // NewBackend returns a VMCatalog (and thus RegionCatalog) that will use the live
@@ -71,4 +72,13 @@ func (b *BackendCatalog) ResolveImage(ctx context.Context, csp, cspRegion, os, v
 		return OSImageRow{}, fmt.Errorf("backend catalog: no transport and no fallback configured")
 	}
 	return b.fallback.ResolveImage(ctx, csp, cspRegion, os, version, arch)
+}
+
+// ResolveDBClass implements MDBCatalog, delegating to the embedded snapshot until
+// the live BE transport exists (GET {endpoint}/api/catalog/managed-databases).
+func (b *BackendCatalog) ResolveDBClass(ctx context.Context, csp, cspRegion, engine string, cpu, ram int) (MDBRow, error) {
+	if b.fallback == nil {
+		return MDBRow{}, fmt.Errorf("backend catalog: no transport and no fallback configured")
+	}
+	return b.fallback.ResolveDBClass(ctx, csp, cspRegion, engine, cpu, ram)
 }
