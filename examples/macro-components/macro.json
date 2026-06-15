@@ -1,0 +1,33 @@
+{
+  "name": "production",
+  "region": "Frankfurt",
+  "cidr": "10.0.0.0/16",
+  "subnets": ["10.0.1.0/24", "10.0.2.0/24"],
+  "security_group": { "name": "app", "expose": [443] },
+  "object_storage": { "name": "assets", "versioning": true, "public": false },
+  "cache": { "name": "sessions", "memory_gb": 2, "ha": true },
+  "queue": { "name": "jobs", "fifo": false, "max_receive_count": 5 },
+  "stream": { "name": "events", "retention_hours": 48 },
+  "dns_zone": { "name": "zone", "domain": "pyxcloud-plan-only.example.com" },
+  "cdn": { "name": "edge", "origin_kind": "object-storage", "origin_name": "assets" },
+  "waf": { "name": "appwaf", "scope": "regional" },
+  "secrets": { "name": "db-password", "rotation_days": 0, "force_destroy": true },
+  "kubernetes": {
+    "name": "cluster",
+    "version": "1.30",
+    "architecture": "x86_64",
+    "node_cpu": 2,
+    "node_ram": 4,
+    "min_nodes": 1,
+    "max_nodes": 4,
+    "desired_nodes": 2
+  },
+  "serverless": {
+    "name": "api",
+    "runtime": "python",
+    "runtime_version": "3.12",
+    "handler": "main.handler",
+    "memory_mb": 256,
+    "timeout_seconds": 15
+  }
+}

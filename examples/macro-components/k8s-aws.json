@@ -1,0 +1,16 @@
+{
+  "name": "production",
+  "region": "Dublin",
+  "cidr": "10.0.0.0/16",
+  "subnets": ["10.0.1.0/24", "10.0.2.0/24"],
+  "kubernetes": {
+    "name": "cluster",
+    "version": "1.30",
+    "architecture": "x86_64",
+    "node_cpu": 2,
+    "node_ram": 4,
+    "min_nodes": 1,
+    "max_nodes": 4,
+    "desired_nodes": 2
+  }
+}
