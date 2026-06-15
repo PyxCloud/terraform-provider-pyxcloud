@@ -26,6 +26,19 @@ resource "pyxcloud_topology" "web" {
     subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
   }
 
+  # Abstract security-group for the place (pd-TF-SG): canonical `expose` ports +
+  # explicit ingress/egress rules, attached to the network above. Resolved to
+  # aws_security_group(_rule) / google_compute_firewall / digitalocean_firewall.
+  # The description is ASCII-sanitised at plan time (AWS rejects non-ASCII).
+  security_group = {
+    description = "web tier - public HTTP/HTTPS, SSH from VPC"
+    expose      = [80, 443]
+    rules = [
+      { direction = "ingress", protocol = "tcp", from_port = 22, to_port = 22, cidrs = ["10.0.0.0/16"] },
+      { direction = "egress", protocol = "all", cidrs = ["0.0.0.0/0"] },
+    ]
+  }
+
   components {
     name  = "app"
     type  = "virtual-machine-scale-group"
@@ -101,4 +114,9 @@ output "cheapest" {
 # The catalog-resolved concrete network plan (csp_region + multi-AZ subnets).
 output "network_plan" {
   value = pyxcloud_topology.web.network_plan
+}
+
+# The catalog-resolved concrete security-group plan (ASCII description + rules).
+output "security_group_plan" {
+  value = pyxcloud_topology.web.security_group_plan
 }

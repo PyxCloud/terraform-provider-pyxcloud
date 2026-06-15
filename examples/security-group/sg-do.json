@@ -1,0 +1,14 @@
+{
+  "name": "production",
+  "region": "Frankfurt",
+  "cidr": "10.0.0.0/16",
+  "security_group": {
+    "name": "production-web",
+    "description": "PyxCloud web tier - HTTP/HTTPS public, SSH from VPC",
+    "expose": [80, 443],
+    "rules": [
+      { "direction": "ingress", "protocol": "tcp", "from_port": 22, "to_port": 22, "cidrs": ["10.0.0.0/16"] },
+      { "direction": "egress", "protocol": "tcp", "from_port": 0, "to_port": 65535, "cidrs": ["0.0.0.0/0"] }
+    ]
+  }
+}
