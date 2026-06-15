@@ -236,6 +236,70 @@ all three and apply→verify→destroy where creds exist. AWS uses `vm-aws.json`
 (Dublin → `eu-west-1`, where the snapshot has instance types); gcp/do use
 `vm.json` (Frankfurt → `europe-west3` / `fra1`).
 
+### Load-balancer (`pd-TF-LB`)
+
+A topology can declare an **abstract load-balancer** placed in its `network`
+(spread multi-AZ across its subnets) and attached to its `security_group`. The
+user declares `listeners` (port + protocol), a `target` (the autoscaled
+`scale_group` fleet or a fixed `virtual_machine`), a `health_check`, and optional
+`stickiness`; the provider **resolves it down** to each cloud's standard
+load-balancer resources. Same catalog-driven (region resolution + multi-AZ
+zones), structured-plan → render pattern as the other components.
+
+```hcl
+resource "pyxcloud_topology" "app" {
+  name     = "production"
+  provider = "aws"        # aws | gcp | digitalocean
+  region   = "Dublin"
+
+  network        = { cidr = "10.0.0.0/16", subnets = ["10.0.1.0/24", "10.0.2.0/24"] }
+  security_group = { expose = [80, 443] }
+  scale_group    = { name = "web", cpu = 2, ram = 4, min = 2, max = 6, health = "elb" }
+
+  load_balancer = {
+    listeners    = [{ port = 80, protocol = "http" }, { port = 443, protocol = "https" }]
+    health_check = { protocol = "http", port = 80, path = "/" }
+    stickiness   = true
+    target_kind  = "scale-group"   # scale-group (default) | vm
+    # target_name defaults to the sibling scale_group / virtual_machine name
+  }
+}
+
+output "lb_plan" { value = pyxcloud_topology.app.load_balancer_plan }
+```
+
+Per-provider targets emitted (the target group/backend is wired onto the ASG/MIG
+so the autoscaled fleet registers automatically; a `vm` target attaches the
+fixed instance):
+
+- **AWS** — `aws_lb` (application LB, internet-facing, multi-subnet) +
+  `aws_lb_target_group` + an `aws_lb_listener` per listener (+ a `lb_cookie`
+  `stickiness` block when requested). A `scale-group` target gets an
+  `aws_autoscaling_attachment` (target-group ARN onto the ASG); a `vm` target
+  gets an `aws_lb_target_group_attachment`. The LB also emits the internet-egress
+  wiring an internet-facing ALB needs but the network component does not own — an
+  `aws_internet_gateway` + a public `aws_route_table` + per-subnet associations.
+  ALB listener rules respect the **≤ 5 condition-value** per-rule quota (a breach
+  is a hard plan-time error); descriptions stay ASCII.
+- **GCP** — a regional `google_compute_health_check` + `google_compute_region_backend_service`
+  (the MIG instance group is the `backend`; `GENERATED_COOKIE` session affinity
+  when sticky) + a `google_compute_forwarding_rule` per listener.
+- **DigitalOcean** — `digitalocean_loadbalancer` with a `forwarding_rule` per
+  listener, a `healthcheck`, and `sticky_sessions` (cookies) when requested,
+  targeting droplets by the `pyxcloud` tag. DigitalOcean has no native VM
+  autoscaling, so a DO LB fronts a fixed/managed droplet set (no scale-group).
+
+The catalog has no `load_balancer` SKU table for wave-1, so the LB **shape** is
+provider-standard; the catalog still drives region resolution and the multi-AZ
+zone spread (`load_balancer(_price)` can fill SKU/tier later without changing the
+contract). A missing/unavailable region is a hard plan-time error.
+
+Run [`examples/load-balancer/roundtrip.sh`](examples/load-balancer) to plan all
+three and apply→verify→destroy where creds exist. AWS uses `lb-aws.json` (Dublin
+→ `eu-west-1`, ASG min=1/max=1 `t3.micro` + a single HTTP listener to minimise
+cost — a load balancer costs money, so the harness destroys immediately); gcp/do
+use `lb.json` (Frankfurt → `europe-west3` / `fra1`).
+
 ### Round-trip testing (SPEC §6)
 
 ```sh
@@ -243,6 +307,8 @@ go build -o pyxnet-render ./cmd/pyxnet-render
 examples/region-vpc/roundtrip.sh        # network: plan all 3; apply+verify+destroy where creds exist
 examples/security-group/roundtrip.sh    # security-group
 examples/virtual-machine/roundtrip.sh   # virtual-machine
+examples/scale-group/roundtrip.sh       # virtual-machine-scale-group
+examples/load-balancer/roundtrip.sh     # load-balancer
 ```
 
 The harness generates the concrete `.tf` from the canonical fixture

@@ -204,6 +204,73 @@ type scaleGroupPlanModel struct {
 	ResourceType  types.String   `tfsdk:"resource_type"`
 }
 
+// lbListenerModel maps one abstract load-balancer listener (pd-TF-LB): a port +
+// protocol the LB accepts traffic on, with optional layer-7 condition values.
+type lbListenerModel struct {
+	Port       types.Int64    `tfsdk:"port"`
+	Protocol   types.String   `tfsdk:"protocol"`
+	Conditions []types.String `tfsdk:"conditions"`
+}
+
+// lbHealthCheckModel maps the abstract load-balancer health check.
+type lbHealthCheckModel struct {
+	Protocol           types.String `tfsdk:"protocol"`
+	Port               types.Int64  `tfsdk:"port"`
+	Path               types.String `tfsdk:"path"`
+	IntervalSeconds    types.Int64  `tfsdk:"interval_seconds"`
+	HealthyThreshold   types.Int64  `tfsdk:"healthy_threshold"`
+	UnhealthyThreshold types.Int64  `tfsdk:"unhealthy_threshold"`
+}
+
+// loadBalancerModel maps the abstract `load_balancer` block of a place: listeners
+// + a target (the scale-group / fixed VMs to front) + a health check + optional
+// stickiness, placed in the place's network across its subnets/zones (pd-TF-LB).
+type loadBalancerModel struct {
+	Name        types.String        `tfsdk:"name"`
+	Listeners   []lbListenerModel   `tfsdk:"listeners"`
+	HealthCheck *lbHealthCheckModel `tfsdk:"health_check"`
+	Stickiness  types.Bool          `tfsdk:"stickiness"`
+	TargetKind  types.String        `tfsdk:"target_kind"`
+	TargetName  types.String        `tfsdk:"target_name"`
+}
+
+// lbListenerPlanModel is one resolved listener in the load-balancer plan.
+type lbListenerPlanModel struct {
+	Port       types.Int64    `tfsdk:"port"`
+	Protocol   types.String   `tfsdk:"protocol"`
+	Conditions []types.String `tfsdk:"conditions"`
+}
+
+// lbHealthCheckPlanModel is the resolved, defaulted health check in the plan.
+type lbHealthCheckPlanModel struct {
+	Protocol           types.String `tfsdk:"protocol"`
+	Port               types.Int64  `tfsdk:"port"`
+	Path               types.String `tfsdk:"path"`
+	IntervalSeconds    types.Int64  `tfsdk:"interval_seconds"`
+	HealthyThreshold   types.Int64  `tfsdk:"healthy_threshold"`
+	UnhealthyThreshold types.Int64  `tfsdk:"unhealthy_threshold"`
+}
+
+// loadBalancerPlanModel is the computed, catalog-resolved concrete load-balancer
+// plan (the abstract→concrete ALB / forwarding-rule+backend / DO-LB translation).
+type loadBalancerPlanModel struct {
+	Provider      types.String            `tfsdk:"provider"`
+	CSP           types.String            `tfsdk:"csp"`
+	RegionName    types.String            `tfsdk:"region_name"`
+	CSPRegion     types.String            `tfsdk:"csp_region"`
+	LBName        types.String            `tfsdk:"lb_name"`
+	Listeners     []lbListenerPlanModel   `tfsdk:"listeners"`
+	HealthCheck   *lbHealthCheckPlanModel `tfsdk:"health_check"`
+	Stickiness    types.Bool              `tfsdk:"stickiness"`
+	TargetKind    types.String            `tfsdk:"target_kind"`
+	TargetName    types.String            `tfsdk:"target_name"`
+	Zones         []types.String          `tfsdk:"zones"`
+	NetworkName   types.String            `tfsdk:"network_name"`
+	SubnetNames   []types.String          `tfsdk:"subnet_names"`
+	SecurityGroup types.String            `tfsdk:"security_group"`
+	ResourceType  types.String            `tfsdk:"resource_type"`
+}
+
 // topologyModel maps the pyxcloud_topology resource state.
 type topologyModel struct {
 	ID                 types.String             `tfsdk:"id"`
@@ -219,6 +286,8 @@ type topologyModel struct {
 	VirtualMachinePlan *virtualMachinePlanModel `tfsdk:"virtual_machine_plan"`
 	ScaleGroup         *scaleGroupModel         `tfsdk:"scale_group"`
 	ScaleGroupPlan     *scaleGroupPlanModel     `tfsdk:"scale_group_plan"`
+	LoadBalancer       *loadBalancerModel       `tfsdk:"load_balancer"`
+	LoadBalancerPlan   *loadBalancerPlanModel   `tfsdk:"load_balancer_plan"`
 }
 
 func (r *topologyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -605,6 +674,125 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					"resource_type":  schema.StringAttribute{Computed: true},
 				},
 			},
+			"load_balancer": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Abstract load-balancer for the place (pd-TF-LB): one or " +
+					"more `listeners` (port + protocol), a `target` (the `scale_group` fleet or " +
+					"a fixed `virtual_machine`), a `health_check`, and optional `stickiness`, " +
+					"placed in the place's `network` (spread multi-AZ across its subnets) and " +
+					"attached to its `security_group`. Resolved to `aws_lb` + " +
+					"`aws_lb_target_group` + `aws_lb_listener` / a regional GCP forwarding rule + " +
+					"backend service + health check / `digitalocean_loadbalancer` for the " +
+					"topology's provider at plan time. The target group is wired onto the ASG " +
+					"(target_group_arns) so the autoscaled fleet registers automatically.",
+				Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Load-balancer/component name; defaults to the topology name.",
+					},
+					"listeners": schema.ListNestedAttribute{
+						Required:            true,
+						MarkdownDescription: "Listeners the LB accepts traffic on (at least one).",
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"port": schema.Int64Attribute{
+									Required:            true,
+									MarkdownDescription: "Listener port, e.g. `80` / `443`.",
+								},
+								"protocol": schema.StringAttribute{
+									Optional:            true,
+									MarkdownDescription: "`http` (default), `https`, or `tcp`.",
+								},
+								"conditions": schema.ListAttribute{
+									Optional:    true,
+									ElementType: types.StringType,
+									MarkdownDescription: "Optional layer-7 match values (host/path). " +
+										"For AWS, bounded by the ALB 5-condition-value-per-rule quota " +
+										"(a breach is a hard plan-time error).",
+								},
+							},
+						},
+					},
+					"health_check": schema.SingleNestedAttribute{
+						Optional:            true,
+						MarkdownDescription: "Health check against the targets; fields default from the first listener.",
+						Attributes: map[string]schema.Attribute{
+							"protocol":            schema.StringAttribute{Optional: true},
+							"port":                schema.Int64Attribute{Optional: true},
+							"path":                schema.StringAttribute{Optional: true},
+							"interval_seconds":    schema.Int64Attribute{Optional: true},
+							"healthy_threshold":   schema.Int64Attribute{Optional: true},
+							"unhealthy_threshold": schema.Int64Attribute{Optional: true},
+						},
+					},
+					"stickiness": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Enable session affinity (`lb_cookie` on AWS, " +
+							"generated-cookie on GCP/DO). Defaults to round-robin.",
+					},
+					"target_kind": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "What the LB fronts: `scale-group` (default, the " +
+							"autoscaled fleet) or `vm` (a fixed virtual-machine).",
+					},
+					"target_name": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "Canonical name of the fronted component; defaults to " +
+							"the topology's scale-group / virtual-machine name.",
+					},
+				},
+			},
+			"load_balancer_plan": schema.SingleNestedAttribute{
+				Computed: true,
+				MarkdownDescription: "Computed concrete load-balancer plan: the catalog-resolved " +
+					"translation of the abstract `load_balancer` for the topology's provider " +
+					"(multi-AZ zones from the region catalog; provider-standard LB shape).",
+				Attributes: map[string]schema.Attribute{
+					"provider":    schema.StringAttribute{Computed: true},
+					"csp":         schema.StringAttribute{Computed: true},
+					"region_name": schema.StringAttribute{Computed: true},
+					"csp_region":  schema.StringAttribute{Computed: true},
+					"lb_name":     schema.StringAttribute{Computed: true},
+					"listeners": schema.ListNestedAttribute{
+						Computed: true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"port":     schema.Int64Attribute{Computed: true},
+								"protocol": schema.StringAttribute{Computed: true},
+								"conditions": schema.ListAttribute{
+									Computed:    true,
+									ElementType: types.StringType,
+								},
+							},
+						},
+					},
+					"health_check": schema.SingleNestedAttribute{
+						Computed: true,
+						Attributes: map[string]schema.Attribute{
+							"protocol":            schema.StringAttribute{Computed: true},
+							"port":                schema.Int64Attribute{Computed: true},
+							"path":                schema.StringAttribute{Computed: true},
+							"interval_seconds":    schema.Int64Attribute{Computed: true},
+							"healthy_threshold":   schema.Int64Attribute{Computed: true},
+							"unhealthy_threshold": schema.Int64Attribute{Computed: true},
+						},
+					},
+					"stickiness":  schema.BoolAttribute{Computed: true},
+					"target_kind": schema.StringAttribute{Computed: true},
+					"target_name": schema.StringAttribute{Computed: true},
+					"zones": schema.ListAttribute{
+						Computed:    true,
+						ElementType: types.StringType,
+					},
+					"network_name": schema.StringAttribute{Computed: true},
+					"subnet_names": schema.ListAttribute{
+						Computed:    true,
+						ElementType: types.StringType,
+					},
+					"security_group": schema.StringAttribute{Computed: true},
+					"resource_type":  schema.StringAttribute{Computed: true},
+				},
+			},
 		},
 	}
 }
@@ -676,6 +864,15 @@ func (r *topologyResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 			)
 		}
 	}
+	if plan.LoadBalancer != nil {
+		if _, err := r.translateLoadBalancer(ctx, plan); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("load_balancer"),
+				"Load-balancer not resolvable / invalid against the PyxCloud catalog",
+				err.Error(),
+			)
+		}
+	}
 }
 
 func (r *topologyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -705,6 +902,11 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Virtual-machine-scale-group translation failed", err.Error())
 		return
 	}
+	lbPlan, err := r.translateLoadBalancer(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Load-balancer translation failed", err.Error())
+		return
+	}
 
 	created, err := r.client.CreateTopology(ctx, modelToTopology(plan))
 	if err != nil {
@@ -721,6 +923,8 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 	state.VirtualMachinePlan = vmPlan
 	state.ScaleGroup = plan.ScaleGroup
 	state.ScaleGroupPlan = asgPlan
+	state.LoadBalancer = plan.LoadBalancer
+	state.LoadBalancerPlan = lbPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
@@ -995,6 +1199,144 @@ func (r *topologyResource) translateScaleGroup(ctx context.Context, m topologyMo
 	return out, nil
 }
 
+// translateLoadBalancer resolves the abstract load_balancer block into a concrete
+// plan via the catalog. The multi-AZ zones come from the region catalog; the LB
+// fronts the sibling scale-group (default) or virtual-machine, spreads across all
+// the network's subnets, and attaches the place's security-group. Returns
+// (nil, nil) when no load_balancer is declared.
+func (r *topologyResource) translateLoadBalancer(ctx context.Context, m topologyModel) (*loadBalancerPlanModel, error) {
+	if m.LoadBalancer == nil {
+		return nil, nil
+	}
+	lb := m.LoadBalancer
+
+	name := lb.Name.ValueString()
+	if name == "" {
+		name = m.Name.ValueString()
+	}
+	network, sgName := "", ""
+	var subnets []string
+	if m.Network != nil {
+		network = m.Name.ValueString()
+		// Spread the LB across all the network's subnets (multi-AZ, internet-facing).
+		for i := range m.Network.Subnets {
+			subnets = append(subnets, fmt.Sprintf("%s-subnet-%d", m.Name.ValueString(), i+1))
+		}
+	}
+	if m.SecurityGroup != nil {
+		sgName = m.SecurityGroup.Name.ValueString()
+		if sgName == "" {
+			sgName = m.Name.ValueString()
+		}
+	}
+
+	listeners := make([]catalog.LBListenerSpec, 0, len(lb.Listeners))
+	for _, lm := range lb.Listeners {
+		conditions := make([]string, 0, len(lm.Conditions))
+		for _, c := range lm.Conditions {
+			conditions = append(conditions, c.ValueString())
+		}
+		listeners = append(listeners, catalog.LBListenerSpec{
+			Port:       int(lm.Port.ValueInt64()),
+			Protocol:   lm.Protocol.ValueString(),
+			Conditions: conditions,
+		})
+	}
+
+	var hc catalog.LBHealthCheckSpec
+	if lb.HealthCheck != nil {
+		hc = catalog.LBHealthCheckSpec{
+			Protocol:           lb.HealthCheck.Protocol.ValueString(),
+			Port:               int(lb.HealthCheck.Port.ValueInt64()),
+			Path:               lb.HealthCheck.Path.ValueString(),
+			IntervalSeconds:    int(lb.HealthCheck.IntervalSeconds.ValueInt64()),
+			HealthyThreshold:   int(lb.HealthCheck.HealthyThreshold.ValueInt64()),
+			UnhealthyThreshold: int(lb.HealthCheck.UnhealthyThreshold.ValueInt64()),
+		}
+	}
+
+	// Default the target to the sibling scale-group, else the virtual-machine.
+	targetKind := lb.TargetKind.ValueString()
+	targetName := lb.TargetName.ValueString()
+	if targetName == "" {
+		if m.ScaleGroup != nil {
+			targetName = m.ScaleGroup.Name.ValueString()
+			if targetName == "" {
+				targetName = m.Name.ValueString()
+			}
+			if targetKind == "" {
+				targetKind = catalog.LBTargetScaleGroup
+			}
+		} else if m.VirtualMachine != nil {
+			targetName = m.VirtualMachine.Name.ValueString()
+			if targetName == "" {
+				targetName = m.Name.ValueString()
+			}
+			if targetKind == "" {
+				targetKind = catalog.LBTargetVM
+			}
+		}
+	}
+
+	spec := catalog.LoadBalancerSpec{
+		Name:          name,
+		Region:        m.Region.ValueString(),
+		Provider:      m.Provider.ValueString(),
+		Listeners:     listeners,
+		HealthCheck:   hc,
+		Stickiness:    lb.Stickiness.ValueBool(),
+		TargetKind:    targetKind,
+		TargetName:    targetName,
+		Network:       network,
+		Subnets:       subnets,
+		SecurityGroup: sgName,
+	}
+	cp, err := catalog.TranslateLoadBalancer(ctx, r.catalog, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &loadBalancerPlanModel{
+		Provider:      types.StringValue(cp.Provider),
+		CSP:           types.StringValue(cp.CSP),
+		RegionName:    types.StringValue(cp.RegionName),
+		CSPRegion:     types.StringValue(cp.CSPRegion),
+		LBName:        types.StringValue(cp.LBName),
+		Stickiness:    types.BoolValue(cp.Stickiness),
+		TargetKind:    types.StringValue(cp.TargetKind),
+		TargetName:    types.StringValue(cp.TargetName),
+		NetworkName:   types.StringValue(cp.NetworkName),
+		SecurityGroup: types.StringValue(cp.SecurityGroup),
+		ResourceType:  types.StringValue(cp.ResourceType),
+		HealthCheck: &lbHealthCheckPlanModel{
+			Protocol:           types.StringValue(cp.HealthCheck.Protocol),
+			Port:               types.Int64Value(int64(cp.HealthCheck.Port)),
+			Path:               types.StringValue(cp.HealthCheck.Path),
+			IntervalSeconds:    types.Int64Value(int64(cp.HealthCheck.IntervalSeconds)),
+			HealthyThreshold:   types.Int64Value(int64(cp.HealthCheck.HealthyThreshold)),
+			UnhealthyThreshold: types.Int64Value(int64(cp.HealthCheck.UnhealthyThreshold)),
+		},
+	}
+	for _, l := range cp.Listeners {
+		conditions := make([]types.String, 0, len(l.Conditions))
+		for _, c := range l.Conditions {
+			conditions = append(conditions, types.StringValue(c))
+		}
+		out.Listeners = append(out.Listeners, lbListenerPlanModel{
+			Port:       types.Int64Value(int64(l.Port)),
+			Protocol:   types.StringValue(l.Protocol),
+			Conditions: conditions,
+		})
+	}
+	for _, z := range cp.Zones {
+		out.Zones = append(out.Zones, types.StringValue(z))
+	}
+	for _, s := range cp.SubnetNames {
+		out.SubnetNames = append(out.SubnetNames, types.StringValue(s))
+	}
+	return out, nil
+}
+
 func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state topologyModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -1051,6 +1393,15 @@ func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, r
 		}
 		refreshed.ScaleGroupPlan = asgPlan
 	}
+	refreshed.LoadBalancer = state.LoadBalancer
+	if refreshed.LoadBalancer != nil {
+		lbPlan, terr := r.translateLoadBalancer(ctx, refreshed)
+		if terr != nil {
+			resp.Diagnostics.AddError("Load-balancer translation failed", terr.Error())
+			return
+		}
+		refreshed.LoadBalancerPlan = lbPlan
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, refreshed)...)
 }
 
@@ -1090,6 +1441,11 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Virtual-machine-scale-group translation failed", err.Error())
 		return
 	}
+	lbPlan, err := r.translateLoadBalancer(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Load-balancer translation failed", err.Error())
+		return
+	}
 
 	updated, err := r.client.UpdateTopology(ctx, desired)
 	if err != nil {
@@ -1106,6 +1462,8 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 	newState.VirtualMachinePlan = vmPlan
 	newState.ScaleGroup = plan.ScaleGroup
 	newState.ScaleGroupPlan = asgPlan
+	newState.LoadBalancer = plan.LoadBalancer
+	newState.LoadBalancerPlan = lbPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
 
