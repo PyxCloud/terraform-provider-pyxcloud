@@ -75,3 +75,68 @@ func TestResourceTranslateNetworkMissingCatalogRegion(t *testing.T) {
 		t.Fatal("expected hard error for Dublin/digitalocean, got nil")
 	}
 }
+
+// TestResourceTranslateSecurityGroup exercises the SG translation wiring end-to-
+// end through the embedded catalog (pd-TF-SG).
+func TestResourceTranslateSecurityGroup(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+
+	m := topologyModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Dublin"),
+		Network:  &networkModel{CIDR: types.StringValue("10.0.0.0/16")},
+		SecurityGroup: &securityGroupModel{
+			Description: types.StringValue("web édge"), // non-ASCII -> sanitised
+			Expose:      []types.Int64{types.Int64Value(80), types.Int64Value(443)},
+			Rules: []securityRuleModel{{
+				Direction: types.StringValue("ingress"),
+				Protocol:  types.StringValue("tcp"),
+				FromPort:  types.Int64Value(22),
+				ToPort:    types.Int64Value(22),
+				CIDRs:     []types.String{types.StringValue("10.0.0.0/16")},
+				SourceSG:  types.StringValue(""),
+			}},
+		},
+	}
+
+	plan, err := r.translateSecurityGroup(context.Background(), m)
+	if err != nil {
+		t.Fatalf("translateSecurityGroup: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected a security-group plan, got nil")
+	}
+	if plan.CSPRegion.ValueString() != "eu-west-1" {
+		t.Errorf("csp_region = %q, want eu-west-1", plan.CSPRegion.ValueString())
+	}
+	if plan.ResourceType.ValueString() != "aws_security_group" {
+		t.Errorf("resource_type = %q, want aws_security_group", plan.ResourceType.ValueString())
+	}
+	if !catalog.IsASCII(plan.Description.ValueString()) {
+		t.Errorf("description not ASCII-sanitised: %q", plan.Description.ValueString())
+	}
+	if plan.NetworkName.ValueString() != "production" {
+		t.Errorf("network_name = %q, want production", plan.NetworkName.ValueString())
+	}
+	// 2 expose + 1 explicit = 3 rules.
+	if len(plan.Rules) != 3 {
+		t.Fatalf("want 3 rules, got %d", len(plan.Rules))
+	}
+}
+
+// TestResourceTranslateSecurityGroupNil returns no plan when none declared.
+func TestResourceTranslateSecurityGroupNil(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	plan, err := r.translateSecurityGroup(context.Background(), topologyModel{
+		Provider: types.StringValue("aws"), Region: types.StringValue("Dublin"),
+	})
+	if err != nil {
+		t.Fatalf("translateSecurityGroup: %v", err)
+	}
+	if plan != nil {
+		t.Errorf("expected nil plan when no security_group declared, got %+v", plan)
+	}
+}

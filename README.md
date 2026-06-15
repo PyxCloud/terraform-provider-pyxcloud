@@ -110,6 +110,65 @@ Per-provider targets emitted:
 The structured `network_plan` is rendered to concrete cloud-provider HCL by
 [`cmd/pyxnet-render`](cmd/pyxnet-render) for the round-trip tests below.
 
+### Security-group / firewall (`pd-TF-SG`)
+
+A topology can declare an **abstract security-group** attached to its place's
+`network`: a canonical `expose` port shorthand plus explicit ingress/egress
+rules. The provider descends it to the concrete firewall resources per provider
+— same catalog-driven, structured-plan → render pattern as the network.
+
+```hcl
+resource "pyxcloud_topology" "web" {
+  name     = "production"
+  provider = "aws"        # aws | gcp | digitalocean
+  region   = "Frankfurt"
+
+  network = { cidr = "10.0.0.0/16", subnets = ["10.0.1.0/24"] }
+
+  security_group = {
+    description = "web tier"        # sanitised to ASCII at plan time
+    expose      = [80, 443]         # TCP ingress from 0.0.0.0/0 + ::/0
+
+    rules = [
+      { direction = "ingress", protocol = "tcp", from_port = 22, to_port = 22, cidrs = ["10.0.0.0/16"] },
+      { direction = "ingress", protocol = "tcp", from_port = 8080, to_port = 8080, source_sg = "lb" },
+      { direction = "egress",  protocol = "all", cidrs = ["0.0.0.0/0"] },
+    ]
+  }
+}
+
+output "sg_plan" { value = pyxcloud_topology.web.security_group_plan }
+```
+
+- **`expose`** is the canonical shorthand: each listed port is opened TCP ingress
+  from anywhere (IPv4 + IPv6), expanded into explicit rules at plan time.
+- **Rules** are scoped to either `cidrs` **or** `source_sg` (a peer
+  security-group reference) — mutually exclusive. Protocols: `tcp`, `udp`,
+  `icmp`, `all`.
+
+**ASCII-only descriptions.** AWS rejects non-ASCII security-group descriptions
+(this caused a real incident), so the description is **ASCII-sanitised at plan
+time** for every provider — non-ASCII runes are stripped before render.
+
+**Provider limits** are enforced as **hard plan-time errors** (never a silent
+trim): AWS ≤ 60 rules/direction, GCP ≤ 100 rules/firewall, DO ≤ 50
+rules/direction. DigitalOcean has no `all` protocol, so an `all` rule on DO is a
+hard plan-time error — declare explicit `tcp`/`udp`/`icmp` rules instead.
+
+Per-provider targets emitted:
+
+- **AWS** — `aws_security_group` + one `aws_security_group_rule` per rule
+  (IPv4/IPv6 CIDRs split into `cidr_blocks` / `ipv6_cidr_blocks`; `source_sg` →
+  `source_security_group_id`).
+- **GCP** — `google_compute_firewall`, one per direction (GCP firewalls are
+  direction-scoped); ingress CIDRs → `source_ranges`, egress → `destination_ranges`.
+- **DigitalOcean** — `digitalocean_firewall` with `inbound_rule` / `outbound_rule`
+  blocks (attaches to droplets/tags, not a VPC).
+
+Run [`examples/security-group/roundtrip.sh`](examples/security-group) to plan all
+three and apply→verify→destroy where creds exist. The DO harness uses a separate
+fixture (`sg-do.json`) since DO has no `all` protocol.
+
 ### Round-trip testing (SPEC §6)
 
 ```sh

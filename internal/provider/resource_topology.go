@@ -76,15 +76,62 @@ type networkPlanModel struct {
 	Subnets      []subnetPlanModel `tfsdk:"subnets"`
 }
 
+// securityRuleModel maps one abstract ingress/egress rule (pd-TF-SG): a port
+// range + protocol scoped to either CIDRs or a peer security-group reference.
+type securityRuleModel struct {
+	Direction types.String   `tfsdk:"direction"`
+	Protocol  types.String   `tfsdk:"protocol"`
+	FromPort  types.Int64    `tfsdk:"from_port"`
+	ToPort    types.Int64    `tfsdk:"to_port"`
+	CIDRs     []types.String `tfsdk:"cidrs"`
+	SourceSG  types.String   `tfsdk:"source_sg"`
+}
+
+// securityGroupModel maps the abstract `security_group` block of a place: the
+// canonical `expose` shorthand plus explicit ingress/egress rules, attached to
+// the place's network (pd-TF-SG).
+type securityGroupModel struct {
+	Name        types.String        `tfsdk:"name"`
+	Description types.String        `tfsdk:"description"`
+	Expose      []types.Int64       `tfsdk:"expose"`
+	Rules       []securityRuleModel `tfsdk:"rules"`
+}
+
+// rulePlanModel is one concrete, resolved rule in the security-group plan.
+type rulePlanModel struct {
+	Direction types.String   `tfsdk:"direction"`
+	Protocol  types.String   `tfsdk:"protocol"`
+	FromPort  types.Int64    `tfsdk:"from_port"`
+	ToPort    types.Int64    `tfsdk:"to_port"`
+	CIDRs     []types.String `tfsdk:"cidrs"`
+	SourceSG  types.String   `tfsdk:"source_sg"`
+}
+
+// securityGroupPlanModel is the computed, catalog-resolved concrete
+// security-group/firewall plan (the abstract→concrete translation in state).
+type securityGroupPlanModel struct {
+	Provider     types.String    `tfsdk:"provider"`
+	CSP          types.String    `tfsdk:"csp"`
+	RegionName   types.String    `tfsdk:"region_name"`
+	CSPRegion    types.String    `tfsdk:"csp_region"`
+	SGName       types.String    `tfsdk:"sg_name"`
+	NetworkName  types.String    `tfsdk:"network_name"`
+	Description  types.String    `tfsdk:"description"`
+	ResourceType types.String    `tfsdk:"resource_type"`
+	Rules        []rulePlanModel `tfsdk:"rules"`
+}
+
 // topologyModel maps the pyxcloud_topology resource state.
 type topologyModel struct {
 	ID          types.String      `tfsdk:"id"`
 	Name        types.String      `tfsdk:"name"`
 	Provider    types.String      `tfsdk:"provider"`
 	Region      types.String      `tfsdk:"region"`
-	Components  []componentModel  `tfsdk:"components"`
-	Network     *networkModel     `tfsdk:"network"`
-	NetworkPlan *networkPlanModel `tfsdk:"network_plan"`
+	Components        []componentModel        `tfsdk:"components"`
+	Network           *networkModel           `tfsdk:"network"`
+	NetworkPlan       *networkPlanModel       `tfsdk:"network_plan"`
+	SecurityGroup     *securityGroupModel     `tfsdk:"security_group"`
+	SecurityGroupPlan *securityGroupPlanModel `tfsdk:"security_group_plan"`
 }
 
 func (r *topologyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -209,6 +256,99 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					},
 				},
 			},
+			"security_group": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Abstract security-group/firewall for the place " +
+					"(pd-TF-SG): a canonical `expose` port shorthand plus explicit " +
+					"ingress/egress rules, attached to the place's `network`. Resolved to " +
+					"`aws_security_group(_rule)` / `google_compute_firewall` / " +
+					"`digitalocean_firewall` for the topology's provider at plan time.",
+				Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Security-group name; defaults to the topology name.",
+					},
+					"description": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "Human description. Sanitised to ASCII at plan " +
+							"time — AWS rejects non-ASCII security-group descriptions.",
+					},
+					"expose": schema.ListAttribute{
+						Optional:    true,
+						ElementType: types.Int64Type,
+						MarkdownDescription: "Canonical shorthand: each TCP port opened " +
+							"ingress from `0.0.0.0/0` + `::/0`, e.g. `[80, 443]`.",
+					},
+					"rules": schema.ListNestedAttribute{
+						Optional: true,
+						MarkdownDescription: "Explicit ingress/egress rules layered on top " +
+							"of `expose`.",
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"direction": schema.StringAttribute{
+									Required:            true,
+									MarkdownDescription: "`ingress` or `egress`.",
+								},
+								"protocol": schema.StringAttribute{
+									Required:            true,
+									MarkdownDescription: "`tcp`, `udp`, `icmp`, or `all`.",
+								},
+								"from_port": schema.Int64Attribute{
+									Optional:            true,
+									MarkdownDescription: "Inclusive low port (omit for icmp/all).",
+								},
+								"to_port": schema.Int64Attribute{
+									Optional:            true,
+									MarkdownDescription: "Inclusive high port (omit for icmp/all).",
+								},
+								"cidrs": schema.ListAttribute{
+									Optional:    true,
+									ElementType: types.StringType,
+									MarkdownDescription: "Source (ingress) / destination " +
+										"(egress) CIDRs. Mutually exclusive with `source_sg`.",
+								},
+								"source_sg": schema.StringAttribute{
+									Optional: true,
+									MarkdownDescription: "Canonical name of a peer " +
+										"security-group. Mutually exclusive with `cidrs`.",
+								},
+							},
+						},
+					},
+				},
+			},
+			"security_group_plan": schema.SingleNestedAttribute{
+				Computed: true,
+				MarkdownDescription: "Computed concrete security-group/firewall plan: the " +
+					"catalog-resolved translation of the abstract `security_group` for the " +
+					"topology's provider. The `description` is ASCII-sanitised.",
+				Attributes: map[string]schema.Attribute{
+					"provider":      schema.StringAttribute{Computed: true},
+					"csp":           schema.StringAttribute{Computed: true},
+					"region_name":   schema.StringAttribute{Computed: true},
+					"csp_region":    schema.StringAttribute{Computed: true},
+					"sg_name":       schema.StringAttribute{Computed: true},
+					"network_name":  schema.StringAttribute{Computed: true},
+					"description":   schema.StringAttribute{Computed: true},
+					"resource_type": schema.StringAttribute{Computed: true},
+					"rules": schema.ListNestedAttribute{
+						Computed: true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"direction": schema.StringAttribute{Computed: true},
+								"protocol":  schema.StringAttribute{Computed: true},
+								"from_port": schema.Int64Attribute{Computed: true},
+								"to_port":   schema.Int64Attribute{Computed: true},
+								"cidrs": schema.ListAttribute{
+									Computed:    true,
+									ElementType: types.StringType,
+								},
+								"source_sg": schema.StringAttribute{Computed: true},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -241,15 +381,26 @@ func (r *topologyResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if plan.Network == nil || r.catalog == nil {
+	if r.catalog == nil {
 		return
 	}
-	if _, err := r.translateNetwork(ctx, plan); err != nil {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("region"),
-			"Network region not resolvable from the PyxCloud catalog",
-			err.Error(),
-		)
+	if plan.Network != nil {
+		if _, err := r.translateNetwork(ctx, plan); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("region"),
+				"Network region not resolvable from the PyxCloud catalog",
+				err.Error(),
+			)
+		}
+	}
+	if plan.SecurityGroup != nil {
+		if _, err := r.translateSecurityGroup(ctx, plan); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("security_group"),
+				"Security-group not resolvable / invalid against the PyxCloud catalog",
+				err.Error(),
+			)
+		}
 	}
 }
 
@@ -265,6 +416,11 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Network translation failed", err.Error())
 		return
 	}
+	sgPlan, err := r.translateSecurityGroup(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Security-group translation failed", err.Error())
+		return
+	}
 
 	created, err := r.client.CreateTopology(ctx, modelToTopology(plan))
 	if err != nil {
@@ -275,6 +431,8 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 	state := topologyToModel(created)
 	state.Network = plan.Network
 	state.NetworkPlan = netPlan
+	state.SecurityGroup = plan.SecurityGroup
+	state.SecurityGroupPlan = sgPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
@@ -318,6 +476,84 @@ func (r *topologyResource) translateNetwork(ctx context.Context, m topologyModel
 	return out, nil
 }
 
+// translateSecurityGroup resolves the abstract security_group block into a
+// concrete plan via the catalog. Returns (nil, nil) when none is declared.
+func (r *topologyResource) translateSecurityGroup(ctx context.Context, m topologyModel) (*securityGroupPlanModel, error) {
+	if m.SecurityGroup == nil {
+		return nil, nil
+	}
+	sg := m.SecurityGroup
+
+	expose := make([]int, 0, len(sg.Expose))
+	for _, p := range sg.Expose {
+		expose = append(expose, int(p.ValueInt64()))
+	}
+	rules := make([]catalog.SecurityRule, 0, len(sg.Rules))
+	for _, rm := range sg.Rules {
+		cidrs := make([]string, 0, len(rm.CIDRs))
+		for _, c := range rm.CIDRs {
+			cidrs = append(cidrs, c.ValueString())
+		}
+		rules = append(rules, catalog.SecurityRule{
+			Direction: rm.Direction.ValueString(),
+			Protocol:  rm.Protocol.ValueString(),
+			FromPort:  int(rm.FromPort.ValueInt64()),
+			ToPort:    int(rm.ToPort.ValueInt64()),
+			CIDRs:     cidrs,
+			SourceSG:  rm.SourceSG.ValueString(),
+		})
+	}
+
+	name := sg.Name.ValueString()
+	if name == "" {
+		name = m.Name.ValueString()
+	}
+	network := ""
+	if m.Network != nil {
+		network = m.Name.ValueString()
+	}
+
+	spec := catalog.SecurityGroupSpec{
+		Name:        name,
+		Network:     network,
+		Region:      m.Region.ValueString(),
+		Provider:    m.Provider.ValueString(),
+		Description: sg.Description.ValueString(),
+		Expose:      expose,
+		Rules:       rules,
+	}
+	cp, err := catalog.TranslateSecurityGroup(ctx, r.catalog, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &securityGroupPlanModel{
+		Provider:     types.StringValue(cp.Provider),
+		CSP:          types.StringValue(cp.CSP),
+		RegionName:   types.StringValue(cp.RegionName),
+		CSPRegion:    types.StringValue(cp.CSPRegion),
+		SGName:       types.StringValue(cp.SGName),
+		NetworkName:  types.StringValue(cp.NetworkName),
+		Description:  types.StringValue(cp.Description),
+		ResourceType: types.StringValue(cp.ResourceType),
+	}
+	for _, rp := range cp.Rules {
+		cidrs := make([]types.String, 0, len(rp.CIDRs))
+		for _, c := range rp.CIDRs {
+			cidrs = append(cidrs, types.StringValue(c))
+		}
+		out.Rules = append(out.Rules, rulePlanModel{
+			Direction: types.StringValue(rp.Direction),
+			Protocol:  types.StringValue(rp.Protocol),
+			FromPort:  types.Int64Value(int64(rp.FromPort)),
+			ToPort:    types.Int64Value(int64(rp.ToPort)),
+			CIDRs:     cidrs,
+			SourceSG:  types.StringValue(rp.SourceSG),
+		})
+	}
+	return out, nil
+}
+
 func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state topologyModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -347,6 +583,15 @@ func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, r
 		}
 		refreshed.NetworkPlan = netPlan
 	}
+	refreshed.SecurityGroup = state.SecurityGroup
+	if refreshed.SecurityGroup != nil {
+		sgPlan, terr := r.translateSecurityGroup(ctx, refreshed)
+		if terr != nil {
+			resp.Diagnostics.AddError("Security-group translation failed", terr.Error())
+			return
+		}
+		refreshed.SecurityGroupPlan = sgPlan
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, refreshed)...)
 }
 
@@ -371,6 +616,11 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Network translation failed", err.Error())
 		return
 	}
+	sgPlan, err := r.translateSecurityGroup(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Security-group translation failed", err.Error())
+		return
+	}
 
 	updated, err := r.client.UpdateTopology(ctx, desired)
 	if err != nil {
@@ -381,6 +631,8 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 	newState := topologyToModel(updated)
 	newState.Network = plan.Network
 	newState.NetworkPlan = netPlan
+	newState.SecurityGroup = plan.SecurityGroup
+	newState.SecurityGroupPlan = sgPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
 
