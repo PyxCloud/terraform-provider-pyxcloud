@@ -49,7 +49,7 @@ Manages a canonical topology.
 | `id`         | string | computed, server-assigned                          |
 | `name`       | string | required                                           |
 | `provider`   | string | required — `aws` \| `gcp` \| `digitalocean`        |
-| `region`     | string | required — macro-region, e.g. `EU West`            |
+| `region`     | string | required — abstract pyx `region_name`, e.g. `Frankfurt` |
 | `components` | list   | required — nested blocks (below)                   |
 
 Each `components` block: `name` (req), `type` (req), `count` (opt, default 1),
@@ -57,6 +57,71 @@ and an optional `vm { architecture, cpu, ram, os_name }` sizing block.
 
 Implements full CRUD (Create / Read / Update / Delete) against the client
 interface.
+
+### Network / VPC (`pd-TF-REGION-VPC`)
+
+A topology can declare an **abstract network** for its place. The provider
+descends it to a concrete VPC + subnets via the **region catalog** — no provider
+region maps are baked into the provider binary.
+
+```hcl
+resource "pyxcloud_topology" "web" {
+  name     = "web-stack"
+  provider = "aws"        # aws | gcp | digitalocean
+  region   = "Frankfurt"  # abstract pyx region_name
+
+  network = {
+    cidr    = "10.0.0.0/16"
+    subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  }
+}
+
+output "plan" { value = pyxcloud_topology.web.network_plan }
+```
+
+**Catalog-driven resolution.** `region` (the abstract pyx `region_name`) +
+`provider` resolve to a concrete `csp_region` straight from the `region` catalog
+(the same table the wizard / Compare page use — `RegionResolver` server-side):
+
+| `region` (abstract) | aws            | gcp            | digitalocean |
+| ------------------- | -------------- | -------------- | ------------ |
+| `Frankfurt`         | `eu-central-1` | `europe-west3` | `fra1`       |
+| `Dublin`            | `eu-west-1`    | —              | —            |
+| `Amsterdam`         | —              | `europe-west4` | `ams3`       |
+
+A region with no entry for a provider is a **hard plan-time error**, never a
+silent fallback.
+
+**Computed `network_plan`** (the concrete translation surfaced back into state):
+
+| Field           | Notes                                                       |
+| --------------- | ---------------------------------------------------------- |
+| `csp_region`    | catalog-resolved concrete region                           |
+| `resource_type` | `aws_vpc` \| `google_compute_network` \| `digitalocean_vpc` |
+| `subnets[]`     | `{ name, cidr, zone }` — multi-AZ zone derived per provider |
+
+Per-provider targets emitted:
+
+- **AWS** — `aws_vpc` + `aws_subnet` (one per subnet, spread multi-AZ:
+  `eu-central-1a/b/c`).
+- **GCP** — `google_compute_network` + `google_compute_subnetwork` (regional).
+- **DigitalOcean** — `digitalocean_vpc` (region-scoped, no sub-zones).
+
+The structured `network_plan` is rendered to concrete cloud-provider HCL by
+[`cmd/pyxnet-render`](cmd/pyxnet-render) for the round-trip tests below.
+
+### Round-trip testing (SPEC §6)
+
+```sh
+go build -o pyxnet-render ./cmd/pyxnet-render
+examples/region-vpc/roundtrip.sh   # plan all 3; apply+verify+destroy where creds exist
+```
+
+The harness generates the concrete `.tf` from the canonical fixture
+([`examples/region-vpc/place.json`](examples/region-vpc/place.json)), runs
+`terraform plan` for aws/gcp/do, and does a real `apply` → verify → `destroy`
+for any provider whose test creds are present (missing creds are skipped
+**explicitly**, never silently).
 
 ## Data source: `pyxcloud_compare`
 
@@ -110,5 +175,6 @@ go vet ./...
 go test ./...
 ```
 
-Do **not** run `terraform apply` against real cloud or the live API — this MVP
-is for compile/demo only.
+The `pd-TF-REGION-VPC` network component **is** validated against real cloud in a
+disposable test environment (see [Round-trip testing](#round-trip-testing-spec-6));
+the topology/compare CRUD against the live PyxCloud API remains stubbed.

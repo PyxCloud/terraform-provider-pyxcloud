@@ -75,7 +75,7 @@ tables in `core/database/sql/provider-catalog-inventory`.
 ### 3.2 Abstract region + macro logical place
 
 Region model (DB `region`): `macro_region` (e.g. "Europe") → `country` → `region_name`
-(abstract, e.g. "EU West") → `csp_region` (concrete, e.g. aws `eu-west-1`, gcp `europe-west1`,
+(abstract, e.g. "Frankfurt") → `csp_region` (concrete, e.g. aws `eu-west-1`, gcp `europe-west1`,
 do `ams3`), keyed by `csp`. The abstract unit the user picks is **`region_name`** (the pyx
 region); the concrete `csp_region` is resolved by `RegionResolver` per chosen provider.
 
@@ -90,7 +90,7 @@ multi‑cloud and per‑place migration.
 data "pyxcloud_compare" "plan" {
   topology = pyxcloud_topology.app.canonical   # the abstract components
   candidates = [                               # what to price/select per place
-    { place = "production", region = "EU West", providers = ["aws","gcp","digitalocean"] },
+    { place = "production", region = "Frankfurt", providers = ["aws","gcp","digitalocean"] },
   ]
 }
 # outputs (mirrors PricingRanker.ProviderCost): per (place, provider, region_name)
@@ -122,7 +122,7 @@ Each component below defines: the **abstract schema**, the **per‑provider targ
 on the previous (`pd-TF-*` deps).
 
 ### 5.1 `pd-TF-REGION-VPC` — region + network/VPC
-- **Abstract:** `place { region = "EU West"; cidr = "10.0.0.0/16"; subnets = [...] }`.
+- **Abstract:** `place { region = "Frankfurt"; cidr = "10.0.0.0/16"; subnets = [...] }`.
 - **AWS:** `aws_vpc` + `aws_subnet` (multi‑AZ from `csp_region`). **GCP:** `google_compute_network`
   + `google_compute_subnetwork`. **DO:** `digitalocean_vpc`.
 - **Catalog:** `region` (region_name → csp_region; AZ/zone derivation per provider).

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -15,12 +17,14 @@ import (
 
 // topologyResource manages a PyxCloud canonical topology.
 type topologyResource struct {
-	client client.Client
+	client  client.Client
+	catalog catalog.RegionCatalog
 }
 
 var (
-	_ resource.Resource              = (*topologyResource)(nil)
-	_ resource.ResourceWithConfigure = (*topologyResource)(nil)
+	_ resource.Resource               = (*topologyResource)(nil)
+	_ resource.ResourceWithConfigure  = (*topologyResource)(nil)
+	_ resource.ResourceWithModifyPlan = (*topologyResource)(nil)
 )
 
 // NewTopologyResource is the framework resource factory.
@@ -45,13 +49,42 @@ type componentModel struct {
 	VM    *vmTypeModel `tfsdk:"vm"`
 }
 
+// networkModel maps the abstract `network` block of a place: the canonical
+// place { region; cidr; subnets } network description (pd-TF-REGION-VPC).
+type networkModel struct {
+	CIDR    types.String   `tfsdk:"cidr"`
+	Subnets []types.String `tfsdk:"subnets"`
+}
+
+// subnetPlanModel is one concrete subnet in the resolved network plan.
+type subnetPlanModel struct {
+	Name types.String `tfsdk:"name"`
+	CIDR types.String `tfsdk:"cidr"`
+	Zone types.String `tfsdk:"zone"`
+}
+
+// networkPlanModel is the computed, catalog-resolved concrete network plan
+// (the abstract→concrete translation surfaced back into state).
+type networkPlanModel struct {
+	Provider     types.String      `tfsdk:"provider"`
+	CSP          types.String      `tfsdk:"csp"`
+	RegionName   types.String      `tfsdk:"region_name"`
+	CSPRegion    types.String      `tfsdk:"csp_region"`
+	VPCName      types.String      `tfsdk:"vpc_name"`
+	CIDR         types.String      `tfsdk:"cidr"`
+	ResourceType types.String      `tfsdk:"resource_type"`
+	Subnets      []subnetPlanModel `tfsdk:"subnets"`
+}
+
 // topologyModel maps the pyxcloud_topology resource state.
 type topologyModel struct {
-	ID         types.String     `tfsdk:"id"`
-	Name       types.String     `tfsdk:"name"`
-	Provider   types.String     `tfsdk:"provider"`
-	Region     types.String     `tfsdk:"region"`
-	Components []componentModel `tfsdk:"components"`
+	ID          types.String      `tfsdk:"id"`
+	Name        types.String      `tfsdk:"name"`
+	Provider    types.String      `tfsdk:"provider"`
+	Region      types.String      `tfsdk:"region"`
+	Components  []componentModel  `tfsdk:"components"`
+	Network     *networkModel     `tfsdk:"network"`
+	NetworkPlan *networkPlanModel `tfsdk:"network_plan"`
 }
 
 func (r *topologyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -132,6 +165,50 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					},
 				},
 			},
+			"network": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Abstract network for the place (pd-TF-REGION-VPC): a " +
+					"provider-neutral VPC CIDR + subnet CIDRs. Resolved to a concrete VPC/" +
+					"network and multi-AZ subnets via the region catalog at plan time.",
+				Attributes: map[string]schema.Attribute{
+					"cidr": schema.StringAttribute{
+						Required:            true,
+						MarkdownDescription: "VPC/network CIDR, e.g. `10.0.0.0/16`.",
+					},
+					"subnets": schema.ListAttribute{
+						Optional:    true,
+						ElementType: types.StringType,
+						MarkdownDescription: "Subnet CIDRs (must be inside `cidr`). For AWS/GCP " +
+							"each subnet is placed in a distinct availability zone derived from " +
+							"the resolved concrete region; DigitalOcean VPCs are region-scoped.",
+					},
+				},
+			},
+			"network_plan": schema.SingleNestedAttribute{
+				Computed: true,
+				MarkdownDescription: "Computed concrete network plan: the catalog-resolved " +
+					"translation of the abstract `network` for the topology's provider. The " +
+					"`csp_region` is resolved from the catalog (never invented).",
+				Attributes: map[string]schema.Attribute{
+					"provider":      schema.StringAttribute{Computed: true},
+					"csp":           schema.StringAttribute{Computed: true},
+					"region_name":   schema.StringAttribute{Computed: true},
+					"csp_region":    schema.StringAttribute{Computed: true},
+					"vpc_name":      schema.StringAttribute{Computed: true},
+					"cidr":          schema.StringAttribute{Computed: true},
+					"resource_type": schema.StringAttribute{Computed: true},
+					"subnets": schema.ListNestedAttribute{
+						Computed: true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"name": schema.StringAttribute{Computed: true},
+								"cidr": schema.StringAttribute{Computed: true},
+								"zone": schema.StringAttribute{Computed: true},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -140,15 +217,40 @@ func (r *topologyResource) Configure(_ context.Context, req resource.ConfigureRe
 	if req.ProviderData == nil {
 		return
 	}
-	c, ok := req.ProviderData.(client.Client)
+	pd, ok := req.ProviderData.(*providerData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected provider data",
-			fmt.Sprintf("expected client.Client, got %T", req.ProviderData),
+			fmt.Sprintf("expected *providerData, got %T", req.ProviderData),
 		)
 		return
 	}
-	r.client = c
+	r.client = pd.client
+	r.catalog = pd.catalog
+}
+
+// ModifyPlan resolves the abstract network against the catalog at plan time so
+// that a missing/unavailable region surfaces as a clear plan-time error (never
+// a silent fallback or an apply-time surprise), per SPEC §4.
+func (r *topologyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return // resource is being destroyed
+	}
+	var plan topologyModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if plan.Network == nil || r.catalog == nil {
+		return
+	}
+	if _, err := r.translateNetwork(ctx, plan); err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("region"),
+			"Network region not resolvable from the PyxCloud catalog",
+			err.Error(),
+		)
+	}
 }
 
 func (r *topologyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -158,13 +260,62 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
+	netPlan, err := r.translateNetwork(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Network translation failed", err.Error())
+		return
+	}
+
 	created, err := r.client.CreateTopology(ctx, modelToTopology(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Create topology failed", err.Error())
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, topologyToModel(created))...)
+	state := topologyToModel(created)
+	state.Network = plan.Network
+	state.NetworkPlan = netPlan
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+}
+
+// translateNetwork resolves the abstract network block into a concrete plan via
+// the catalog. Returns (nil, nil) when the topology declares no network.
+func (r *topologyResource) translateNetwork(ctx context.Context, m topologyModel) (*networkPlanModel, error) {
+	if m.Network == nil {
+		return nil, nil
+	}
+	subnets := make([]string, 0, len(m.Network.Subnets))
+	for _, s := range m.Network.Subnets {
+		subnets = append(subnets, s.ValueString())
+	}
+	spec := catalog.NetworkSpec{
+		Name:     m.Name.ValueString(),
+		Region:   m.Region.ValueString(),
+		Provider: m.Provider.ValueString(),
+		CIDR:     m.Network.CIDR.ValueString(),
+		Subnets:  subnets,
+	}
+	cp, err := catalog.TranslateNetwork(ctx, r.catalog, spec)
+	if err != nil {
+		return nil, err
+	}
+	out := &networkPlanModel{
+		Provider:     types.StringValue(cp.Provider),
+		CSP:          types.StringValue(cp.CSP),
+		RegionName:   types.StringValue(cp.RegionName),
+		CSPRegion:    types.StringValue(cp.CSPRegion),
+		VPCName:      types.StringValue(cp.VPCName),
+		CIDR:         types.StringValue(cp.CIDR),
+		ResourceType: types.StringValue(cp.ResourceType),
+	}
+	for _, sp := range cp.Subnets {
+		out.Subnets = append(out.Subnets, subnetPlanModel{
+			Name: types.StringValue(sp.Name),
+			CIDR: types.StringValue(sp.CIDR),
+			Zone: types.StringValue(sp.Zone),
+		})
+	}
+	return out, nil
 }
 
 func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -184,7 +335,19 @@ func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, topologyToModel(got))...)
+	refreshed := topologyToModel(got)
+	// Preserve the abstract network input and re-derive the concrete plan so
+	// drift in the catalog (e.g. a region gaining/losing a provider) is caught.
+	refreshed.Network = state.Network
+	if refreshed.Network != nil {
+		netPlan, terr := r.translateNetwork(ctx, refreshed)
+		if terr != nil {
+			resp.Diagnostics.AddError("Network translation failed", terr.Error())
+			return
+		}
+		refreshed.NetworkPlan = netPlan
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, refreshed)...)
 }
 
 func (r *topologyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -203,13 +366,22 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 	desired := modelToTopology(plan)
 	desired.ID = state.ID.ValueString()
 
+	netPlan, err := r.translateNetwork(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Network translation failed", err.Error())
+		return
+	}
+
 	updated, err := r.client.UpdateTopology(ctx, desired)
 	if err != nil {
 		resp.Diagnostics.AddError("Update topology failed", err.Error())
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, topologyToModel(updated))...)
+	newState := topologyToModel(updated)
+	newState.Network = plan.Network
+	newState.NetworkPlan = netPlan
+	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
 
 func (r *topologyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

@@ -42,7 +42,7 @@ func TestResourceSchema(t *testing.T) {
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("resource schema diagnostics: %+v", resp.Diagnostics)
 	}
-	for _, attr := range []string{"id", "name", "provider", "region", "components"} {
+	for _, attr := range []string{"id", "name", "provider", "region", "components", "network", "network_plan"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("expected '%s' attribute on pyxcloud_topology", attr)
 		}

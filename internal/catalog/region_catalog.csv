@@ -1,0 +1,86 @@
+macro_region,country,region_name,csp_region,csp_region_description,csp
+North America (ex US),Canada,Alberta,ca-west-1,Canada West Calgary,aws
+Middle East,Bahrain,Bahrain,me-south-1,Middle East Bahrain,aws
+United States,West Coast South,California,us-west-1,US West N. California,aws
+Africa,South Africa,Cape Town,af-south-1,Africa Cape Town,aws
+Middle East,United Arab Emirates,Dubai,me-central-1,Middle East UAE,aws
+Europe,Ireland,Dublin,eu-west-1,Europe Ireland,aws
+Europe,Germany,Frankfurt,eu-central-1,Europe Frankfurt,aws
+Asia Pacific,China,Hong Kong,ap-east-1,Asia Pacific Hong Kong,aws
+Asia Pacific,India,Hyderabad,ap-south-2,Asia Pacific Hyderabad,aws
+Asia Pacific,Indonesia,Jakarta,ap-southeast-3,Asia Pacific Jakarta,aws
+Europe,United Kingdom,London,eu-west-2,Europe London,aws
+Europe,Spain,Madrid,eu-south-2,Europe Spain,aws
+Asia Pacific,Malaysia,Malaysia,ap-southeast-5,Asia Pacific Malaysia,aws
+Asia Pacific,Australia,Melbourne,ap-southeast-4,Asia Pacific Melbourne,aws
+Europe,Italy,Milan,eu-south-1,Europe Milan,aws
+Asia Pacific,India,Mumbai,ap-south-1,Asia Pacific Mumbai,aws
+United States,East Coast North,North Virginia,us-east-1,US East N. Virginia,aws
+United States,Midwest,Ohio,us-east-2,US East Ohio,aws
+United States,West Coast North,Oregon,us-west-2,US West Oregon,aws
+Asia Pacific,Japan,Osaka,ap-northeast-3,Asia Pacific Osaka,aws
+Europe,France,Paris,eu-west-3,Europe Paris,aws
+North America (ex US),Canada,Quebec,ca-central-1,Canada Central,aws
+North America (ex US),Mexico,Querétaro,mx-central-1,Mexico Central,aws
+Asia Pacific,South Korea,Seoul,ap-northeast-2,Asia Pacific Seoul,aws
+Asia Pacific,Singapore,Singapore,ap-southeast-1,Asia Pacific Singapore,aws
+Europe,Sweden,Stockholm,eu-north-1,Europe Stockholm,aws
+Asia Pacific,Australia,Sydney,ap-southeast-2,Asia Pacific Sydney,aws
+South America,Brazil,São Paulo,sa-east-1,South America São Paulo,aws
+Asia Pacific,Taiwan,Taipei,ap-east-2,Asia Pacific Taipei,aws
+Middle East,Israel,Tel Aviv,il-central-1,Israel Tel Aviv,aws
+Asia Pacific,Thailand,Thailand,ap-southeast-7,Asia Pacific Thailand,aws
+Asia Pacific,Japan,Tokyo,ap-northeast-1,Asia Pacific Tokyo,aws
+Europe,Swiss,Zurich,eu-central-2,Europe Zurich,aws
+Europe,Netherlands,Amsterdam,europe-west4,Netherlands,gcp
+Europe,Belgium,Belgium,europe-west1,Belgium,gcp
+Europe,Germany,Berlin,europe-west10,Berlin,gcp
+Europe,Sweden,Borlange,europe-north2,Borlange,gcp
+United States,Midwest,Columbus,us-east5,Columbus,gcp
+United States,South,Dallas,us-south1,Dallas,gcp
+Middle East,Saudi Arabia,Dammam,me-central2,Dammam,gcp
+Middle East,Qatar,Doha,me-central1,Doha,gcp
+Europe,Finland,Finland,europe-north1,Finland,gcp
+Europe,Germany,Frankfurt,europe-west3,Frankfurt,gcp
+Asia Pacific,China,Hong Kong,asia-east2,Hong Kong,gcp
+United States,Midwest,Iowa,us-central1,Iowa,gcp
+Asia Pacific,Indonesia,Jakarta,asia-southeast2,Jakarta,gcp
+Africa,South Africa,Johannesburg,africa-south1,Johannesburg,gcp
+United States,West Coast South,Las Vegas,us-west4,Las Vegas,gcp
+Europe,United Kingdom,London,europe-west2,London,gcp
+United States,West Coast South,Los Angeles,us-west2,Los Angeles,gcp
+Europe,Spain,Madrid,europe-southwest1,Madrid,gcp
+Asia Pacific,Australia,Melbourne,australia-southeast2,Melbourne,gcp
+Europe,Italy,Milan,europe-west8,Milan,gcp
+North America (ex US),Canada,Montreal,northamerica-northeast1,Montreal,gcp
+Asia Pacific,India,Mumbai,asia-south1,Mumbai,gcp
+United States,East Coast North,North Virginia,us-east4,Northern Virginia,gcp
+United States,West Coast North,Oregon,us-west1,Oregon,gcp
+Asia Pacific,Japan,Osaka,asia-northeast2,Osaka,gcp
+Europe,France,Paris,europe-west9,Paris,gcp
+North America (ex US),Mexico,Querétaro,northamerica-south1,Mexico,gcp
+United States,West Coast North,Salt Lake City,us-west3,Salt Lake City,gcp
+South America,Chile,Santiago,southamerica-west1,Santiago,gcp
+Asia Pacific,South Korea,Seoul,asia-northeast3,Seoul,gcp
+Asia Pacific,Singapore,Singapore,asia-southeast1,Singapore,gcp
+United States,East Coast South,South Carolina,us-east1,South Carolina,gcp
+Asia Pacific,Australia,Sydney,australia-southeast1,Sydney,gcp
+South America,Brazil,São Paulo,southamerica-east1,São Paulo,gcp
+Asia Pacific,Taiwan,Taipei,asia-east1,Taiwan,gcp
+Middle East,Israel,Tel Aviv,me-west1,Tel Aviv,gcp
+Asia Pacific,Japan,Tokyo,asia-northeast1,Tokyo,gcp
+North America (ex US),Canada,Toronto,northamerica-northeast2,Toronto,gcp
+Europe,Italy,Turin,europe-west12,Turin,gcp
+Europe,Poland,Warsaw,europe-central2,Warsaw,gcp
+Europe,Swiss,Zurich,europe-west6,Zurich,gcp
+Europe,Netherlands,Amsterdam,ams3,Amsterdam 3,do
+Asia Pacific,India,Bangalore,blr1,Bangalore 1,do
+United States,West Coast South,California,sfo2,San Francisco 2,do
+United States,West Coast South,California,sfo3,San Francisco 3,do
+Europe,Germany,Frankfurt,fra1,Frankfurt 1,do
+Europe,United Kingdom,London,lon1,London 1,do
+United States,East Coast North,New York,nyc1,New York 1,do
+United States,East Coast North,New York,nyc3,New York 3,do
+Asia Pacific,Singapore,Singapore,sgp1,Singapore 1,do
+Asia Pacific,Australia,Sydney,syd1,Sydney 1,do
+North America (ex US),Canada,Toronto,tor1,Toronto 1,do
