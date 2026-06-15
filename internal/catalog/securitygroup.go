@@ -199,6 +199,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "azurerm_network_security_group"
 	case ProviderLinode:
 		plan.ResourceType = "linode_firewall"
+	case ProviderUbicloud:
+		plan.ResourceType = "ubicloud_firewall"
 	}
 	return plan, nil
 }

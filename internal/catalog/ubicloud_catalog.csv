@@ -1,0 +1,80 @@
+kind,c1,c2,c3,c4,c5,c6,c7,c8
+# Ubicloud (wave-2) catalog snapshot. Mirrors the SAME shape as the wave-1
+# region/virtual_machine/virtual_machine_operating_system/managed_database
+# tables, but lives in its own file so the wave-2 Ubicloud PR never conflicts
+# with the concurrent wave-1 / sibling-provider snapshots (shared CSVs). Each
+# row is discriminated by the leading `kind` column:
+#
+#   region : macro_region, country, region_name, csp_region(=ubicloud location),
+#            csp_region_description, csp(=ubicloud)         -> RegionRow
+#   vm     : name(=ubicloud vm size), family, csp_region, architecture, cpu,
+#            ram(GiB), gpu, supports_autoscale             -> VMRow
+#   os     : csp_region, os_name, os_version, architecture, image(=ubicloud boot_image)  -> OSImageRow
+#   mdb    : name(=ubicloud postgres size), family, csp_region, engine,
+#            cpu, ram(GiB)                                  -> MDBRow
+#
+# GAP / provenance: there is NO live Ubicloud ETL CSV in this provider repo clone
+# (core/database/.../etl/data/ubicloud_vm.csv is ABSENT — searched, not found),
+# so the rows below were authored MINIMALLY from Ubicloud's PUBLIC documentation
+# and verified Terraform provider (ubicloud/terraform-provider-ubicloud):
+#   - locations (csp_region) are Ubicloud's real location slugs: eu-central-h1
+#     (Hetzner Germany), eu-north-h1 (Hetzner Finland), us-east-a2 (Virginia).
+#   - VM sizes are Ubicloud's real `standard-N` dedicated-CPU line where N = vCPU
+#     count and the documented ratio is 4 GiB RAM per vCPU. boot_image values are
+#     Ubicloud's real boot_image slugs (ubuntu-noble / ubuntu-jammy / debian-12).
+#   - postgres sizes reuse the same `standard-N` VM SKU (Ubicloud Managed Postgres
+#     bills the underlying VM size); engine is postgres only (no MySQL flavor).
+# region_name values are chosen to overlap the wave-1 test region (Frankfurt) so a
+# place pinned to Frankfurt can be priced/translated for ubicloud too. When a real
+# Ubicloud ETL lands, regenerate this file from it (the loader keying is identical).
+#
+# --- region (region_name -> ubicloud location) ---
+region,Europe,Germany,Frankfurt,eu-central-h1,Ubicloud Hetzner Germany (Falkenstein/Nuremberg),ubicloud
+region,Europe,Finland,Helsinki,eu-north-h1,Ubicloud Hetzner Finland (Helsinki),ubicloud
+region,United States,East Coast North,North Virginia,us-east-a2,Ubicloud US East (Virginia),ubicloud
+#
+# --- vm (standard-N dedicated CPU, x86_64, 4 GiB/vCPU; supports_autoscale=false:
+#     Ubicloud has no managed VM autoscaling primitive in Terraform) ---
+vm,standard-2,standard,eu-central-h1,x86_64,2,8,0,false
+vm,standard-4,standard,eu-central-h1,x86_64,4,16,0,false
+vm,standard-8,standard,eu-central-h1,x86_64,8,32,0,false
+vm,standard-16,standard,eu-central-h1,x86_64,16,64,0,false
+vm,standard-30,standard,eu-central-h1,x86_64,30,120,0,false
+vm,standard-60,standard,eu-central-h1,x86_64,60,240,0,false
+vm,standard-2,standard,eu-north-h1,x86_64,2,8,0,false
+vm,standard-4,standard,eu-north-h1,x86_64,4,16,0,false
+vm,standard-8,standard,eu-north-h1,x86_64,8,32,0,false
+vm,standard-16,standard,eu-north-h1,x86_64,16,64,0,false
+vm,standard-30,standard,eu-north-h1,x86_64,30,120,0,false
+vm,standard-60,standard,eu-north-h1,x86_64,60,240,0,false
+vm,standard-2,standard,us-east-a2,x86_64,2,8,0,false
+vm,standard-4,standard,us-east-a2,x86_64,4,16,0,false
+vm,standard-8,standard,us-east-a2,x86_64,8,32,0,false
+vm,standard-16,standard,us-east-a2,x86_64,16,64,0,false
+vm,standard-30,standard,us-east-a2,x86_64,30,120,0,false
+vm,standard-60,standard,us-east-a2,x86_64,60,240,0,false
+#
+# --- os (ubicloud boot_image slugs; x86_64 only — Ubicloud standard VMs are x64) ---
+os,eu-central-h1,ubuntu,24.04,x86_64,ubuntu-noble
+os,eu-central-h1,ubuntu,22.04,x86_64,ubuntu-jammy
+os,eu-central-h1,debian,12,x86_64,debian-12
+os,eu-north-h1,ubuntu,24.04,x86_64,ubuntu-noble
+os,eu-north-h1,ubuntu,22.04,x86_64,ubuntu-jammy
+os,eu-north-h1,debian,12,x86_64,debian-12
+os,us-east-a2,ubuntu,24.04,x86_64,ubuntu-noble
+os,us-east-a2,ubuntu,22.04,x86_64,ubuntu-jammy
+os,us-east-a2,debian,12,x86_64,debian-12
+#
+# --- mdb (Ubicloud Managed Postgres; size = underlying standard-N VM; pg only) ---
+mdb,standard-2,standard,eu-central-h1,postgres,2,8
+mdb,standard-4,standard,eu-central-h1,postgres,4,16
+mdb,standard-8,standard,eu-central-h1,postgres,8,32
+mdb,standard-16,standard,eu-central-h1,postgres,16,64
+mdb,standard-2,standard,eu-north-h1,postgres,2,8
+mdb,standard-4,standard,eu-north-h1,postgres,4,16
+mdb,standard-8,standard,eu-north-h1,postgres,8,32
+mdb,standard-16,standard,eu-north-h1,postgres,16,64
+mdb,standard-2,standard,us-east-a2,postgres,2,8
+mdb,standard-4,standard,us-east-a2,postgres,4,16
+mdb,standard-8,standard,us-east-a2,postgres,8,32
+mdb,standard-16,standard,us-east-a2,postgres,16,64

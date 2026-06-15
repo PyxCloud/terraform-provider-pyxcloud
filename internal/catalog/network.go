@@ -94,6 +94,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "azurerm_virtual_network"
 	case ProviderLinode:
 		plan.ResourceType = "linode_vpc"
+	case ProviderUbicloud:
+		plan.ResourceType = "ubicloud_private_subnet"
 	}
 	return plan, nil
 }

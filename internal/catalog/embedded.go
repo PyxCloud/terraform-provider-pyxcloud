@@ -147,6 +147,13 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	if err := c.foldLinodeCatalog(linodeCatalogCSV); err != nil {
 		return nil, err
 	}
+	// Wave-2: merge the Ubicloud catalog snapshot (ubicloud_catalog.csv) into the
+	// same indexes. Kept in its own loader/file so the wave-2 Ubicloud PR is
+	// conflict-free against the concurrently-edited wave-1 snapshots
+	// (loadUbicloud -> render_ubicloud.go).
+	if err := c.loadUbicloud(); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 

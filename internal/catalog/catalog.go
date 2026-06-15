@@ -43,12 +43,14 @@ const (
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
 // ProviderAzure (wave-2) is defined in render_azure.go and registered here.
+// ProviderUbicloud (wave-2) is defined in render_ubicloud.go and registered here.
 var providerToCSP = map[string]string{
 	ProviderAWS:          cspAWS,
 	ProviderGCP:          cspGCP,
 	ProviderDigitalOcean: cspDO,
 	ProviderAzure:        cspAzure,
 	ProviderLinode:       cspLinode,
+	ProviderUbicloud:     cspUbicloud,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and
