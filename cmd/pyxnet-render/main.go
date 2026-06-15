@@ -46,6 +46,85 @@ type fixture struct {
 	ManagedDatabase *mdbFixture `json:"managed_database,omitempty"`
 	// ObjectStorage is the optional canonical object/blob-storage.
 	ObjectStorage *objectStorageFixture `json:"object_storage,omitempty"`
+	// The remaining wave-1 macro components (pd-TF-REST-LAMBDA).
+	Cache      *cacheFixture      `json:"cache,omitempty"`
+	Queue      *queueFixture      `json:"queue,omitempty"`
+	Stream     *streamFixture     `json:"stream,omitempty"`
+	DNSZone    *dnsZoneFixture    `json:"dns_zone,omitempty"`
+	CDN        *cdnFixture        `json:"cdn,omitempty"`
+	WAF        *wafFixture        `json:"waf,omitempty"`
+	Kubernetes *k8sFixture        `json:"kubernetes,omitempty"`
+	Secrets    *secretsFixture    `json:"secrets,omitempty"`
+	Serverless *serverlessFixture `json:"serverless,omitempty"`
+}
+
+// cacheFixture is the canonical cache description embedded in a fixture.
+type cacheFixture struct {
+	Name          string `json:"name"`
+	Engine        string `json:"engine"`
+	Version       string `json:"version"`
+	MemoryGB      int    `json:"memory_gb"`
+	HA            bool   `json:"ha"`
+	SecurityGroup string `json:"security_group"`
+}
+
+type queueFixture struct {
+	Name                     string `json:"name"`
+	FIFO                     bool   `json:"fifo"`
+	VisibilityTimeoutSeconds int    `json:"visibility_timeout_seconds"`
+	MaxReceiveCount          int    `json:"max_receive_count"`
+}
+
+type streamFixture struct {
+	Name           string `json:"name"`
+	Shards         int    `json:"shards"`
+	RetentionHours int    `json:"retention_hours"`
+}
+
+type dnsZoneFixture struct {
+	Name    string `json:"name"`
+	Domain  string `json:"domain"`
+	Private bool   `json:"private"`
+}
+
+type cdnFixture struct {
+	Name       string `json:"name"`
+	OriginKind string `json:"origin_kind"`
+	OriginName string `json:"origin_name"`
+}
+
+type wafFixture struct {
+	Name          string `json:"name"`
+	Scope         string `json:"scope"`
+	AssociateName string `json:"associate_name"`
+}
+
+type k8sFixture struct {
+	Name         string `json:"name"`
+	Version      string `json:"version"`
+	Architecture string `json:"architecture"`
+	NodeCPU      int    `json:"node_cpu"`
+	NodeRAM      int    `json:"node_ram"`
+	MinNodes     int    `json:"min_nodes"`
+	MaxNodes     int    `json:"max_nodes"`
+	DesiredNodes int    `json:"desired_nodes"`
+}
+
+type secretsFixture struct {
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	RotationDays int    `json:"rotation_days"`
+	ForceDestroy *bool  `json:"force_destroy,omitempty"`
+}
+
+type serverlessFixture struct {
+	Name           string `json:"name"`
+	Runtime        string `json:"runtime"`
+	RuntimeVersion string `json:"runtime_version"`
+	Handler        string `json:"handler"`
+	MemoryMB       int    `json:"memory_mb"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	SourceArtifact string `json:"source_artifact"`
 }
 
 // objectStorageFixture is the canonical object/blob-storage description embedded
@@ -157,7 +236,7 @@ type ruleFixture struct {
 func main() {
 	fixturePath := flag.String("fixture", "", "path to canonical fixture JSON")
 	provider := flag.String("provider", "", "target provider: aws | gcp | digitalocean")
-	component := flag.String("component", "network", "component to render: network | security-group | virtual-machine | scale-group | load-balancer | managed-database | object-storage")
+	component := flag.String("component", "network", "component to render: network | security-group | virtual-machine | scale-group | load-balancer | managed-database | object-storage | cache | managed-queue | event-streaming | dns-zone | cdn-service | waf-service | managed-kubernetes | secrets-manager | serverless-function")
 	flag.Parse()
 
 	if *fixturePath == "" || *provider == "" {
@@ -190,9 +269,222 @@ func main() {
 		renderManagedDatabase(cat, f, *provider)
 	case "object-storage", "blob-storage", "storage", "s3":
 		renderObjectStorage(cat, f, *provider)
+	case "cache":
+		renderCache(cat, f, *provider)
+	case "managed-queue", "message-queue", "queue":
+		renderQueue(cat, f, *provider)
+	case "event-streaming", "event-bus", "stream":
+		renderStream(cat, f, *provider)
+	case "dns-zone", "dns":
+		renderDNSZone(cat, f, *provider)
+	case "cdn-service", "cdn":
+		renderCDN(cat, f, *provider)
+	case "waf-service", "waf":
+		renderWAF(cat, f, *provider)
+	case "managed-kubernetes", "kubernetes", "k8s", "container-service":
+		renderKubernetes(cat, f, *provider)
+	case "secrets-manager", "secrets":
+		renderSecrets(cat, f, *provider)
+	case "serverless-function", "serverless", "lambda", "function":
+		renderServerless(cat, f, *provider)
 	default:
-		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine | scale-group | load-balancer | managed-database | object-storage)", *component))
+		fatal(fmt.Errorf("unknown component %q", *component))
 	}
+}
+
+func renderCache(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.Cache == nil {
+		fatal(fmt.Errorf("fixture has no cache block"))
+	}
+	c := f.Cache
+	name := c.Name
+	if name == "" {
+		name = f.Name
+	}
+	subnets := make([]string, 0, len(f.Subnets))
+	for i := range f.Subnets {
+		subnets = append(subnets, fmt.Sprintf("%s-subnet-%d", f.Name, i+1))
+	}
+	secGroup := c.SecurityGroup
+	if secGroup == "" && f.SecurityGroup != nil {
+		secGroup = f.SecurityGroup.Name
+	}
+	plan, err := catalog.TranslateCache(context.Background(), cat, catalog.CacheSpec{
+		Name: name, Region: f.Region, Provider: provider,
+		Engine: c.Engine, Version: c.Version, MemoryGB: c.MemoryGB, HA: c.HA,
+		Network: f.Name, Subnets: subnets, SecurityGroup: secGroup,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderCacheHCL(plan))
+}
+
+func renderQueue(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.Queue == nil {
+		fatal(fmt.Errorf("fixture has no queue block"))
+	}
+	q := f.Queue
+	name := q.Name
+	if name == "" {
+		name = f.Name
+	}
+	plan, err := catalog.TranslateQueue(context.Background(), cat, catalog.QueueSpec{
+		Name: name, Region: f.Region, Provider: provider,
+		FIFO: q.FIFO, VisibilityTimeoutSeconds: q.VisibilityTimeoutSeconds, MaxReceiveCount: q.MaxReceiveCount,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderMessagingHCL(plan))
+}
+
+func renderStream(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.Stream == nil {
+		fatal(fmt.Errorf("fixture has no stream block"))
+	}
+	s := f.Stream
+	name := s.Name
+	if name == "" {
+		name = f.Name
+	}
+	plan, err := catalog.TranslateStream(context.Background(), cat, catalog.StreamSpec{
+		Name: name, Region: f.Region, Provider: provider, Shards: s.Shards, RetentionHours: s.RetentionHours,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderMessagingHCL(plan))
+}
+
+func renderDNSZone(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.DNSZone == nil {
+		fatal(fmt.Errorf("fixture has no dns_zone block"))
+	}
+	d := f.DNSZone
+	name := d.Name
+	if name == "" {
+		name = f.Name
+	}
+	plan, err := catalog.TranslateDNSZone(context.Background(), cat, catalog.DNSZoneSpec{
+		Name: name, Region: f.Region, Provider: provider, Domain: d.Domain, Private: d.Private, Network: f.Name,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderDNSZoneHCL(plan))
+}
+
+func renderCDN(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.CDN == nil {
+		fatal(fmt.Errorf("fixture has no cdn block"))
+	}
+	c := f.CDN
+	name := c.Name
+	if name == "" {
+		name = f.Name
+	}
+	originName := c.OriginName
+	if originName == "" && f.ObjectStorage != nil {
+		originName = f.ObjectStorage.Name
+	}
+	plan, err := catalog.TranslateCDN(context.Background(), cat, catalog.CDNSpec{
+		Name: name, Region: f.Region, Provider: provider, OriginKind: c.OriginKind, OriginName: originName,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderCDNHCL(plan))
+}
+
+func renderWAF(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.WAF == nil {
+		fatal(fmt.Errorf("fixture has no waf block"))
+	}
+	w := f.WAF
+	name := w.Name
+	if name == "" {
+		name = f.Name
+	}
+	plan, err := catalog.TranslateWAF(context.Background(), cat, catalog.WAFSpec{
+		Name: name, Region: f.Region, Provider: provider, Scope: w.Scope, AssociateName: w.AssociateName,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderWAFHCL(plan))
+}
+
+func renderKubernetes(cat catalog.VMCatalog, f fixture, provider string) {
+	if f.Kubernetes == nil {
+		fatal(fmt.Errorf("fixture has no kubernetes block"))
+	}
+	k := f.Kubernetes
+	name := k.Name
+	if name == "" {
+		name = f.Name
+	}
+	subnets := make([]string, 0, len(f.Subnets))
+	for i := range f.Subnets {
+		subnets = append(subnets, fmt.Sprintf("%s-subnet-%d", f.Name, i+1))
+	}
+	plan, err := catalog.TranslateKubernetes(context.Background(), cat, catalog.K8sSpec{
+		Name: name, Region: f.Region, Provider: provider, Version: k.Version,
+		Architecture: k.Architecture, NodeCPU: k.NodeCPU, NodeRAM: k.NodeRAM,
+		MinNodes: k.MinNodes, MaxNodes: k.MaxNodes, DesiredNodes: k.DesiredNodes,
+		Network: f.Name, Subnets: subnets,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderKubernetesHCL(plan))
+}
+
+func renderSecrets(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.Secrets == nil {
+		fatal(fmt.Errorf("fixture has no secrets block"))
+	}
+	s := f.Secrets
+	name := s.Name
+	if name == "" {
+		name = f.Name
+	}
+	plan, err := catalog.TranslateSecrets(context.Background(), cat, catalog.SecretsSpec{
+		Name: name, Region: f.Region, Provider: provider, Description: s.Description,
+		RotationDays: s.RotationDays, ForceDestroy: s.ForceDestroy,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderSecretsHCL(plan))
+}
+
+func renderServerless(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.Serverless == nil {
+		fatal(fmt.Errorf("fixture has no serverless block"))
+	}
+	s := f.Serverless
+	name := s.Name
+	if name == "" {
+		name = f.Name
+	}
+	plan, err := catalog.TranslateServerless(context.Background(), cat, catalog.ServerlessSpec{
+		Name: name, Region: f.Region, Provider: provider,
+		Runtime: s.Runtime, RuntimeVersion: s.RuntimeVersion, Handler: s.Handler,
+		MemoryMB: s.MemoryMB, TimeoutSeconds: s.TimeoutSeconds, SourceArtifact: s.SourceArtifact,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderServerlessHCL(plan))
+}
+
+// emit prints rendered HCL or dies on a render error.
+func emit(hcl string, err error) {
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Print(hcl)
 }
 
 func renderObjectStorage(cat catalog.RegionCatalog, f fixture, provider string) {
