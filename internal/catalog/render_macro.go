@@ -28,6 +28,8 @@ func RenderCacheHCL(plan CachePlan) (string, error) {
 		return renderCacheGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderCacheDO(plan), nil
+	case ProviderIBM:
+		return renderCacheIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for cache", plan.Provider)
 	}
@@ -138,6 +140,8 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 			return renderStreamAWS(plan), nil
 		case ProviderGCP:
 			return renderStreamGCP(plan), nil
+		case ProviderIBM:
+			return renderStreamIBM(plan), nil
 		}
 	}
 	return "", fmt.Errorf("render: unsupported provider %q for messaging kind %q", plan.Provider, plan.Kind)
@@ -265,6 +269,8 @@ func RenderDNSZoneHCL(plan DNSZonePlan) (string, error) {
 		return renderDNSGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderDNSDO(plan), nil
+	case ProviderIBM:
+		return renderDNSIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for dns-zone", plan.Provider)
 	}
@@ -422,6 +428,8 @@ func RenderWAFHCL(plan WAFPlan) (string, error) {
 		return renderWAFAWS(plan), nil
 	case ProviderGCP:
 		return renderWAFGCP(plan), nil
+	case ProviderIBM:
+		return renderWAFIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for waf-service", plan.Provider)
 	}
@@ -510,6 +518,8 @@ func RenderKubernetesHCL(plan K8sPlan) (string, error) {
 		return renderK8sGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderK8sDO(plan), nil
+	case ProviderIBM:
+		return renderK8sIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for managed-kubernetes", plan.Provider)
 	}
@@ -635,6 +645,8 @@ func RenderSecretsHCL(plan SecretsPlan) (string, error) {
 		return renderSecretsAWS(plan), nil
 	case ProviderGCP:
 		return renderSecretsGCP(plan), nil
+	case ProviderIBM:
+		return renderSecretsIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for secrets-manager", plan.Provider)
 	}
@@ -705,6 +717,8 @@ func RenderServerlessHCL(plan ServerlessPlan) (string, error) {
 		return renderServerlessGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderServerlessDO(plan), nil
+	case ProviderIBM:
+		return renderServerlessIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for serverless-function", plan.Provider)
 	}

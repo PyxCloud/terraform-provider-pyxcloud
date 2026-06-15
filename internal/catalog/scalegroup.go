@@ -207,6 +207,8 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		plan.ResourceType = "aws_autoscaling_group"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_region_instance_group_manager"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_instance_group"
 	}
 	return plan, nil
 }

@@ -26,6 +26,7 @@ const (
 	cspAWS = "aws"
 	cspGCP = "gcp"
 	cspDO  = "do"
+	cspIBM = "ibm" // wave-2: IBM Cloud (IBM-Cloud/ibm provider)
 )
 
 // Provider-facing names (Terraform `provider` attribute / ENABLED_LAUNCH_PROVIDERS).
@@ -33,13 +34,18 @@ const (
 	ProviderAWS          = "aws"
 	ProviderGCP          = "gcp"
 	ProviderDigitalOcean = "digitalocean"
+	ProviderIBM          = "ibm" // wave-2: IBM Cloud
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
+// For IBM Cloud the provider-facing name and the catalog csp token are both
+// "ibm" (unlike DigitalOcean, where the provider speaks "digitalocean" but the
+// catalog csp token is "do").
 var providerToCSP = map[string]string{
 	ProviderAWS:          cspAWS,
 	ProviderGCP:          cspGCP,
 	ProviderDigitalOcean: cspDO,
+	ProviderIBM:          cspIBM,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

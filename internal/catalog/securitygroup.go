@@ -21,6 +21,10 @@ const (
 	awsRulesPerDirectionMax = 60
 	gcpRulesPerFirewallMax  = 100
 	doRulesPerDirectionMax  = 50
+	// IBM VPC security groups support a generous rule budget; the default IBM VPC
+	// quota allows many rules per security group. We budget conservatively per
+	// direction to mirror the AWS-style guard (a breach is a hard plan-time error).
+	ibmRulesPerDirectionMax = 100
 )
 
 // Protocol tokens (canonical, provider-neutral).
@@ -192,6 +196,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "google_compute_firewall"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_firewall"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_security_group"
 	}
 	return plan, nil
 }
@@ -244,6 +250,13 @@ func enforceRuleLimits(provider string, rules []RulePlan) error {
 		}
 		if egress > doRulesPerDirectionMax {
 			return fmt.Errorf("security-group: %d outbound rules exceed the DigitalOcean firewall limit of %d", egress, doRulesPerDirectionMax)
+		}
+	case ProviderIBM:
+		if ingress > ibmRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d inbound rules exceed the IBM VPC security-group limit of %d", ingress, ibmRulesPerDirectionMax)
+		}
+		if egress > ibmRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d outbound rules exceed the IBM VPC security-group limit of %d", egress, ibmRulesPerDirectionMax)
 		}
 	}
 	return nil

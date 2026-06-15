@@ -131,6 +131,8 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 		plan.ResourceType = "google_storage_bucket"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_spaces_bucket"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_cos_bucket"
 	}
 	return plan, nil
 }

@@ -45,6 +45,29 @@ var vmOSCatalogCSV string
 //go:embed mdb_catalog.csv
 var mdbCatalogCSV string
 
+// IBM Cloud (wave-2) catalog snapshots. The live PyxCloud catalog ETL has no IBM
+// rows yet (the censused `region`/`virtual_machine`/`managed_database` tables
+// cover the wave-1 providers only), so these IBM snapshots are AUTHORED from the
+// public IBM Cloud catalog (VPC regions/zones, instance profiles, stock images,
+// and ICD database plans) and kept in dedicated IBM-only files so they merge
+// without conflict alongside the wave-1 snapshots. They have the SAME column
+// shape as the wave-1 CSVs and are parsed by the same parsers, then merged into
+// the EmbeddedCatalog indexes — keeping IBM resolution catalog-driven and
+// deterministic. This authoring gap (no live IBM ETL) is documented in the PR; a
+// future IBM ETL drops these files and feeds the shared tables instead.
+//
+//go:embed ibm_catalog.csv
+var ibmRegionCatalogCSV string
+
+//go:embed ibm_vm_catalog.csv
+var ibmVMCatalogCSV string
+
+//go:embed ibm_vm_os_catalog.csv
+var ibmVMOSCatalogCSV string
+
+//go:embed ibm_mdb_catalog.csv
+var ibmMDBCatalogCSV string
+
 // EmbeddedCatalog resolves regions, virtual_machine SKUs, and OS images against
 // the embedded snapshots.
 type EmbeddedCatalog struct {
@@ -82,6 +105,13 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Merge the authored IBM Cloud (wave-2) region snapshot. Same column shape,
+	// same parser; appended after the wave-1 rows.
+	ibmRows, err := parseRegionCSV(ibmRegionCatalogCSV)
+	if err != nil {
+		return nil, err
+	}
+	rows = append(rows, ibmRows...)
 	c := &EmbeddedCatalog{byCSPRegion: make(map[string]RegionRow, len(rows)), rows: rows}
 	for _, r := range rows {
 		// First row for a (csp, region_name) wins; the snapshot is already
@@ -96,6 +126,11 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	if err != nil {
 		return nil, err
 	}
+	ibmVMRows, err := parseVMCSV(ibmVMCatalogCSV)
+	if err != nil {
+		return nil, err
+	}
+	vmRows = append(vmRows, ibmVMRows...)
 	c.vmRows = vmRows
 	c.vmByRegionArch = make(map[string][]VMRow, len(vmRows))
 	for _, r := range vmRows {
@@ -107,6 +142,11 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	if err != nil {
 		return nil, err
 	}
+	ibmOSRows, err := parseOSCSV(ibmVMOSCatalogCSV)
+	if err != nil {
+		return nil, err
+	}
+	osRows = append(osRows, ibmOSRows...)
 	c.osByKey = make(map[string]OSImageRow, len(osRows))
 	for _, r := range osRows {
 		c.osByKey[osKey(r.CSP, r.CSPRegion, r.OSName, r.OSVersion, r.Architecture)] = r
@@ -116,6 +156,11 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	if err != nil {
 		return nil, err
 	}
+	ibmMDBRows, err := parseMDBCSV(ibmMDBCatalogCSV)
+	if err != nil {
+		return nil, err
+	}
+	mdbRows = append(mdbRows, ibmMDBRows...)
 	c.mdbRows = mdbRows
 	c.mdbByRegionEng = make(map[string][]MDBRow, len(mdbRows))
 	for _, r := range mdbRows {
@@ -318,7 +363,7 @@ func (c *EmbeddedCatalog) ResolveRegion(_ context.Context, regionName, provider 
 	csp, ok := ProviderToCSP(provider)
 	if !ok {
 		return RegionRow{}, fmt.Errorf(
-			"unknown provider %q: wave-1 launch providers are aws, gcp, digitalocean", provider)
+			"unknown provider %q: supported providers are aws, gcp, digitalocean, ibm", provider)
 	}
 	row, ok := c.byCSPRegion[key(csp, regionName)]
 	if !ok {

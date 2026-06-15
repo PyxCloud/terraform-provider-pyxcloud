@@ -242,6 +242,8 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		plan.ResourceType = "google_compute_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_droplet"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_instance"
 	}
 	return plan, nil
 }
@@ -314,6 +316,9 @@ var preferredFamilies = map[string]int{
 	"m5":      2, // AWS general-purpose
 	"n2":      2, // GCP general-purpose
 	"c5":      3, // AWS compute-optimised
+	"bx2":     0, // IBM balanced (general-purpose default)
+	"cx2":     3, // IBM compute-optimised
+	"mx2":     2, // IBM memory-optimised
 }
 
 func familyRank(r VMRow) int {

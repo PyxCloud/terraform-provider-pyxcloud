@@ -133,6 +133,9 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 		plan.ResourceType = "google_cloudfunctions2_function"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_app"
+	case ProviderIBM:
+		// IBM Cloud Code Engine application (container-image based serverless).
+		plan.ResourceType = "ibm_code_engine_app"
 	}
 	return plan, nil
 }
@@ -169,6 +172,19 @@ func concreteRuntime(provider, runtime, version string) string {
 			return "python:" + version
 		case RuntimeGo:
 			return "go:" + strings.TrimSuffix(version, ".x")
+		}
+	case ProviderIBM:
+		// IBM Code Engine is container-image based: the canonical runtime maps to a
+		// stock IBM Container Registry runtime image reference. The deployment
+		// artifact (a real image_reference) overrides this in the fixture; this is
+		// the deterministic default so the plan is complete.
+		switch runtime {
+		case RuntimeNode:
+			return "icr.io/codeengine/node:" + strings.Split(version, ".")[0]
+		case RuntimePython:
+			return "icr.io/codeengine/python:" + version
+		case RuntimeGo:
+			return "icr.io/codeengine/golang:" + strings.TrimSuffix(version, ".x")
 		}
 	}
 	return runtime + version

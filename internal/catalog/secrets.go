@@ -99,6 +99,9 @@ func TranslateSecrets(ctx context.Context, cat RegionCatalog, spec SecretsSpec) 
 		plan.ResourceType = "aws_secretsmanager_secret"
 	case ProviderGCP:
 		plan.ResourceType = "google_secret_manager_secret"
+	case ProviderIBM:
+		// IBM Cloud Secrets Manager arbitrary secret (in a Secrets Manager instance).
+		plan.ResourceType = "ibm_sm_arbitrary_secret"
 	}
 	return plan, nil
 }
