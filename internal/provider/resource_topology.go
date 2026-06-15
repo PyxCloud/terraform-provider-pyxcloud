@@ -317,6 +317,35 @@ type managedDatabasePlanModel struct {
 	ResourceType       types.String   `tfsdk:"resource_type"`
 }
 
+// objectStorageModel maps the abstract `object_storage` block of a place
+// (pd-TF-S3): canonical `object-storage { name, versioning, public=false }`,
+// placed in the place's region. PRIVATE BY DEFAULT — `public` defaults to false
+// and that enforces the provider public-access-block; making a bucket public is
+// an explicit opt-in. `force_destroy` defaults to false (production-safe); the
+// TEST round-trip override sets it true so a just-created bucket tears down clean.
+type objectStorageModel struct {
+	Name         types.String `tfsdk:"name"`
+	Versioning   types.Bool   `tfsdk:"versioning"`
+	Public       types.Bool   `tfsdk:"public"`
+	ForceDestroy types.Bool   `tfsdk:"force_destroy"`
+}
+
+// objectStoragePlanModel is the computed, catalog-resolved concrete
+// object/blob-storage plan (the abstract→concrete S3 / GCS / Spaces translation
+// surfaced back into state).
+type objectStoragePlanModel struct {
+	Provider     types.String `tfsdk:"provider"`
+	CSP          types.String `tfsdk:"csp"`
+	RegionName   types.String `tfsdk:"region_name"`
+	CSPRegion    types.String `tfsdk:"csp_region"`
+	BucketName   types.String `tfsdk:"bucket_name"`
+	LogicalName  types.String `tfsdk:"logical_name"`
+	Versioning   types.Bool   `tfsdk:"versioning"`
+	Public       types.Bool   `tfsdk:"public"`
+	ForceDestroy types.Bool   `tfsdk:"force_destroy"`
+	ResourceType types.String `tfsdk:"resource_type"`
+}
+
 // topologyModel maps the pyxcloud_topology resource state.
 type topologyModel struct {
 	ID                  types.String              `tfsdk:"id"`
@@ -336,6 +365,8 @@ type topologyModel struct {
 	LoadBalancerPlan    *loadBalancerPlanModel    `tfsdk:"load_balancer_plan"`
 	ManagedDatabase     *managedDatabaseModel     `tfsdk:"managed_database"`
 	ManagedDatabasePlan *managedDatabasePlanModel `tfsdk:"managed_database_plan"`
+	ObjectStorage       *objectStorageModel       `tfsdk:"object_storage"`
+	ObjectStoragePlan   *objectStoragePlanModel   `tfsdk:"object_storage_plan"`
 }
 
 func (r *topologyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -943,6 +974,63 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					"resource_type":  schema.StringAttribute{Computed: true},
 				},
 			},
+			"object_storage": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Abstract object/blob-storage for the place (pd-TF-S3): " +
+					"canonical `object-storage { name, versioning, public }`, placed in the " +
+					"place's region. Resolved to `aws_s3_bucket` (+ versioning + " +
+					"public-access-block) / `google_storage_bucket` / `digitalocean_spaces_bucket` " +
+					"for the topology's provider at plan time. The bucket name is derived to be " +
+					"globally-unique-safe (sanitised name + a deterministic hash of " +
+					"csp/region/name). PRIVATE BY DEFAULT: `public` defaults to `false`, which " +
+					"enforces the full public-access-block (AWS) / enforced public-access-" +
+					"prevention (GCP) / private ACL (DO) — PyxCloud never emits a world-readable " +
+					"bucket by default; making it public is an explicit opt-in.",
+				Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Object-storage/component name; defaults to the topology name.",
+					},
+					"versioning": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Keep object versions (S3/GCS/Spaces versioning). " +
+							"Defaults to disabled.",
+					},
+					"public": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Allow PUBLIC read access. Defaults to `false` " +
+							"(private). When false, the provider public-access-block is enforced so " +
+							"the bucket can never be made world-readable by an errant ACL/policy. " +
+							"Set `true` only when you explicitly intend a public bucket.",
+					},
+					"force_destroy": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Allow Terraform to delete a NON-empty bucket on " +
+							"destroy. Defaults to `false` (refuse to drop a bucket that still holds " +
+							"objects). The TEST round-trip sets this `true` ONLY so a just-created " +
+							"bucket tears down cleanly — that is a test-only override.",
+					},
+				},
+			},
+			"object_storage_plan": schema.SingleNestedAttribute{
+				Computed: true,
+				MarkdownDescription: "Computed concrete object/blob-storage plan: the " +
+					"catalog-resolved translation of the abstract `object_storage` for the " +
+					"topology's provider (location from the region catalog; globally-unique-safe " +
+					"bucket name; private-by-default access controls).",
+				Attributes: map[string]schema.Attribute{
+					"provider":      schema.StringAttribute{Computed: true},
+					"csp":           schema.StringAttribute{Computed: true},
+					"region_name":   schema.StringAttribute{Computed: true},
+					"csp_region":    schema.StringAttribute{Computed: true},
+					"bucket_name":   schema.StringAttribute{Computed: true},
+					"logical_name":  schema.StringAttribute{Computed: true},
+					"versioning":    schema.BoolAttribute{Computed: true},
+					"public":        schema.BoolAttribute{Computed: true},
+					"force_destroy": schema.BoolAttribute{Computed: true},
+					"resource_type": schema.StringAttribute{Computed: true},
+				},
+			},
 		},
 	}
 }
@@ -1054,6 +1142,15 @@ func (r *topologyResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 			}
 		}
 	}
+	if plan.ObjectStorage != nil {
+		if _, err := r.translateObjectStorage(ctx, plan); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("object_storage"),
+				"Object/blob-storage not resolvable / invalid against the PyxCloud catalog",
+				err.Error(),
+			)
+		}
+	}
 }
 
 func (r *topologyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -1093,6 +1190,11 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Managed-database translation failed", err.Error())
 		return
 	}
+	osPlan, err := r.translateObjectStorage(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Object/blob-storage translation failed", err.Error())
+		return
+	}
 
 	created, err := r.client.CreateTopology(ctx, modelToTopology(plan))
 	if err != nil {
@@ -1113,6 +1215,8 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 	state.LoadBalancerPlan = lbPlan
 	state.ManagedDatabase = plan.ManagedDatabase
 	state.ManagedDatabasePlan = dbPlan
+	state.ObjectStorage = plan.ObjectStorage
+	state.ObjectStoragePlan = osPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
@@ -1620,6 +1724,59 @@ func (r *topologyResource) translateManagedDatabase(ctx context.Context, m topol
 	return out, nil
 }
 
+// translateObjectStorage resolves the abstract object_storage block into a
+// concrete plan via the catalog (location from the region catalog; bucket name
+// derived globally-unique-safe). PRIVATE BY DEFAULT — an unset `public` resolves
+// to false, which enforces the provider public-access-block. `force_destroy`
+// defaults to false unless the block explicitly overrides it (the test override).
+// Returns (nil, nil) when no object_storage is declared.
+func (r *topologyResource) translateObjectStorage(ctx context.Context, m topologyModel) (*objectStoragePlanModel, error) {
+	if m.ObjectStorage == nil {
+		return nil, nil
+	}
+	os := m.ObjectStorage
+
+	name := os.Name.ValueString()
+	if name == "" {
+		name = m.Name.ValueString()
+	}
+
+	// force_destroy is an Optional bool: a null value takes the production-safe
+	// default (false, handled inside the catalog via a nil pointer); a set value
+	// overrides (the test-only true).
+	var forceDestroy *bool
+	if !os.ForceDestroy.IsNull() && !os.ForceDestroy.IsUnknown() {
+		v := os.ForceDestroy.ValueBool()
+		forceDestroy = &v
+	}
+
+	spec := catalog.ObjectStorageSpec{
+		Name:         name,
+		Region:       m.Region.ValueString(),
+		Provider:     m.Provider.ValueString(),
+		Versioning:   os.Versioning.ValueBool(),
+		Public:       os.Public.ValueBool(),
+		ForceDestroy: forceDestroy,
+	}
+	cp, err := catalog.TranslateObjectStorage(ctx, r.catalog, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	return &objectStoragePlanModel{
+		Provider:     types.StringValue(cp.Provider),
+		CSP:          types.StringValue(cp.CSP),
+		RegionName:   types.StringValue(cp.RegionName),
+		CSPRegion:    types.StringValue(cp.CSPRegion),
+		BucketName:   types.StringValue(cp.BucketName),
+		LogicalName:  types.StringValue(cp.LogicalName),
+		Versioning:   types.BoolValue(cp.Versioning),
+		Public:       types.BoolValue(cp.Public),
+		ForceDestroy: types.BoolValue(cp.ForceDestroy),
+		ResourceType: types.StringValue(cp.ResourceType),
+	}, nil
+}
+
 // dbPlanModelToCatalog reconstructs the catalog plan view from a stored plan model
 // so the data-safety guard can diff prior state against the new plan. Only the
 // replacement-forcing attributes the guard inspects are needed.
@@ -1710,6 +1867,15 @@ func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, r
 		}
 		refreshed.ManagedDatabasePlan = dbPlan
 	}
+	refreshed.ObjectStorage = state.ObjectStorage
+	if refreshed.ObjectStorage != nil {
+		osPlan, terr := r.translateObjectStorage(ctx, refreshed)
+		if terr != nil {
+			resp.Diagnostics.AddError("Object/blob-storage translation failed", terr.Error())
+			return
+		}
+		refreshed.ObjectStoragePlan = osPlan
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, refreshed)...)
 }
 
@@ -1759,6 +1925,11 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Managed-database translation failed", err.Error())
 		return
 	}
+	osPlan, err := r.translateObjectStorage(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Object/blob-storage translation failed", err.Error())
+		return
+	}
 	// DATA-SAFETY GUARD (defence in depth): re-assert at apply time that the change
 	// would not force-replace the live DB (ModifyPlan is the primary gate at plan
 	// time; this catches any path that reaches Update directly).
@@ -1793,6 +1964,8 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 	newState.LoadBalancerPlan = lbPlan
 	newState.ManagedDatabase = plan.ManagedDatabase
 	newState.ManagedDatabasePlan = dbPlan
+	newState.ObjectStorage = plan.ObjectStorage
+	newState.ObjectStoragePlan = osPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
 
