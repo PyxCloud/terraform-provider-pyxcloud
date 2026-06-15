@@ -112,6 +112,8 @@ func TranslateSecrets(ctx context.Context, cat RegionCatalog, spec SecretsSpec) 
 	case ProviderIBM:
 		// IBM Cloud Secrets Manager arbitrary secret (in a Secrets Manager instance).
 		plan.ResourceType = "ibm_sm_arbitrary_secret"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_kms_secret"
 	}
 	return plan, nil
 }

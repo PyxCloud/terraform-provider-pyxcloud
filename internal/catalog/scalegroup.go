@@ -218,6 +218,8 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		plan.ResourceType = "oci_core_instance_pool"
 	case ProviderIBM:
 		plan.ResourceType = "ibm_is_instance_group"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_ess_scaling_group"
 	}
 	return plan, nil
 }

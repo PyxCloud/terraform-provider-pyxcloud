@@ -98,6 +98,23 @@ var ibmVMOSCatalogCSV string
 //go:embed ibm_mdb_catalog.csv
 var ibmMDBCatalogCSV string
 
+// alibabaCatalogCSV is the Alibaba Cloud (alicloud) wave-2 catalog snapshot
+// (pd-TF-PROVIDERS-WAVE2: alibaba). It is the human-readable, Alibaba-only
+// source-of-truth + gap record: there is NO live PyxCloud ETL for Alibaba yet, so
+// these rows are AUTHORED from the public Alibaba catalog and documented as a gap.
+// The SAME rows are mirrored into the four loader CSVs above (region/vm/os/mdb),
+// which is what EmbeddedCatalog actually parses; this file is embedded for
+// provenance and is validated non-empty at load (a build-time invariant). When the
+// live Alibaba ETL lands it REPLACES these rows verbatim — the resolution code does
+// not change (it is catalog-driven, never a hard-coded provider map).
+//
+//go:embed alibaba_catalog.csv
+var alibabaCatalogCSV string
+
+// AlibabaCatalogProvenance returns the embedded Alibaba source-of-truth/gap record
+// (test/debug helper, and the provenance the gap documentation references).
+func AlibabaCatalogProvenance() string { return alibabaCatalogCSV }
+
 // EmbeddedCatalog resolves regions, virtual_machine SKUs, and OS images against
 // the embedded snapshots.
 type EmbeddedCatalog struct {
@@ -222,6 +239,13 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	// path — no separate OCI engine.
 	if err := c.loadOracleCatalog(oracleCatalogCSV); err != nil {
 		return nil, err
+	}
+	// Build-time invariant: the Alibaba provenance/gap record must be present
+	// (it documents that the alicloud rows mirrored into the loader CSVs are
+	// authored from the public catalog, not yet a live ETL). An empty embed is a
+	// packaging error, not a runtime condition.
+	if strings.TrimSpace(alibabaCatalogCSV) == "" {
+		return nil, fmt.Errorf("parse alibaba catalog: embedded provenance snapshot is empty")
 	}
 	return c, nil
 }
@@ -572,7 +596,7 @@ func (c *EmbeddedCatalog) ResolveRegion(_ context.Context, regionName, provider 
 	csp, ok := ProviderToCSP(provider)
 	if !ok {
 		return RegionRow{}, fmt.Errorf(
-			"unknown provider %q: supported providers are aws, gcp, digitalocean, azure, linode, ubicloud, oracle, ibm", provider)
+			"unknown provider %q: supported providers are aws, gcp, digitalocean, azure, linode, ubicloud, oracle, ibm, alicloud", provider)
 	}
 	row, ok := c.byCSPRegion[key(csp, regionName)]
 	if !ok {

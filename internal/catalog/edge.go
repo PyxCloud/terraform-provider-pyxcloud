@@ -77,6 +77,16 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 				"use AWS Route53 private hosted zones or GCP Cloud DNS private zones",
 		}
 	}
+	if spec.Private && provider == ProviderAlibaba {
+		// Alibaba's alicloud_alidns_domain is an authoritative PUBLIC zone; private
+		// DNS is a separate product (PrivateZone) we do not model in the macro
+		// component. Surface a clean plan-time error rather than invent a resource.
+		return DNSZonePlan{}, ErrComponentUnsupported{
+			Component: TypeDNSZone, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Alibaba Cloud alicloud_alidns_domain is a public authoritative zone; for a " +
+				"PRIVATE zone use AWS Route53 private hosted zones or GCP Cloud DNS private zones",
+		}
+	}
 	plan := DNSZonePlan{
 		Provider:    provider,
 		CSP:         row.CSP,
@@ -113,6 +123,8 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		} else {
 			plan.ResourceType = "ibm_cis_domain"
 		}
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_alidns_domain"
 	}
 	return plan, nil
 }
@@ -248,6 +260,8 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 	case ProviderAzure:
 		// Azure Front Door fronts any origin (object-storage or load-balancer).
 		plan.ResourceType = "azurerm_cdn_frontdoor_profile"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_cdn_domain_new"
 	}
 	return plan, nil
 }
@@ -346,6 +360,13 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 				"(regional) CIS WAF managed rule group attached to a CIS domain",
 		}
 	}
+	if provider == ProviderAlibaba && scope == WAFScopeCloudFront {
+		return WAFPlan{}, ErrComponentUnsupported{
+			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "the cloudfront WAF scope is AWS-specific; on Alibaba Cloud use the default " +
+				"(regional) WAF domain protection (alicloud_waf_domain)",
+		}
+	}
 	plan := WAFPlan{
 		Provider:      provider,
 		CSP:           row.CSP,
@@ -367,6 +388,8 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 	case ProviderIBM:
 		// IBM Cloud Internet Services managed WAF rule group on a CIS domain.
 		plan.ResourceType = "ibm_cis_waf_group"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_waf_domain"
 	}
 	return plan, nil
 }

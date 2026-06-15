@@ -161,6 +161,11 @@ func TranslateCache(ctx context.Context, cat RegionCatalog, spec CacheSpec) (Cac
 		if plan.Version == "" {
 			plan.Version = "7"
 		}
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_kvstore_instance"
+		if plan.Version == "" {
+			plan.Version = "7.0"
+		}
 	}
 	return plan, nil
 }
@@ -212,6 +217,21 @@ func cacheNodeClass(provider string, memGB int) string {
 			return "8gb"
 		default:
 			return "16gb"
+		}
+	case ProviderAlibaba:
+		// ApsaraDB for Redis (community edition) standard instance classes, keyed
+		// by memory. The "default" suffix is the standard architecture class.
+		switch {
+		case memGB <= 1:
+			return "redis.basic.small.default"
+		case memGB <= 2:
+			return "redis.basic.mid.default"
+		case memGB <= 4:
+			return "redis.basic.large.default"
+		case memGB <= 8:
+			return "redis.basic.2xlarge.default"
+		default:
+			return "redis.basic.4xlarge.default"
 		}
 	}
 	return ""

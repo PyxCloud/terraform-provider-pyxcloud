@@ -274,6 +274,8 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		}
 	case ProviderIBM:
 		plan.ResourceType = "ibm_database"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_db_instance"
 	}
 	return plan, nil
 }

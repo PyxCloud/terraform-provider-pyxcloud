@@ -151,6 +151,8 @@ func TranslateQueue(ctx context.Context, cat RegionCatalog, spec QueueSpec) (Mes
 		plan.ResourceType = "azurerm_servicebus_queue"
 	case ProviderOracle:
 		plan.ResourceType = "oci_queue_queue"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_message_service_queue"
 	}
 	return plan, nil
 }
@@ -209,6 +211,8 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 		plan.ResourceType = "oci_streaming_stream"
 	case ProviderIBM:
 		plan.ResourceType = "ibm_resource_instance"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_alikafka_instance"
 	}
 	return plan, nil
 }

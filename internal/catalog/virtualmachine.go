@@ -252,6 +252,8 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		plan.ResourceType = "oci_core_instance"
 	case ProviderIBM:
 		plan.ResourceType = "ibm_is_instance"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_instance"
 	}
 	return plan, nil
 }

@@ -139,6 +139,8 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 		plan.ResourceType = "oci_objectstorage_bucket"
 	case ProviderIBM:
 		plan.ResourceType = "ibm_cos_bucket"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_oss_bucket"
 	}
 	return plan, nil
 }

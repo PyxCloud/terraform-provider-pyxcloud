@@ -84,3 +84,5 @@ United States,East Coast North,New York,nyc3,New York 3,do
 Asia Pacific,Singapore,Singapore,sgp1,Singapore 1,do
 Asia Pacific,Australia,Sydney,syd1,Sydney 1,do
 North America (ex US),Canada,Toronto,tor1,Toronto 1,do
+Europe,Germany,Frankfurt,eu-central-1,Germany (Frankfurt),alicloud
+Asia Pacific,Singapore,Singapore,ap-southeast-1,Singapore,alicloud

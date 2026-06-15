@@ -39,6 +39,8 @@ func RenderCacheHCL(plan CachePlan) (string, error) {
 		return renderCacheOCI(plan), nil
 	case ProviderIBM:
 		return renderCacheIBM(plan), nil
+	case ProviderAlibaba:
+		return renderCacheAlibaba(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for cache", plan.Provider)
 	}
@@ -151,6 +153,8 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 					"Pub/Sub (gcp).")
 		case ProviderOracle:
 			return renderQueueOCI(plan), nil
+		case ProviderAlibaba:
+			return renderQueueAlibaba(plan), nil
 		}
 	case KindStream:
 		switch plan.Provider {
@@ -169,6 +173,8 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 			return renderStreamOCI(plan), nil
 		case ProviderIBM:
 			return renderStreamIBM(plan), nil
+		case ProviderAlibaba:
+			return renderStreamAlibaba(plan), nil
 		}
 	}
 	return "", fmt.Errorf("render: unsupported provider %q for messaging kind %q", plan.Provider, plan.Kind)
@@ -309,6 +315,8 @@ func RenderDNSZoneHCL(plan DNSZonePlan) (string, error) {
 		return renderDNSOCI(plan), nil
 	case ProviderIBM:
 		return renderDNSIBM(plan), nil
+	case ProviderAlibaba:
+		return renderDNSAlibaba(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for dns-zone", plan.Provider)
 	}
@@ -382,6 +390,8 @@ func RenderCDNHCL(plan CDNPlan) (string, error) {
 			"cdn-service",
 			"The Ubicloud Terraform provider exposes no CDN resource; use CloudFront (aws), Cloud CDN "+
 				"(gcp), or the DigitalOcean CDN.")
+	case ProviderAlibaba:
+		return renderCDNAlibaba(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for cdn-service", plan.Provider)
 	}
@@ -484,6 +494,8 @@ func RenderWAFHCL(plan WAFPlan) (string, error) {
 		return renderWAFOCI(plan), nil
 	case ProviderIBM:
 		return renderWAFIBM(plan), nil
+	case ProviderAlibaba:
+		return renderWAFAlibaba(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for waf-service", plan.Provider)
 	}
@@ -585,6 +597,8 @@ func RenderKubernetesHCL(plan K8sPlan) (string, error) {
 		return renderK8sOCI(plan), nil
 	case ProviderIBM:
 		return renderK8sIBM(plan), nil
+	case ProviderAlibaba:
+		return renderK8sAlibaba(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for managed-kubernetes", plan.Provider)
 	}
@@ -721,6 +735,8 @@ func RenderSecretsHCL(plan SecretsPlan) (string, error) {
 		return renderSecretsOCI(plan), nil
 	case ProviderIBM:
 		return renderSecretsIBM(plan), nil
+	case ProviderAlibaba:
+		return renderSecretsAlibaba(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for secrets-manager", plan.Provider)
 	}
@@ -802,6 +818,8 @@ func RenderServerlessHCL(plan ServerlessPlan) (string, error) {
 		return renderServerlessOCI(plan), nil
 	case ProviderIBM:
 		return renderServerlessIBM(plan), nil
+	case ProviderAlibaba:
+		return renderServerlessAlibaba(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for serverless-function", plan.Provider)
 	}
