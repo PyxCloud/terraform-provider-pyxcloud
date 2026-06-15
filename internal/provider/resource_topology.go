@@ -18,7 +18,7 @@ import (
 // topologyResource manages a PyxCloud canonical topology.
 type topologyResource struct {
 	client  client.Client
-	catalog catalog.VMCatalog
+	catalog catalog.Catalog
 }
 
 var (
@@ -271,23 +271,71 @@ type loadBalancerPlanModel struct {
 	ResourceType  types.String            `tfsdk:"resource_type"`
 }
 
+// managedDatabaseModel maps the abstract `managed_database` block of a place
+// (pd-TF-MDB): canonical `engine`, `version`, sizing (`cpu`, `ram`), `storage_gb`,
+// `ha`, and `encrypted`, placed in the place's `network`/subnets and reachable
+// from its `security_group`. The `deletion_protection` / `skip_final_snapshot`
+// flags default to the production-safe values (protection on, final snapshot
+// taken); the test round-trip override flips them so teardown is clean.
+type managedDatabaseModel struct {
+	Name               types.String `tfsdk:"name"`
+	Engine             types.String `tfsdk:"engine"`
+	Version            types.String `tfsdk:"version"`
+	CPU                types.Int64  `tfsdk:"cpu"`
+	RAM                types.Int64  `tfsdk:"ram"`
+	StorageGB          types.Int64  `tfsdk:"storage_gb"`
+	HA                 types.Bool   `tfsdk:"ha"`
+	Encrypted          types.Bool   `tfsdk:"encrypted"`
+	DeletionProtection types.Bool   `tfsdk:"deletion_protection"`
+	SkipFinalSnapshot  types.Bool   `tfsdk:"skip_final_snapshot"`
+}
+
+// managedDatabasePlanModel is the computed, catalog-resolved concrete
+// managed-database plan (the abstract→concrete RDS / Cloud SQL / DO-cluster
+// translation surfaced back into state).
+type managedDatabasePlanModel struct {
+	Provider           types.String   `tfsdk:"provider"`
+	CSP                types.String   `tfsdk:"csp"`
+	RegionName         types.String   `tfsdk:"region_name"`
+	CSPRegion          types.String   `tfsdk:"csp_region"`
+	DBName             types.String   `tfsdk:"db_name"`
+	Engine             types.String   `tfsdk:"engine"`
+	EngineVersion      types.String   `tfsdk:"engine_version"`
+	DBClass            types.String   `tfsdk:"db_class"`
+	Family             types.String   `tfsdk:"family"`
+	CPU                types.Int64    `tfsdk:"cpu"`
+	RAM                types.Int64    `tfsdk:"ram"`
+	StorageGB          types.Int64    `tfsdk:"storage_gb"`
+	HA                 types.Bool     `tfsdk:"ha"`
+	Encrypted          types.Bool     `tfsdk:"encrypted"`
+	DeletionProtection types.Bool     `tfsdk:"deletion_protection"`
+	SkipFinalSnapshot  types.Bool     `tfsdk:"skip_final_snapshot"`
+	Zones              []types.String `tfsdk:"zones"`
+	NetworkName        types.String   `tfsdk:"network_name"`
+	SubnetNames        []types.String `tfsdk:"subnet_names"`
+	SecurityGroup      types.String   `tfsdk:"security_group"`
+	ResourceType       types.String   `tfsdk:"resource_type"`
+}
+
 // topologyModel maps the pyxcloud_topology resource state.
 type topologyModel struct {
-	ID                 types.String             `tfsdk:"id"`
-	Name               types.String             `tfsdk:"name"`
-	Provider           types.String             `tfsdk:"provider"`
-	Region             types.String             `tfsdk:"region"`
-	Components         []componentModel         `tfsdk:"components"`
-	Network            *networkModel            `tfsdk:"network"`
-	NetworkPlan        *networkPlanModel        `tfsdk:"network_plan"`
-	SecurityGroup      *securityGroupModel      `tfsdk:"security_group"`
-	SecurityGroupPlan  *securityGroupPlanModel  `tfsdk:"security_group_plan"`
-	VirtualMachine     *virtualMachineModel     `tfsdk:"virtual_machine"`
-	VirtualMachinePlan *virtualMachinePlanModel `tfsdk:"virtual_machine_plan"`
-	ScaleGroup         *scaleGroupModel         `tfsdk:"scale_group"`
-	ScaleGroupPlan     *scaleGroupPlanModel     `tfsdk:"scale_group_plan"`
-	LoadBalancer       *loadBalancerModel       `tfsdk:"load_balancer"`
-	LoadBalancerPlan   *loadBalancerPlanModel   `tfsdk:"load_balancer_plan"`
+	ID                  types.String              `tfsdk:"id"`
+	Name                types.String              `tfsdk:"name"`
+	Provider            types.String              `tfsdk:"provider"`
+	Region              types.String              `tfsdk:"region"`
+	Components          []componentModel          `tfsdk:"components"`
+	Network             *networkModel             `tfsdk:"network"`
+	NetworkPlan         *networkPlanModel         `tfsdk:"network_plan"`
+	SecurityGroup       *securityGroupModel       `tfsdk:"security_group"`
+	SecurityGroupPlan   *securityGroupPlanModel   `tfsdk:"security_group_plan"`
+	VirtualMachine      *virtualMachineModel      `tfsdk:"virtual_machine"`
+	VirtualMachinePlan  *virtualMachinePlanModel  `tfsdk:"virtual_machine_plan"`
+	ScaleGroup          *scaleGroupModel          `tfsdk:"scale_group"`
+	ScaleGroupPlan      *scaleGroupPlanModel      `tfsdk:"scale_group_plan"`
+	LoadBalancer        *loadBalancerModel        `tfsdk:"load_balancer"`
+	LoadBalancerPlan    *loadBalancerPlanModel    `tfsdk:"load_balancer_plan"`
+	ManagedDatabase     *managedDatabaseModel     `tfsdk:"managed_database"`
+	ManagedDatabasePlan *managedDatabasePlanModel `tfsdk:"managed_database_plan"`
 }
 
 func (r *topologyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -793,6 +841,108 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					"resource_type":  schema.StringAttribute{Computed: true},
 				},
 			},
+			"managed_database": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Abstract managed-database for the place (pd-TF-MDB): " +
+					"canonical `engine` (`postgres`/`mysql`), `version`, sizing (`cpu`, `ram`), " +
+					"`storage_gb`, `ha`, and `encrypted`, placed in the place's `network`/subnets " +
+					"and reachable from its `security_group`. Resolved to `aws_db_instance` (RDS) " +
+					"/ `google_sql_database_instance` / `digitalocean_database_cluster` for the " +
+					"topology's provider at plan time; the DB instance class comes from the " +
+					"`managed_database` catalog (never invented). DATA-SAFETY: changes that would " +
+					"force-replace an existing DB (encryption flip, engine change, identifier " +
+					"change, storage-type/class-family change) are a hard plan-time ERROR directing " +
+					"you to a snapshot-restore migration — never a silent destructive replace " +
+					"(the guard added after the 2026-06-15 RDS data-loss incident). Defaults are " +
+					"production-safe: `deletion_protection = true` and a final snapshot on destroy.",
+				Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Managed-database/component name; defaults to the topology name.",
+					},
+					"engine": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Database engine: `postgres` (default) or `mysql`.",
+					},
+					"version": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "Engine version; defaults to the catalog default " +
+							"(postgres `16` / mysql `8.0`).",
+					},
+					"cpu": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Abstract vCPU count. Resolved to a concrete DB instance class.",
+					},
+					"ram": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Abstract RAM in GiB. Resolved to a concrete DB instance class.",
+					},
+					"storage_gb": schema.Int64Attribute{
+						Optional: true,
+						MarkdownDescription: "Allocated storage in GiB (clamped to a 20 GiB floor; " +
+							"defaults to 20).",
+					},
+					"ha": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "High availability: Multi-AZ (AWS) / REGIONAL (GCP) / " +
+							"2-node cluster (DO). Defaults to single-AZ.",
+					},
+					"encrypted": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Storage encryption at rest. IMMUTABLE on an existing " +
+							"DB — toggling it on a live DB is a hard plan-time error (use a " +
+							"copy-snapshot-with-KMS → restore migration).",
+					},
+					"deletion_protection": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Guard against accidental destroy. Defaults to `true` " +
+							"(production-intent). The TEST round-trip sets this `false` ONLY so " +
+							"teardown is clean — that is a test-only override.",
+					},
+					"skip_final_snapshot": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Skip the final snapshot on destroy. Defaults to " +
+							"`false` (a final snapshot is always taken). The TEST round-trip sets " +
+							"this `true` ONLY so teardown is clean — that is a test-only override.",
+					},
+				},
+			},
+			"managed_database_plan": schema.SingleNestedAttribute{
+				Computed: true,
+				MarkdownDescription: "Computed concrete managed-database plan: the catalog-resolved " +
+					"translation of the abstract `managed_database` for the topology's provider " +
+					"(DB instance class from the `managed_database` catalog; multi-AZ zones from " +
+					"the region catalog; production-safe defaults).",
+				Attributes: map[string]schema.Attribute{
+					"provider":            schema.StringAttribute{Computed: true},
+					"csp":                 schema.StringAttribute{Computed: true},
+					"region_name":         schema.StringAttribute{Computed: true},
+					"csp_region":          schema.StringAttribute{Computed: true},
+					"db_name":             schema.StringAttribute{Computed: true},
+					"engine":              schema.StringAttribute{Computed: true},
+					"engine_version":      schema.StringAttribute{Computed: true},
+					"db_class":            schema.StringAttribute{Computed: true},
+					"family":              schema.StringAttribute{Computed: true},
+					"cpu":                 schema.Int64Attribute{Computed: true},
+					"ram":                 schema.Int64Attribute{Computed: true},
+					"storage_gb":          schema.Int64Attribute{Computed: true},
+					"ha":                  schema.BoolAttribute{Computed: true},
+					"encrypted":           schema.BoolAttribute{Computed: true},
+					"deletion_protection": schema.BoolAttribute{Computed: true},
+					"skip_final_snapshot": schema.BoolAttribute{Computed: true},
+					"zones": schema.ListAttribute{
+						Computed:    true,
+						ElementType: types.StringType,
+					},
+					"network_name": schema.StringAttribute{Computed: true},
+					"subnet_names": schema.ListAttribute{
+						Computed:    true,
+						ElementType: types.StringType,
+					},
+					"security_group": schema.StringAttribute{Computed: true},
+					"resource_type":  schema.StringAttribute{Computed: true},
+				},
+			},
 		},
 	}
 }
@@ -873,6 +1023,37 @@ func (r *topologyResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 			)
 		}
 	}
+	if plan.ManagedDatabase != nil {
+		nextDBPlan, err := r.translateManagedDatabase(ctx, plan)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("managed_database"),
+				"Managed-database not resolvable / invalid against the PyxCloud catalog",
+				err.Error(),
+			)
+		} else if !req.State.Raw.IsNull() {
+			// DATA-SAFETY GUARD (SPEC §5.6): on an UPDATE (prior state exists), diff
+			// the prior resolved DB plan against the new one and BLOCK at plan time
+			// any change that would force-replace the live DB and destroy its data
+			// (encryption flip, engine change, identifier change, storage-type/
+			// class-family change). This is the guard added after the 2026-06-15 RDS
+			// data-loss incident — it never silently proceeds with a destructive
+			// replacement.
+			var state topologyModel
+			resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+			if !resp.Diagnostics.HasError() {
+				prior := dbPlanModelToCatalog(state.ManagedDatabasePlan)
+				next := dbPlanModelToCatalog(nextDBPlan)
+				if derr := catalog.CheckManagedDatabaseDataSafety(prior, next); derr != nil {
+					resp.Diagnostics.AddAttributeError(
+						path.Root("managed_database"),
+						"Managed-database change would force-replace the live database (data-loss guard)",
+						derr.Error(),
+					)
+				}
+			}
+		}
+	}
 }
 
 func (r *topologyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -907,6 +1088,11 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Load-balancer translation failed", err.Error())
 		return
 	}
+	dbPlan, err := r.translateManagedDatabase(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Managed-database translation failed", err.Error())
+		return
+	}
 
 	created, err := r.client.CreateTopology(ctx, modelToTopology(plan))
 	if err != nil {
@@ -925,6 +1111,8 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 	state.ScaleGroupPlan = asgPlan
 	state.LoadBalancer = plan.LoadBalancer
 	state.LoadBalancerPlan = lbPlan
+	state.ManagedDatabase = plan.ManagedDatabase
+	state.ManagedDatabasePlan = dbPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
@@ -1337,6 +1525,117 @@ func (r *topologyResource) translateLoadBalancer(ctx context.Context, m topology
 	return out, nil
 }
 
+// translateManagedDatabase resolves the abstract managed_database block into a
+// concrete plan via the catalog (DB instance class from `managed_database`,
+// multi-AZ zones from the region catalog). Production-safe defaults
+// (deletion_protection true, final snapshot taken) are applied unless the block
+// explicitly overrides them. Returns (nil, nil) when none is declared.
+func (r *topologyResource) translateManagedDatabase(ctx context.Context, m topologyModel) (*managedDatabasePlanModel, error) {
+	if m.ManagedDatabase == nil {
+		return nil, nil
+	}
+	db := m.ManagedDatabase
+
+	name := db.Name.ValueString()
+	if name == "" {
+		name = m.Name.ValueString()
+	}
+	network, sgName := "", ""
+	var subnets []string
+	if m.Network != nil {
+		network = m.Name.ValueString()
+		// Spread the DB subnet group across all the network's subnets (multi-AZ).
+		for i := range m.Network.Subnets {
+			subnets = append(subnets, fmt.Sprintf("%s-subnet-%d", m.Name.ValueString(), i+1))
+		}
+	}
+	if m.SecurityGroup != nil {
+		sgName = m.SecurityGroup.Name.ValueString()
+		if sgName == "" {
+			sgName = m.Name.ValueString()
+		}
+	}
+
+	// The flags are Optional bools: a null value takes the production-safe default
+	// (handled inside the catalog via nil pointers); a set value overrides.
+	var deletionProtection, skipFinalSnapshot *bool
+	if !db.DeletionProtection.IsNull() && !db.DeletionProtection.IsUnknown() {
+		v := db.DeletionProtection.ValueBool()
+		deletionProtection = &v
+	}
+	if !db.SkipFinalSnapshot.IsNull() && !db.SkipFinalSnapshot.IsUnknown() {
+		v := db.SkipFinalSnapshot.ValueBool()
+		skipFinalSnapshot = &v
+	}
+
+	spec := catalog.ManagedDatabaseSpec{
+		Name:               name,
+		Region:             m.Region.ValueString(),
+		Provider:           m.Provider.ValueString(),
+		Engine:             db.Engine.ValueString(),
+		Version:            db.Version.ValueString(),
+		CPU:                int(db.CPU.ValueInt64()),
+		RAM:                int(db.RAM.ValueInt64()),
+		StorageGB:          int(db.StorageGB.ValueInt64()),
+		HA:                 db.HA.ValueBool(),
+		Encrypted:          db.Encrypted.ValueBool(),
+		DeletionProtection: deletionProtection,
+		SkipFinalSnapshot:  skipFinalSnapshot,
+		Network:            network,
+		Subnets:            subnets,
+		SecurityGroup:      sgName,
+	}
+	cp, err := catalog.TranslateManagedDatabase(ctx, r.catalog, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &managedDatabasePlanModel{
+		Provider:           types.StringValue(cp.Provider),
+		CSP:                types.StringValue(cp.CSP),
+		RegionName:         types.StringValue(cp.RegionName),
+		CSPRegion:          types.StringValue(cp.CSPRegion),
+		DBName:             types.StringValue(cp.DBName),
+		Engine:             types.StringValue(cp.Engine),
+		EngineVersion:      types.StringValue(cp.EngineVersion),
+		DBClass:            types.StringValue(cp.DBClass),
+		Family:             types.StringValue(cp.Family),
+		CPU:                types.Int64Value(int64(cp.CPU)),
+		RAM:                types.Int64Value(int64(cp.RAM)),
+		StorageGB:          types.Int64Value(int64(cp.StorageGB)),
+		HA:                 types.BoolValue(cp.HA),
+		Encrypted:          types.BoolValue(cp.Encrypted),
+		DeletionProtection: types.BoolValue(cp.DeletionProtection),
+		SkipFinalSnapshot:  types.BoolValue(cp.SkipFinalSnapshot),
+		NetworkName:        types.StringValue(cp.NetworkName),
+		SecurityGroup:      types.StringValue(cp.SecurityGroup),
+		ResourceType:       types.StringValue(cp.ResourceType),
+	}
+	for _, z := range cp.Zones {
+		out.Zones = append(out.Zones, types.StringValue(z))
+	}
+	for _, s := range cp.SubnetNames {
+		out.SubnetNames = append(out.SubnetNames, types.StringValue(s))
+	}
+	return out, nil
+}
+
+// dbPlanModelToCatalog reconstructs the catalog plan view from a stored plan model
+// so the data-safety guard can diff prior state against the new plan. Only the
+// replacement-forcing attributes the guard inspects are needed.
+func dbPlanModelToCatalog(m *managedDatabasePlanModel) *catalog.ManagedDatabasePlan {
+	if m == nil {
+		return nil
+	}
+	return &catalog.ManagedDatabasePlan{
+		Provider:  m.Provider.ValueString(),
+		DBName:    m.DBName.ValueString(),
+		Engine:    m.Engine.ValueString(),
+		Family:    m.Family.ValueString(),
+		Encrypted: m.Encrypted.ValueBool(),
+	}
+}
+
 func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state topologyModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -1402,6 +1701,15 @@ func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, r
 		}
 		refreshed.LoadBalancerPlan = lbPlan
 	}
+	refreshed.ManagedDatabase = state.ManagedDatabase
+	if refreshed.ManagedDatabase != nil {
+		dbPlan, terr := r.translateManagedDatabase(ctx, refreshed)
+		if terr != nil {
+			resp.Diagnostics.AddError("Managed-database translation failed", terr.Error())
+			return
+		}
+		refreshed.ManagedDatabasePlan = dbPlan
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, refreshed)...)
 }
 
@@ -1446,6 +1754,25 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Load-balancer translation failed", err.Error())
 		return
 	}
+	dbPlan, err := r.translateManagedDatabase(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Managed-database translation failed", err.Error())
+		return
+	}
+	// DATA-SAFETY GUARD (defence in depth): re-assert at apply time that the change
+	// would not force-replace the live DB (ModifyPlan is the primary gate at plan
+	// time; this catches any path that reaches Update directly).
+	if plan.ManagedDatabase != nil {
+		prior := dbPlanModelToCatalog(state.ManagedDatabasePlan)
+		next := dbPlanModelToCatalog(dbPlan)
+		if derr := catalog.CheckManagedDatabaseDataSafety(prior, next); derr != nil {
+			resp.Diagnostics.AddError(
+				"Managed-database change would force-replace the live database (data-loss guard)",
+				derr.Error(),
+			)
+			return
+		}
+	}
 
 	updated, err := r.client.UpdateTopology(ctx, desired)
 	if err != nil {
@@ -1464,6 +1791,8 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 	newState.ScaleGroupPlan = asgPlan
 	newState.LoadBalancer = plan.LoadBalancer
 	newState.LoadBalancerPlan = lbPlan
+	newState.ManagedDatabase = plan.ManagedDatabase
+	newState.ManagedDatabasePlan = dbPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
 

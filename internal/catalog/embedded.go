@@ -36,6 +36,15 @@ var vmCatalogCSV string
 //go:embed vm_os_catalog.csv
 var vmOSCatalogCSV string
 
+// mdbCatalogCSV is a snapshot of the backend `managed_database` table (wave-1
+// providers: aws, gcp, do; the test regions present in the live ETL). It is the
+// SAME table the wizard and Compare page resolve managed-database instance
+// classes against. Embedding it keeps DB-class resolution catalog-driven and
+// deterministic without a network round-trip; it is NOT a hand-authored class map.
+//
+//go:embed mdb_catalog.csv
+var mdbCatalogCSV string
+
 // EmbeddedCatalog resolves regions, virtual_machine SKUs, and OS images against
 // the embedded snapshots.
 type EmbeddedCatalog struct {
@@ -50,11 +59,17 @@ type EmbeddedCatalog struct {
 
 	// osByKey indexes OS image rows by (csp, csp_region, os, version, arch).
 	osByKey map[string]OSImageRow
+
+	// mdbRows are all managed_database rows; mdbByRegionEngine indexes them by
+	// (csp, csp_region, engine) for DB-class resolution.
+	mdbRows        []MDBRow
+	mdbByRegionEng map[string][]MDBRow
 }
 
 var (
 	_ RegionCatalog = (*EmbeddedCatalog)(nil)
 	_ VMCatalog     = (*EmbeddedCatalog)(nil)
+	_ MDBCatalog    = (*EmbeddedCatalog)(nil)
 )
 
 func key(csp, regionName string) string {
@@ -96,7 +111,22 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	for _, r := range osRows {
 		c.osByKey[osKey(r.CSP, r.CSPRegion, r.OSName, r.OSVersion, r.Architecture)] = r
 	}
+
+	mdbRows, err := parseMDBCSV(mdbCatalogCSV)
+	if err != nil {
+		return nil, err
+	}
+	c.mdbRows = mdbRows
+	c.mdbByRegionEng = make(map[string][]MDBRow, len(mdbRows))
+	for _, r := range mdbRows {
+		k := mdbRegionEngineKey(r.CSP, r.CSPRegion, r.Engine)
+		c.mdbByRegionEng[k] = append(c.mdbByRegionEng[k], r)
+	}
 	return c, nil
+}
+
+func mdbRegionEngineKey(csp, cspRegion, engine string) string {
+	return strings.ToLower(csp) + "|" + strings.ToLower(cspRegion) + "|" + strings.ToLower(engine)
 }
 
 func vmRegionArchKey(csp, cspRegion, arch string) string {
@@ -140,6 +170,66 @@ func (c *EmbeddedCatalog) ResolveSKU(_ context.Context, csp, cspRegion, arch str
 		CSP: csp, CSPRegion: cspRegion, Architecture: arch, CPU: cpu, RAM: ram,
 		Nearest: nearestSizes(candidates, cpu, ram, 5),
 	}
+}
+
+// ResolveDBClass implements MDBCatalog. It looks for an exact (cpu, ram) match in
+// the requested csp/region/engine; no match is a hard error listing the nearest
+// available sizes (never a silent fallback to a different size).
+func (c *EmbeddedCatalog) ResolveDBClass(_ context.Context, csp, cspRegion, engine string, cpu, ram int) (MDBRow, error) {
+	candidates := c.mdbByRegionEng[mdbRegionEngineKey(csp, cspRegion, engine)]
+	var exact []MDBRow
+	for _, r := range candidates {
+		if r.CPU == cpu && r.RAM == ram {
+			exact = append(exact, r)
+		}
+	}
+	if len(exact) > 0 {
+		// Deterministic pick among classes with identical cpu/ram: the
+		// lexicographically smallest name (the catalog snapshot is already
+		// de-duplicated per size, so this is stable). No hard-coded class map.
+		best := exact[0]
+		for _, r := range exact[1:] {
+			if r.Name < best.Name {
+				best = r
+			}
+		}
+		return best, nil
+	}
+	return MDBRow{}, ErrDBClassNotFound{
+		CSP: csp, CSPRegion: cspRegion, Engine: engine, CPU: cpu, RAM: ram,
+		Nearest: nearestDBSizes(candidates, cpu, ram, 5),
+	}
+}
+
+// MDBRows returns all managed_database rows (test/debug helper).
+func (c *EmbeddedCatalog) MDBRows() []MDBRow { return c.mdbRows }
+
+func parseMDBCSV(data string) ([]MDBRow, error) {
+	r := csv.NewReader(strings.NewReader(data))
+	r.FieldsPerRecord = 7
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("parse managed_database catalog: %w", err)
+	}
+	if len(records) == 0 {
+		return nil, fmt.Errorf("parse managed_database catalog: empty")
+	}
+	out := make([]MDBRow, 0, len(records)-1)
+	for i, rec := range records {
+		if i == 0 {
+			continue // header
+		}
+		out = append(out, MDBRow{
+			Name:      rec[0],
+			Family:    rec[1],
+			CSP:       rec[2],
+			CSPRegion: rec[3],
+			Engine:    rec[4],
+			CPU:       atoiOrZero(rec[5]),
+			RAM:       atoiOrZero(rec[6]),
+		})
+	}
+	return out, nil
 }
 
 // ResolveImage implements VMCatalog.

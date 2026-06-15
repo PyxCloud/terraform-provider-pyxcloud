@@ -42,6 +42,29 @@ type fixture struct {
 	ScaleGroup *sgScaleFixture `json:"scale_group,omitempty"`
 	// LoadBalancer is the optional canonical load-balancer.
 	LoadBalancer *lbFixture `json:"load_balancer,omitempty"`
+	// ManagedDatabase is the optional canonical managed-database.
+	ManagedDatabase *mdbFixture `json:"managed_database,omitempty"`
+}
+
+// mdbFixture is the canonical managed-database description embedded in a fixture.
+type mdbFixture struct {
+	Name      string `json:"name"`
+	Engine    string `json:"engine"`
+	Version   string `json:"version"`
+	CPU       int    `json:"cpu"`
+	RAM       int    `json:"ram"`
+	StorageGB int    `json:"storage_gb"`
+	HA        bool   `json:"ha"`
+	Encrypted bool   `json:"encrypted"`
+	// DeletionProtection / SkipFinalSnapshot are pointers so an omitted value takes
+	// the production-safe default (protection on, final snapshot taken). The TEST
+	// fixture sets deletion_protection=false + skip_final_snapshot=true ONLY so the
+	// round-trip teardown is clean — that override is test-only and visible here.
+	DeletionProtection *bool `json:"deletion_protection,omitempty"`
+	SkipFinalSnapshot  *bool `json:"skip_final_snapshot,omitempty"`
+	// SecurityGroup is the canonical app SG the DB is reachable from; defaults to
+	// the fixture SG.
+	SecurityGroup string `json:"security_group"`
 }
 
 // lbFixture is the canonical load-balancer description embedded in a fixture.
@@ -120,7 +143,7 @@ type ruleFixture struct {
 func main() {
 	fixturePath := flag.String("fixture", "", "path to canonical fixture JSON")
 	provider := flag.String("provider", "", "target provider: aws | gcp | digitalocean")
-	component := flag.String("component", "network", "component to render: network | security-group")
+	component := flag.String("component", "network", "component to render: network | security-group | virtual-machine | scale-group | load-balancer | managed-database")
 	flag.Parse()
 
 	if *fixturePath == "" || *provider == "" {
@@ -149,9 +172,56 @@ func main() {
 		renderScaleGroup(cat, f, *provider)
 	case "load-balancer", "lb":
 		renderLoadBalancer(cat, f, *provider)
+	case "managed-database", "mdb", "database", "db":
+		renderManagedDatabase(cat, f, *provider)
 	default:
-		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine | scale-group | load-balancer)", *component))
+		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine | scale-group | load-balancer | managed-database)", *component))
 	}
+}
+
+func renderManagedDatabase(cat catalog.MDBCatalog, f fixture, provider string) {
+	if f.ManagedDatabase == nil {
+		fatal(fmt.Errorf("fixture has no managed_database block"))
+	}
+	db := f.ManagedDatabase
+	name := db.Name
+	if name == "" {
+		name = f.Name
+	}
+	// Spread the DB subnet group across all the network's subnets (multi-AZ).
+	subnets := make([]string, 0, len(f.Subnets))
+	for i := range f.Subnets {
+		subnets = append(subnets, fmt.Sprintf("%s-subnet-%d", f.Name, i+1))
+	}
+	secGroup := db.SecurityGroup
+	if secGroup == "" && f.SecurityGroup != nil {
+		secGroup = f.SecurityGroup.Name
+	}
+	plan, err := catalog.TranslateManagedDatabase(context.Background(), cat, catalog.ManagedDatabaseSpec{
+		Name:               name,
+		Region:             f.Region,
+		Provider:           provider,
+		Engine:             db.Engine,
+		Version:            db.Version,
+		CPU:                db.CPU,
+		RAM:                db.RAM,
+		StorageGB:          db.StorageGB,
+		HA:                 db.HA,
+		Encrypted:          db.Encrypted,
+		DeletionProtection: db.DeletionProtection,
+		SkipFinalSnapshot:  db.SkipFinalSnapshot,
+		Network:            f.Name,
+		Subnets:            subnets,
+		SecurityGroup:      secGroup,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	hcl, err := catalog.RenderManagedDatabaseHCL(plan)
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Print(hcl)
 }
 
 func renderLoadBalancer(cat catalog.RegionCatalog, f fixture, provider string) {

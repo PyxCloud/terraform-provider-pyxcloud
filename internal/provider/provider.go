@@ -26,7 +26,7 @@ const envToken = "PYXCLOUD_TOKEN"
 // abstract→concrete network translation (pd-TF-REGION-VPC).
 type providerData struct {
 	client  client.Client
-	catalog catalog.VMCatalog
+	catalog catalog.Catalog
 }
 
 // pyxCloudProvider is the framework provider implementation.

@@ -300,6 +300,85 @@ three and apply→verify→destroy where creds exist. AWS uses `lb-aws.json` (Du
 cost — a load balancer costs money, so the harness destroys immediately); gcp/do
 use `lb.json` (Frankfurt → `europe-west3` / `fra1`).
 
+### Managed-database (`pd-TF-MDB`)
+
+A topology can declare an **abstract managed-database** placed in its `network`
+(its subnets become the DB subnet group, spread multi-AZ) and reachable from its
+`security_group`. The user declares `engine` (`postgres`/`mysql`), `version`,
+sizing (`cpu`, `ram`), `storage_gb`, `ha`, and `encrypted`; the provider
+**resolves it down** to each cloud's managed-database resource. The concrete DB
+instance class comes from the `managed_database` catalog (a missing sizing/region
+is a hard plan-time error — never an invented class).
+
+```hcl
+resource "pyxcloud_topology" "app" {
+  name     = "production"
+  provider = "aws"        # aws | gcp | digitalocean
+  region   = "Frankfurt"
+
+  network        = { cidr = "10.0.0.0/16", subnets = ["10.0.1.0/24", "10.0.2.0/24"] }
+  security_group = { name = "production-db", rules = [{ direction = "ingress", protocol = "tcp", from_port = 5432, to_port = 5432, cidrs = ["10.0.0.0/16"] }] }
+
+  managed_database = {
+    engine     = "postgres"   # postgres (default) | mysql
+    version    = "16"
+    cpu        = 2
+    ram        = 4
+    storage_gb = 50
+    ha         = true         # Multi-AZ / REGIONAL / 2-node cluster
+    encrypted  = true
+    # deletion_protection / skip_final_snapshot default to the production-safe
+    # values (protection ON, final snapshot taken). The TEST round-trip sets
+    # deletion_protection = false + skip_final_snapshot = true ONLY for clean
+    # teardown — that override is test-only.
+  }
+}
+
+output "db_plan" { value = pyxcloud_topology.app.managed_database_plan }
+```
+
+Per-provider targets emitted:
+
+- **AWS** — `aws_db_subnet_group` (multi-AZ across the region's subnets) +
+  `aws_db_instance` (RDS). `storage_encrypted`, `multi_az` (HA),
+  `deletion_protection`, and a **final snapshot** (`skip_final_snapshot = false`
+  + a `final_snapshot_identifier`) — the production-safe defaults. Instance class
+  from the catalog; the app `security_group` is wired via `vpc_security_group_ids`.
+- **GCP** — `google_sql_database_instance` with `settings { tier, disk_size,
+  availability_type = REGIONAL when HA }`, private-network IP config, backups, and
+  `deletion_protection`.
+- **DigitalOcean** — `digitalocean_database_cluster` (`size` from the catalog,
+  `node_count = 2` when HA, region + private VPC). DO clusters are encrypted at
+  rest by default and have no in-place deletion-protection flag, so that intent is
+  carried as a `lifecycle { prevent_destroy = true }` guard.
+
+**Data-safety guard (why MDB is special).** On RDS (and the GCP/DO analogues)
+some attribute changes are **not** applied in place — they **force a replacement**
+of the instance, which **destroys the data**. The 2026-06-15 RDS data-loss
+incident was exactly this: a flag flip Terraform happily planned as a replace,
+silently dropping a production database. The provider diffs the prior plan
+(state) against the new plan at **plan time** (`ModifyPlan`) and raises a hard
+plan-time **error** — never a silent replace — when any of these change on an
+**existing** DB:
+
+- `encrypted` (RDS `storage_encrypted` is immutable; enabling it goes via
+  copy-snapshot-with-KMS → restore)
+- `engine` (downgrade / cross-engine change)
+- `identifier` (DB name change)
+- storage-type / class-family change
+
+The error directs the operator to a **snapshot-restore migration** (snapshot →
+restore into a new DB with the desired settings → cut over → retire the old one).
+A fresh create and in-place changes (same-family resize, storage increase, HA
+toggle) pass.
+
+Run [`examples/managed-database/roundtrip.sh`](examples/managed-database) to plan
+all three and apply→verify→destroy where creds exist. AWS uses `db-aws.json`
+(Frankfurt → `eu-central-1`, smallest `db.t3.micro` postgres + 20 GiB minimum,
+with the visible test-only teardown override — RDS costs money and takes minutes,
+so the harness destroys immediately); gcp/do use the production `db.json`
+(Frankfurt → `europe-west3` / `fra1`).
+
 ### Round-trip testing (SPEC §6)
 
 ```sh
@@ -309,6 +388,7 @@ examples/security-group/roundtrip.sh    # security-group
 examples/virtual-machine/roundtrip.sh   # virtual-machine
 examples/scale-group/roundtrip.sh       # virtual-machine-scale-group
 examples/load-balancer/roundtrip.sh     # load-balancer
+examples/managed-database/roundtrip.sh  # managed-database
 ```
 
 The harness generates the concrete `.tf` from the canonical fixture

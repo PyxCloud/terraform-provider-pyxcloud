@@ -412,3 +412,151 @@ func TestResourceTranslateLoadBalancerNil(t *testing.T) {
 		t.Errorf("expected nil plan when no load_balancer declared, got %+v", plan)
 	}
 }
+
+// TestResourceTranslateManagedDatabase exercises the resource's managed-database
+// translation wiring end-to-end through the embedded catalog: catalog-resolved
+// DB class, production-safe defaults, multi-AZ spread, and SG/network wiring.
+func TestResourceTranslateManagedDatabase(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+
+	m := topologyModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Frankfurt"), // AWS -> eu-central-1
+		Network: &networkModel{
+			CIDR: types.StringValue("10.0.0.0/16"),
+			Subnets: []types.String{
+				types.StringValue("10.0.1.0/24"),
+				types.StringValue("10.0.2.0/24"),
+			},
+		},
+		SecurityGroup: &securityGroupModel{
+			Name:   types.StringValue("production-db"),
+			Expose: []types.Int64{types.Int64Value(5432)},
+		},
+		ManagedDatabase: &managedDatabaseModel{
+			Engine:    types.StringValue("postgres"),
+			CPU:       types.Int64Value(2),
+			RAM:       types.Int64Value(4),
+			StorageGB: types.Int64Value(50),
+			HA:        types.BoolValue(true),
+			Encrypted: types.BoolValue(true),
+		},
+	}
+
+	plan, err := r.translateManagedDatabase(context.Background(), m)
+	if err != nil {
+		t.Fatalf("translateManagedDatabase: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected a managed-database plan, got nil")
+	}
+	if plan.CSPRegion.ValueString() != "eu-central-1" {
+		t.Errorf("csp_region = %q, want eu-central-1", plan.CSPRegion.ValueString())
+	}
+	if plan.DBClass.ValueString() != "db.t3.medium" {
+		t.Errorf("db_class = %q, want db.t3.medium", plan.DBClass.ValueString())
+	}
+	if plan.ResourceType.ValueString() != "aws_db_instance" {
+		t.Errorf("resource_type = %q, want aws_db_instance", plan.ResourceType.ValueString())
+	}
+	// Production-safe defaults when the flags are unset (null).
+	if !plan.DeletionProtection.ValueBool() {
+		t.Error("deletion_protection should default to true")
+	}
+	if plan.SkipFinalSnapshot.ValueBool() {
+		t.Error("skip_final_snapshot should default to false")
+	}
+	if len(plan.SubnetNames) != 2 || len(plan.Zones) != 2 {
+		t.Errorf("want 2-way multi-AZ spread, got %d subnets / %d zones", len(plan.SubnetNames), len(plan.Zones))
+	}
+	if plan.SecurityGroup.ValueString() != "production-db" {
+		t.Errorf("security_group = %q, want production-db", plan.SecurityGroup.ValueString())
+	}
+}
+
+// TestResourceTranslateManagedDatabaseTestOverride asserts the test-only override
+// flips the production-safe defaults through the resource wiring.
+func TestResourceTranslateManagedDatabaseTestOverride(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	m := topologyModel{
+		Name: types.StringValue("production"), Provider: types.StringValue("aws"),
+		Region: types.StringValue("Frankfurt"),
+		ManagedDatabase: &managedDatabaseModel{
+			Engine: types.StringValue("postgres"), CPU: types.Int64Value(2), RAM: types.Int64Value(4),
+			DeletionProtection: types.BoolValue(false),
+			SkipFinalSnapshot:  types.BoolValue(true),
+		},
+	}
+	plan, err := r.translateManagedDatabase(context.Background(), m)
+	if err != nil {
+		t.Fatalf("translateManagedDatabase: %v", err)
+	}
+	if plan.DeletionProtection.ValueBool() {
+		t.Error("test override should disable deletion_protection")
+	}
+	if !plan.SkipFinalSnapshot.ValueBool() {
+		t.Error("test override should enable skip_final_snapshot")
+	}
+}
+
+// TestResourceTranslateManagedDatabaseNil returns no plan when none declared.
+func TestResourceTranslateManagedDatabaseNil(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	plan, err := r.translateManagedDatabase(context.Background(), topologyModel{
+		Provider: types.StringValue("aws"), Region: types.StringValue("Frankfurt"),
+	})
+	if err != nil {
+		t.Fatalf("translateManagedDatabase: %v", err)
+	}
+	if plan != nil {
+		t.Errorf("expected nil plan when no managed_database declared, got %+v", plan)
+	}
+}
+
+// TestResourceDataSafetyGuardWiring asserts the resource-level data-safety guard
+// helper (dbPlanModelToCatalog + CheckManagedDatabaseDataSafety) blocks a
+// force-replacing encryption flip between a prior state plan and a new plan — the
+// exact diff ModifyPlan/Update perform on an UPDATE.
+func TestResourceDataSafetyGuardWiring(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	base := topologyModel{
+		Name: types.StringValue("production"), Provider: types.StringValue("aws"),
+		Region: types.StringValue("Frankfurt"),
+		ManagedDatabase: &managedDatabaseModel{
+			Engine: types.StringValue("postgres"), CPU: types.Int64Value(2), RAM: types.Int64Value(4),
+			Encrypted: types.BoolValue(false),
+		},
+	}
+	priorPlan, err := r.translateManagedDatabase(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// New plan: encryption enabled on the EXISTING DB -> force-replace -> blocked.
+	next := base
+	next.ManagedDatabase = &managedDatabaseModel{
+		Engine: types.StringValue("postgres"), CPU: types.Int64Value(2), RAM: types.Int64Value(4),
+		Encrypted: types.BoolValue(true),
+	}
+	nextPlan, err := r.translateManagedDatabase(context.Background(), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	derr := catalog.CheckManagedDatabaseDataSafety(
+		dbPlanModelToCatalog(priorPlan),
+		dbPlanModelToCatalog(nextPlan),
+	)
+	if derr == nil {
+		t.Fatal("expected the data-safety guard to block the encryption flip, got nil")
+	}
+	// Fresh create (nil prior) must be allowed.
+	if err := catalog.CheckManagedDatabaseDataSafety(nil, dbPlanModelToCatalog(nextPlan)); err != nil {
+		t.Errorf("fresh create should be safe, got %v", err)
+	}
+}
