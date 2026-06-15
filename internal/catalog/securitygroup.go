@@ -31,6 +31,9 @@ const (
 	// Alibaba: an ECS security group allows up to 200 rules per direction
 	// (basic security group); we enforce that cap as a hard plan-time error.
 	alibabaRulesPerDirectionMax = 200
+	// StackIt: each rule is its own stackit_security_group_rule resource. The
+	// per-security-group rule quota is conservative; budget per direction.
+	stackitRulesPerDirectionMax = 50
 )
 
 // Protocol tokens (canonical, provider-neutral).
@@ -214,6 +217,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "ibm_is_security_group"
 	case ProviderAlibaba:
 		plan.ResourceType = "alicloud_security_group"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_security_group"
 	}
 	return plan, nil
 }
@@ -224,14 +229,19 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 // DO must be expressed explicitly per protocol/port instead.
 func enforceProviderCapabilities(provider string, rules []RulePlan) error {
 	p := strings.ToLower(provider)
-	// DigitalOcean and Linode firewalls support only tcp/udp/icmp — there is no
-	// "all" protocol — so an `all` rule must be expressed explicitly per protocol.
-	if p != ProviderDigitalOcean && p != ProviderLinode {
+	// DigitalOcean, Linode and StackIt firewalls/security-group rules support only
+	// named protocols (tcp/udp/icmp) — there is no "all"/"any" protocol — so an
+	// `all` rule must be expressed explicitly per protocol (a hard plan-time error,
+	// never a silent fallback).
+	if p != ProviderDigitalOcean && p != ProviderLinode && p != ProviderStackIt {
 		return nil
 	}
 	provName := "DigitalOcean"
-	if p == ProviderLinode {
+	switch p {
+	case ProviderLinode:
 		provName = "Linode"
+	case ProviderStackIt:
+		provName = "StackIt"
 	}
 	for _, r := range rules {
 		if r.Protocol == ProtoAll {
@@ -298,6 +308,13 @@ func enforceRuleLimits(provider string, rules []RulePlan) error {
 		}
 		if egress > alibabaRulesPerDirectionMax {
 			return fmt.Errorf("security-group: %d egress rules exceed the Alibaba Cloud security-group limit of %d per direction", egress, alibabaRulesPerDirectionMax)
+		}
+	case ProviderStackIt:
+		if ingress > stackitRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d ingress rules exceed the StackIt limit of %d per security group", ingress, stackitRulesPerDirectionMax)
+		}
+		if egress > stackitRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d egress rules exceed the StackIt limit of %d per security group", egress, stackitRulesPerDirectionMax)
 		}
 	}
 	return nil

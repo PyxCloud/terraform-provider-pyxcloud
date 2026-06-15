@@ -131,6 +131,17 @@ func TranslateQueue(ctx context.Context, cat RegionCatalog, spec QueueSpec) (Mes
 				"Streams (Kafka), or run a self-managed broker on a virtual-machine",
 		}
 	}
+	if provider == ProviderStackIt {
+		// StackIt's broker (stackit_rabbitmq_instance) is provisioned by a service
+		// plan_id (a project/region-specific UUID) that cannot be authored in the
+		// catalog; surface a clean error rather than an unresolvable required field.
+		return MessagingPlan{}, ErrComponentUnsupported{
+			Component: TypeManagedQueue, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt RabbitMQ (stackit_rabbitmq_instance) requires a service plan_id (a " +
+				"project/region-specific UUID) PyxCloud cannot resolve from the catalog; provision " +
+				"it directly, or use AWS SQS / GCP Pub/Sub for a fully managed canonical queue",
+		}
+	}
 	plan := MessagingPlan{
 		Kind:                     KindQueue,
 		Provider:                 provider,
@@ -190,6 +201,13 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 	}
 	// IBM Event Streams (managed Kafka) IS a clean event-streaming primitive,
 	// provisioned as an ibm_resource_instance (service=messagehub). Supported.
+	if provider == ProviderStackIt {
+		return MessagingPlan{}, ErrComponentUnsupported{
+			Component: TypeEventStreaming, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt has no managed event-streaming primitive; use AWS Kinesis or GCP " +
+				"Pub/Sub, or run a self-managed broker (Kafka/Redpanda) on a stackit_server",
+		}
+	}
 	plan := MessagingPlan{
 		Kind:           KindStream,
 		Provider:       provider,

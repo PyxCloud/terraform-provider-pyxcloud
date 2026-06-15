@@ -37,6 +37,7 @@ const (
 	// rows and the Terraform `alicloud` provider both speak "alicloud", so unlike
 	// "do"/"digitalocean" the provider-facing name and the csp token coincide.
 	cspAlibaba = "alicloud"
+	cspStackIt = "stackit" // wave-2: StackIt (Schwarz Group, EU sovereign cloud)
 )
 
 // Provider-facing names (Terraform `provider` attribute / ENABLED_LAUNCH_PROVIDERS).
@@ -59,6 +60,10 @@ const (
 	// alibaba). The Terraform provider name is "alicloud" (the official
 	// aliyun/alicloud provider), matching the catalog csp token.
 	ProviderAlibaba = "alicloud"
+	// ProviderStackIt is the wave-2 StackIt provider (Terraform provider
+	// stackitcloud/stackit). Unlike the wave-1 providers the catalog csp token and
+	// the provider-facing name are identical ("stackit").
+	ProviderStackIt = "stackit"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -78,6 +83,7 @@ var providerToCSP = map[string]string{
 	ProviderIBM:          cspIBM,
 	ProviderAlibaba:      cspAlibaba,
 	ProviderOVH:          cspOVH,
+	ProviderStackIt:      cspStackIt,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

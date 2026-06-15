@@ -135,6 +135,8 @@ func TranslateKubernetes(ctx context.Context, cat VMCatalog, spec K8sSpec) (K8sP
 		plan.ResourceType = "alicloud_cs_managed_kubernetes"
 	case ProviderOVH:
 		plan.ResourceType = "ovh_cloud_project_kube"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_ske_cluster"
 	}
 	return plan, nil
 }

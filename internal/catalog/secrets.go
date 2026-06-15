@@ -114,6 +114,11 @@ func TranslateSecrets(ctx context.Context, cat RegionCatalog, spec SecretsSpec) 
 		plan.ResourceType = "ibm_sm_arbitrary_secret"
 	case ProviderAlibaba:
 		plan.ResourceType = "alicloud_kms_secret"
+	case ProviderStackIt:
+		// StackIt Secrets Manager is a managed (Vault-backed) secrets-store INSTANCE;
+		// it is the canonical managed secrets store for StackIt. Per-secret rotation
+		// is managed inside the instance, so RotationDays does not render here.
+		plan.ResourceType = "stackit_secretsmanager_instance"
 	}
 	return plan, nil
 }

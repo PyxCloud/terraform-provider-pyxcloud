@@ -23,7 +23,14 @@ to a deployment **provider** and an abstract **macro-region**:
 - **VM sizing** (mirrors `properties.virtual-machine.type.*` / `os.osName`):
   `architecture`, `cpu`, `ram`, `os_name`.
 - **Providers** (mirrors vibe-frontend `ENABLED_LAUNCH_PROVIDERS`):
-  `aws`, `gcp`, `digitalocean`, `oracle` (wave-2 Oracle Cloud / OCI).
+  wave-1: `aws`, `gcp`, `digitalocean`. wave-2: `azure`, `linode`, `ubicloud`,
+  `oracle` (Oracle Cloud / OCI), `ibm` (IBM Cloud), `alicloud` (Alibaba Cloud),
+  `ovh` (OVHcloud), `stackit` (EU sovereign cloud, Schwarz Group). Each wave-2
+  provider maps the components it has a clean Terraform resource for and surfaces a
+  clean plan-time error for the rest (e.g. StackIt has no scale-group / cache /
+  managed-queue / event-streaming / cdn / waf / serverless; OVH has no
+  security-group / scale-group / load-balancer / cache / messaging / edge /
+  secrets / serverless). See `examples/<provider>/` for per-provider fixtures.
 - **Macro-region**: abstract region such as `EU West`, `US East`, `Asia` —
   resolved to a concrete CSP region at deploy time.
 

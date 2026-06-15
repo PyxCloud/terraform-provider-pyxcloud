@@ -278,6 +278,14 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		plan.ResourceType = "alicloud_db_instance"
 	case ProviderOVH:
 		plan.ResourceType = "ovh_cloud_project_database"
+	case ProviderStackIt:
+		// StackIt PostgreSQL Flex (default) / MariaDB Flex. The data-safety guard
+		// (CheckManagedDatabaseDataSafety) is provider-agnostic and covers StackIt.
+		if engine == DBEngineMySQL {
+			plan.ResourceType = "stackit_mariadb_instance"
+		} else {
+			plan.ResourceType = "stackit_postgresflex_instance"
+		}
 	}
 	return plan, nil
 }

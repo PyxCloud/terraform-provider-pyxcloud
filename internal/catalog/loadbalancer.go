@@ -217,6 +217,8 @@ func TranslateLoadBalancer(ctx context.Context, cat RegionCatalog, spec LoadBala
 		plan.ResourceType = "ibm_is_lb"
 	case ProviderAlibaba:
 		plan.ResourceType = "alicloud_alb_load_balancer"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_loadbalancer"
 	}
 	return plan, nil
 }

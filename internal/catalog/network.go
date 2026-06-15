@@ -104,6 +104,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "alicloud_vpc"
 	case ProviderOVH:
 		plan.ResourceType = "ovh_cloud_project_network_private"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_network"
 	}
 	return plan, nil
 }
@@ -152,6 +154,12 @@ func deriveZones(provider, cspRegion string, n int) []string {
 		// spread deterministic and catalog-free without inventing an AD name.
 		for i := 0; i < n; i++ {
 			zones = append(zones, fmt.Sprintf("%d", i+1))
+		}
+	case ProviderStackIt:
+		// StackIt availability zones are <region>-<1|2|3> e.g. eu01-1, eu01-2,
+		// eu01-3 (the documented IaaS AZ naming); spread subnets across them.
+		for i := 0; i < n; i++ {
+			zones = append(zones, fmt.Sprintf("%s-%d", cspRegion, (i%3)+1))
 		}
 	}
 	return zones

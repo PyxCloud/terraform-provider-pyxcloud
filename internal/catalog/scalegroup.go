@@ -90,11 +90,14 @@ type ErrAutoscaleUnsupported struct {
 }
 
 func (e ErrAutoscaleUnsupported) Error() string {
-	// Name the provider's managed-kubernetes alternative (DOKS / LKE node-pool
-	// autoscaling) so the error directs the user to the supported mapping.
+	// Name the provider's managed-kubernetes alternative (DOKS / LKE / SKE
+	// node-pool autoscaling) so the error directs the user to the supported mapping.
 	alt := "a `managed-kubernetes` component (DOKS node-pool autoscaling)"
 	if strings.EqualFold(e.Provider, ProviderLinode) {
 		alt = "a `managed-kubernetes` component (LKE node-pool autoscaling)"
+	}
+	if strings.EqualFold(e.Provider, ProviderStackIt) {
+		alt = "a `managed-kubernetes` component (StackIt SKE / stackit_ske_cluster node-pool autoscaling)"
 	}
 	return fmt.Sprintf(
 		"virtual-machine-scale-group is not supported on provider %q (csp=%q, csp_region=%q): "+
@@ -126,10 +129,11 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 
 	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
 
-	// DigitalOcean and Linode have no native VM autoscaling primitive — clean
-	// plan-time error rather than an invented resource. This mirrors the catalog,
-	// whose DO/Linode virtual_machine rows are marked supports_autoscale=false.
-	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+	// DigitalOcean, Linode and StackIt have no native VM autoscaling primitive —
+	// clean plan-time error rather than an invented resource. This mirrors the
+	// catalog, whose DO/Linode/StackIt virtual_machine rows are marked
+	// supports_autoscale=false; the user is directed to managed-kubernetes.
+	if provider == ProviderDigitalOcean || provider == ProviderLinode || provider == ProviderStackIt {
 		return ScaleGroupPlan{}, ErrAutoscaleUnsupported{
 			Provider:  provider,
 			CSP:       row.CSP,

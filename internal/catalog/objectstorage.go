@@ -102,6 +102,17 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 
 	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
 
+	// StackIt object storage exposes no public-read ACL on the bucket resource, so
+	// an explicit public bucket cannot be honoured. Rather than silently downgrade
+	// to private, surface a clean plan-time error (never an invented public toggle).
+	if provider == ProviderStackIt && spec.Public {
+		return ObjectStoragePlan{}, fmt.Errorf(
+			"object-storage: StackIt object storage has no public-read ACL on the bucket " +
+				"resource (stackit_objectstorage_bucket); a public bucket cannot be expressed. " +
+				"Front it with stackit_cdn_distribution for public delivery, or keep it private " +
+				"(public=false). This is a hard plan-time error, never a silent downgrade")
+	}
+
 	name := strings.TrimSpace(spec.Name)
 	if name == "" {
 		name = "pyxcloud-storage"
@@ -143,6 +154,10 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 		plan.ResourceType = "alicloud_oss_bucket"
 	case ProviderOVH:
 		plan.ResourceType = "ovh_cloud_project_storage"
+	case ProviderStackIt:
+		// StackIt buckets are private by default (no public-ACL toggle on the
+		// resource), which matches PyxCloud's default-secure posture exactly.
+		plan.ResourceType = "stackit_objectstorage_bucket"
 	}
 	return plan, nil
 }

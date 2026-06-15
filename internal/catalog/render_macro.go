@@ -317,6 +317,8 @@ func RenderDNSZoneHCL(plan DNSZonePlan) (string, error) {
 		return renderDNSIBM(plan), nil
 	case ProviderAlibaba:
 		return renderDNSAlibaba(plan), nil
+	case ProviderStackIt:
+		return renderStackItDNSZone(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for dns-zone", plan.Provider)
 	}
@@ -601,6 +603,8 @@ func RenderKubernetesHCL(plan K8sPlan) (string, error) {
 		return renderK8sAlibaba(plan), nil
 	case ProviderOVH:
 		return renderKubernetesOVH(plan)
+	case ProviderStackIt:
+		return renderStackItKubernetes(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for managed-kubernetes", plan.Provider)
 	}
@@ -739,6 +743,8 @@ func RenderSecretsHCL(plan SecretsPlan) (string, error) {
 		return renderSecretsIBM(plan), nil
 	case ProviderAlibaba:
 		return renderSecretsAlibaba(plan), nil
+	case ProviderStackIt:
+		return renderStackItSecrets(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for secrets-manager", plan.Provider)
 	}

@@ -87,6 +87,13 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 				"PRIVATE zone use AWS Route53 private hosted zones or GCP Cloud DNS private zones",
 		}
 	}
+	if spec.Private && provider == ProviderStackIt {
+		return DNSZonePlan{}, ErrComponentUnsupported{
+			Component: TypeDNSZone, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt DNS (stackit_dns_zone) serves PUBLIC zones; for a PRIVATE zone " +
+				"use AWS Route53 private hosted zones or GCP Cloud DNS private zones",
+		}
+	}
 	plan := DNSZonePlan{
 		Provider:    provider,
 		CSP:         row.CSP,
@@ -125,6 +132,8 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		}
 	case ProviderAlibaba:
 		plan.ResourceType = "alicloud_alidns_domain"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_dns_zone"
 	}
 	return plan, nil
 }
@@ -235,6 +244,16 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 				"domain-scoped (ibm_cis_cache_settings on an ibm_cis_domain), configured per public " +
 				"domain rather than per origin. Front the public domain with a CIS domain + cache " +
 				"settings, or use AWS CloudFront / GCP Cloud CDN for an origin-scoped distribution",
+		}
+	}
+	if provider == ProviderStackIt {
+		// Out of wave-2 scope: StackIt's CDN product (stackit_cdn_distribution) has a
+		// distinct config/backend model not yet mapped to the canonical cdn-service.
+		// Surface a clean error rather than emit a partial/guessed resource.
+		return CDNPlan{}, ErrComponentUnsupported{
+			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "cdn-service is not yet mapped for StackIt in this wave; use AWS CloudFront " +
+				"or GCP Cloud CDN, or place the StackIt component behind one of those for CDN delivery",
 		}
 	}
 	plan := CDNPlan{
@@ -365,6 +384,13 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
 			Alternative: "the cloudfront WAF scope is AWS-specific; on Alibaba Cloud use the default " +
 				"(regional) WAF domain protection (alicloud_waf_domain)",
+		}
+	}
+	if provider == ProviderStackIt {
+		return WAFPlan{}, ErrComponentUnsupported{
+			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt has no managed WAF primitive; use AWS WAFv2 or GCP Cloud Armor, " +
+				"or front the app with a self-managed WAF (Coraza/ModSecurity) on a stackit_server",
 		}
 	}
 	plan := WAFPlan{
