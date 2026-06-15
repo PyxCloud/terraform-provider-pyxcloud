@@ -528,13 +528,13 @@ func TestCanonicalMacroTypes(t *testing.T) {
 func TestMacroUnknownProviderRejected(t *testing.T) {
 	t.Parallel()
 	cat := MustEmbedded()
-	if _, err := TranslateCache(ctx(), cat, CacheSpec{Region: "Frankfurt", Provider: "azure", MemoryGB: 1}); err == nil {
+	if _, err := TranslateCache(ctx(), cat, CacheSpec{Region: "Frankfurt", Provider: "vultr", MemoryGB: 1}); err == nil {
 		t.Error("cache: unknown provider should error")
 	}
-	if _, err := TranslateServerless(ctx(), cat, ServerlessSpec{Region: "Frankfurt", Provider: "azure"}); err == nil {
+	if _, err := TranslateServerless(ctx(), cat, ServerlessSpec{Region: "Frankfurt", Provider: "vultr"}); err == nil {
 		t.Error("serverless: unknown provider should error")
 	}
-	if _, err := TranslateKubernetes(ctx(), cat, K8sSpec{Region: "Frankfurt", Provider: "azure", NodeCPU: 2, NodeRAM: 4}); err == nil {
+	if _, err := TranslateKubernetes(ctx(), cat, K8sSpec{Region: "Frankfurt", Provider: "vultr", NodeCPU: 2, NodeRAM: 4}); err == nil {
 		t.Error("kubernetes: unknown provider should error")
 	}
 }

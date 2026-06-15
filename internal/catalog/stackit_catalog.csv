@@ -1,0 +1,58 @@
+# PyxCloud catalog snapshot — StackIt (wave-2, pd-TF-PROVIDERS-WAVE2: stackit).
+#
+# CATALOG GAP (documented, honest): unlike the wave-1 aws/gcp/do rows, there is
+# NO live PyxCloud ETL for StackIt yet — the censused `region` /
+# `virtual_machine` / `managed_database` / OS-image tables have no stackit rows.
+# Until that ETL lands, the rows below are AUTHORED from the public StackIt
+# product catalog (Compute Engine machine types, PostgreSQL Flex flavors, IaaS
+# regions / availability zones) so the provider can resolve deterministically and
+# stay catalog-driven (no hard-coded maps in the binary). Replace this file with a
+# live ETL snapshot when stackit is censused — the provider code does not change.
+#
+# Sources (public, no creds): StackIt docs portal
+#   - Regions/AZs:   docs.stackit.cloud/products/iaas (region eu01; AZs eu01-1/2/3; SKE zone eu01-m)
+#   - VM flavors:    docs.stackit.cloud/products/compute-engine/server/basics/machine-types
+#   - DB flavors:    docs.stackit.cloud/products/postgresql-flex
+#
+# This single file is parsed into the region / vm / mdb / os resolution tables by
+# parseStackItCatalog (embedded.go). It is deliberately ONE new file (not appended
+# to the wave-1 CSVs) to keep wave-2 merge-conflict-free.
+#
+# Sections are introduced by a "@section <name>" line; blank lines and lines
+# starting with '#' are ignored.
+
+@section region
+# macro_region,country,region_name,csp_region,csp_region_description,csp
+Europe,Germany,Frankfurt,eu01,StackIt Europe 01 (Germany),stackit
+Europe,Germany,Berlin,eu01,StackIt Europe 01 (Germany),stackit
+
+@section vm
+# name,family,csp,region,architecture,cpu,ram,gpu,supports_autoscale
+g1.1,g1,stackit,eu01,x86_64,1,4,0,false
+g1.2,g1,stackit,eu01,x86_64,2,8,0,false
+g1.3,g1,stackit,eu01,x86_64,4,16,0,false
+g1.4,g1,stackit,eu01,x86_64,8,32,0,false
+c1.2,c1,stackit,eu01,x86_64,2,4,0,false
+c1.3,c1,stackit,eu01,x86_64,4,8,0,false
+c1.4,c1,stackit,eu01,x86_64,8,16,0,false
+m1.2,m1,stackit,eu01,x86_64,2,16,0,false
+m1.3,m1,stackit,eu01,x86_64,4,32,0,false
+t1.1,t1,stackit,eu01,x86_64,1,1,0,false
+t1.2,t1,stackit,eu01,x86_64,2,2,0,false
+
+@section mdb
+# name,family,csp,region,engine,cpu,ram
+g1.1,g1,stackit,eu01,postgres,1,4
+g1.2,g1,stackit,eu01,postgres,2,8
+g1.3,g1,stackit,eu01,postgres,4,16
+g1.4,g1,stackit,eu01,postgres,8,32
+c1.2,c1,stackit,eu01,postgres,2,4
+g1.1,g1,stackit,eu01,mysql,1,4
+g1.2,g1,stackit,eu01,mysql,2,8
+g1.3,g1,stackit,eu01,mysql,4,16
+
+@section os
+# csp,region,os_name,os_version,architecture,image
+stackit,eu01,ubuntu,24.04,x86_64,ubuntu-24.04
+stackit,eu01,ubuntu,22.04,x86_64,ubuntu-22.04
+stackit,eu01,debian,12,x86_64,debian-12

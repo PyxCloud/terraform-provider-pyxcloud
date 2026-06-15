@@ -91,6 +91,24 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 		return ServerlessPlan{}, err
 	}
 	provider := lc(spec.Provider)
+	if provider == ProviderStackIt {
+		return ServerlessPlan{}, ErrComponentUnsupported{
+			Component: TypeServerlessFunction, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt has no serverless-function (FaaS) primitive; deploy the function " +
+				"as a container/service on a stackit_ske_cluster (managed-kubernetes) or a " +
+				"stackit_server (virtual-machine), or use AWS Lambda / GCP Cloud Functions",
+		}
+	}
+
+	// Linode has no managed FaaS / serverless-function primitive in the linode
+	// provider. Clean plan-time error rather than an invented resource.
+	if provider == ProviderLinode {
+		return ServerlessPlan{}, ErrComponentUnsupported{
+			Component: TypeServerlessFunction, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Linode has no managed serverless/FaaS primitive; use AWS Lambda or GCP Cloud " +
+				"Functions, or run the workload as a container on LKE (managed-kubernetes)",
+		}
+	}
 
 	runtime := lc(spec.Runtime)
 	if runtime == "" {
@@ -133,6 +151,15 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 		plan.ResourceType = "google_cloudfunctions2_function"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_app"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_linux_function_app"
+	case ProviderOracle:
+		plan.ResourceType = "oci_functions_function"
+	case ProviderIBM:
+		// IBM Cloud Code Engine application (container-image based serverless).
+		plan.ResourceType = "ibm_code_engine_app"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_fcv3_function"
 	}
 	return plan, nil
 }
@@ -169,6 +196,42 @@ func concreteRuntime(provider, runtime, version string) string {
 			return "python:" + version
 		case RuntimeGo:
 			return "go:" + strings.TrimSuffix(version, ".x")
+		}
+	case ProviderOracle:
+		// OCI Functions are container-image based (Fn project): the function is a
+		// container image, not a managed language runtime. We carry the canonical
+		// runtime family + version as an informational token; the deployable image
+		// is supplied out-of-band via a variable (the renderer references it).
+		switch runtime {
+		case RuntimeNode:
+			return "node-" + strings.Split(version, ".")[0]
+		case RuntimePython:
+			return "python-" + version
+		case RuntimeGo:
+			return "go-" + strings.TrimSuffix(version, ".x")
+		}
+	case ProviderIBM:
+		// IBM Code Engine is container-image based: the canonical runtime maps to a
+		// stock IBM Container Registry runtime image reference. The deployment
+		// artifact (a real image_reference) overrides this in the fixture; this is
+		// the deterministic default so the plan is complete.
+		switch runtime {
+		case RuntimeNode:
+			return "icr.io/codeengine/node:" + strings.Split(version, ".")[0]
+		case RuntimePython:
+			return "icr.io/codeengine/python:" + version
+		case RuntimeGo:
+			return "icr.io/codeengine/golang:" + strings.TrimSuffix(version, ".x")
+		}
+	case ProviderAlibaba:
+		// Alibaba Function Compute (FC) v3 runtime identifiers.
+		switch runtime {
+		case RuntimeNode:
+			return "nodejs" + version
+		case RuntimePython:
+			return "python" + version
+		case RuntimeGo:
+			return "go1"
 		}
 	}
 	return runtime + version

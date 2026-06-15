@@ -86,6 +86,30 @@ func TranslateCache(ctx context.Context, cat RegionCatalog, spec CacheSpec) (Cac
 		return CachePlan{}, err
 	}
 	provider := lc(spec.Provider)
+	if provider == ProviderStackIt {
+		// StackIt does offer a managed Redis (stackit_redis_instance), but it is
+		// provisioned by a service `plan_id` (a project/region-specific UUID) that
+		// cannot be authored deterministically in the catalog. Rather than emit a
+		// resource with an unresolvable required field, surface a clean error.
+		return CachePlan{}, ErrComponentUnsupported{
+			Component: TypeCache, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt Redis (stackit_redis_instance) requires a service plan_id (a " +
+				"project/region-specific UUID) that PyxCloud cannot resolve from the catalog; " +
+				"provision it directly, or run Redis on a stackit_server / stackit_ske_cluster",
+		}
+	}
+
+	// Linode has no managed Redis/Valkey cache resource in the linode provider — the
+	// `linode_database_*` resources cover PostgreSQL/MySQL only, not an in-memory
+	// cache. Clean plan-time error rather than an invented resource.
+	if provider == ProviderLinode {
+		return CachePlan{}, ErrComponentUnsupported{
+			Component: TypeCache, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Linode has no managed Redis/Valkey resource (linode_database_* covers " +
+				"PostgreSQL/MySQL only); use a cache on AWS (ElastiCache) or GCP (Memorystore), " +
+				"or run self-managed Redis/Valkey on a linode_instance",
+		}
+	}
 
 	mem := spec.MemoryGB
 	if mem <= 0 {
@@ -129,6 +153,31 @@ func TranslateCache(ctx context.Context, cat RegionCatalog, spec CacheSpec) (Cac
 		if plan.Version == "" {
 			plan.Version = "7"
 		}
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_redis_cache"
+		if plan.Version == "" {
+			plan.Version = "6" // Azure Cache for Redis major line
+		}
+	case ProviderOracle:
+		// OCI Cache with Redis: oci_redis_redis_cluster. It is sized directly by
+		// node_memory_in_gbs (no node-class token), so NodeClass is intentionally
+		// empty and the renderer uses MemoryGB.
+		plan.ResourceType = "oci_redis_redis_cluster"
+		if plan.Version == "" {
+			plan.Version = "7.0"
+		}
+	case ProviderIBM:
+		// IBM Cloud Databases for Redis (provisioned via ibm_database). Sized by the
+		// requested memory; the version is the ICD redis major line.
+		plan.ResourceType = "ibm_database"
+		if plan.Version == "" {
+			plan.Version = "7"
+		}
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_kvstore_instance"
+		if plan.Version == "" {
+			plan.Version = "7.0"
+		}
 	}
 	return plan, nil
 }
@@ -166,6 +215,35 @@ func cacheNodeClass(provider string, memGB int) string {
 			return "db-s-2vcpu-4gb"
 		default:
 			return "db-s-4vcpu-8gb"
+		}
+	case ProviderIBM:
+		// IBM Cloud Databases for Redis is sized by a per-member memory allocation
+		// (MB). The "class" token here is the memory tier the render maps to the
+		// ibm_database group.memory.allocation_mb. We express it as a "<N>gb" token.
+		switch {
+		case memGB <= 1:
+			return "1gb"
+		case memGB <= 4:
+			return "4gb"
+		case memGB <= 8:
+			return "8gb"
+		default:
+			return "16gb"
+		}
+	case ProviderAlibaba:
+		// ApsaraDB for Redis (community edition) standard instance classes, keyed
+		// by memory. The "default" suffix is the standard architecture class.
+		switch {
+		case memGB <= 1:
+			return "redis.basic.small.default"
+		case memGB <= 2:
+			return "redis.basic.mid.default"
+		case memGB <= 4:
+			return "redis.basic.large.default"
+		case memGB <= 8:
+			return "redis.basic.2xlarge.default"
+		default:
+			return "redis.basic.4xlarge.default"
 		}
 	}
 	return ""

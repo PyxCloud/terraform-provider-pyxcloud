@@ -21,6 +21,19 @@ const (
 	awsRulesPerDirectionMax = 60
 	gcpRulesPerFirewallMax  = 100
 	doRulesPerDirectionMax  = 50
+	// Azure NSGs default to 1000 rules per NSG (across both directions); we budget
+	// conservatively below the hard cap to leave room for Azure's default rules.
+	azureRulesPerNSGMax = 900
+	// IBM VPC security groups support a generous rule budget; the default IBM VPC
+	// quota allows many rules per security group. We budget conservatively per
+	// direction to mirror the AWS-style guard (a breach is a hard plan-time error).
+	ibmRulesPerDirectionMax = 100
+	// Alibaba: an ECS security group allows up to 200 rules per direction
+	// (basic security group); we enforce that cap as a hard plan-time error.
+	alibabaRulesPerDirectionMax = 200
+	// StackIt: each rule is its own stackit_security_group_rule resource. The
+	// per-security-group rule quota is conservative; budget per direction.
+	stackitRulesPerDirectionMax = 50
 )
 
 // Protocol tokens (canonical, provider-neutral).
@@ -192,6 +205,20 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "google_compute_firewall"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_firewall"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_network_security_group"
+	case ProviderLinode:
+		plan.ResourceType = "linode_firewall"
+	case ProviderUbicloud:
+		plan.ResourceType = "ubicloud_firewall"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_network_security_group"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_security_group"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_security_group"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_security_group"
 	}
 	return plan, nil
 }
@@ -201,15 +228,27 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 // only tcp/udp/icmp protocols — there is no "all" protocol — so an `all` rule on
 // DO must be expressed explicitly per protocol/port instead.
 func enforceProviderCapabilities(provider string, rules []RulePlan) error {
-	if strings.ToLower(provider) != ProviderDigitalOcean {
+	p := strings.ToLower(provider)
+	// DigitalOcean, Linode and StackIt firewalls/security-group rules support only
+	// named protocols (tcp/udp/icmp) — there is no "all"/"any" protocol — so an
+	// `all` rule must be expressed explicitly per protocol (a hard plan-time error,
+	// never a silent fallback).
+	if p != ProviderDigitalOcean && p != ProviderLinode && p != ProviderStackIt {
 		return nil
+	}
+	provName := "DigitalOcean"
+	switch p {
+	case ProviderLinode:
+		provName = "Linode"
+	case ProviderStackIt:
+		provName = "StackIt"
 	}
 	for _, r := range rules {
 		if r.Protocol == ProtoAll {
 			return fmt.Errorf(
-				"security-group: DigitalOcean firewalls do not support the %q protocol; "+
+				"security-group: %s firewalls do not support the %q protocol; "+
 					"declare explicit tcp/udp/icmp rules instead (this is a hard plan-time "+
-					"error, never a silent fallback)", ProtoAll)
+					"error, never a silent fallback)", provName, ProtoAll)
 		}
 	}
 	return nil
@@ -244,6 +283,38 @@ func enforceRuleLimits(provider string, rules []RulePlan) error {
 		}
 		if egress > doRulesPerDirectionMax {
 			return fmt.Errorf("security-group: %d outbound rules exceed the DigitalOcean firewall limit of %d", egress, doRulesPerDirectionMax)
+		}
+	case ProviderAzure:
+		if len(rules) > azureRulesPerNSGMax {
+			return fmt.Errorf("security-group: %d rules exceed the Azure NSG limit of %d", len(rules), azureRulesPerNSGMax)
+		}
+	case ProviderLinode:
+		if ingress > linodeRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d inbound rules exceed the Linode firewall limit of %d per direction", ingress, linodeRulesPerDirectionMax)
+		}
+		if egress > linodeRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d outbound rules exceed the Linode firewall limit of %d per direction", egress, linodeRulesPerDirectionMax)
+		}
+	case ProviderIBM:
+		if ingress > ibmRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d inbound rules exceed the IBM VPC security-group limit of %d", ingress, ibmRulesPerDirectionMax)
+		}
+		if egress > ibmRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d outbound rules exceed the IBM VPC security-group limit of %d", egress, ibmRulesPerDirectionMax)
+		}
+	case ProviderAlibaba:
+		if ingress > alibabaRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d ingress rules exceed the Alibaba Cloud security-group limit of %d per direction", ingress, alibabaRulesPerDirectionMax)
+		}
+		if egress > alibabaRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d egress rules exceed the Alibaba Cloud security-group limit of %d per direction", egress, alibabaRulesPerDirectionMax)
+		}
+	case ProviderStackIt:
+		if ingress > stackitRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d ingress rules exceed the StackIt limit of %d per security group", ingress, stackitRulesPerDirectionMax)
+		}
+		if egress > stackitRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d egress rules exceed the StackIt limit of %d per security group", egress, stackitRulesPerDirectionMax)
 		}
 	}
 	return nil

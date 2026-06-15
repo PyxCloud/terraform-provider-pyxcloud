@@ -72,12 +72,18 @@ func TranslateSecrets(ctx context.Context, cat RegionCatalog, spec SecretsSpec) 
 		return SecretsPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+		provName := "DigitalOcean"
+		envNote := "DO App Platform env vars are not a secrets manager"
+		if provider == ProviderLinode {
+			provName = "Linode"
+			envNote = "Linode has no first-party secrets manager"
+		}
 		return SecretsPlan{}, ErrComponentUnsupported{
 			Component: TypeSecretsManager, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean has no managed secrets-manager primitive; use AWS Secrets Manager " +
+			Alternative: provName + " has no managed secrets-manager primitive; use AWS Secrets Manager " +
 				"or GCP Secret Manager, or run self-hosted HashiCorp Vault on a virtual-machine " +
-				"(DO App Platform env vars are not a secrets manager)",
+				"(" + envNote + ")",
 		}
 	}
 	forceDestroy := false
@@ -99,6 +105,20 @@ func TranslateSecrets(ctx context.Context, cat RegionCatalog, spec SecretsSpec) 
 		plan.ResourceType = "aws_secretsmanager_secret"
 	case ProviderGCP:
 		plan.ResourceType = "google_secret_manager_secret"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_key_vault"
+	case ProviderOracle:
+		plan.ResourceType = "oci_vault_secret"
+	case ProviderIBM:
+		// IBM Cloud Secrets Manager arbitrary secret (in a Secrets Manager instance).
+		plan.ResourceType = "ibm_sm_arbitrary_secret"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_kms_secret"
+	case ProviderStackIt:
+		// StackIt Secrets Manager is a managed (Vault-backed) secrets-store INSTANCE;
+		// it is the canonical managed secrets store for StackIt. Per-secret rotation
+		// is managed inside the instance, so RotationDays does not render here.
+		plan.ResourceType = "stackit_secretsmanager_instance"
 	}
 	return plan, nil
 }

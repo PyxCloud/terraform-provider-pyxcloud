@@ -66,10 +66,31 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		return DNSZonePlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if spec.Private && provider == ProviderDigitalOcean {
+	if spec.Private && (provider == ProviderDigitalOcean || provider == ProviderLinode) {
+		provName := "DigitalOcean DNS (digitalocean_domain)"
+		if provider == ProviderLinode {
+			provName = "Linode DNS (linode_domain)"
+		}
 		return DNSZonePlan{}, ErrComponentUnsupported{
 			Component: TypeDNSZone, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean DNS (digitalocean_domain) is public-only; for a PRIVATE zone " +
+			Alternative: provName + " is public-only; for a PRIVATE zone " +
+				"use AWS Route53 private hosted zones or GCP Cloud DNS private zones",
+		}
+	}
+	if spec.Private && provider == ProviderAlibaba {
+		// Alibaba's alicloud_alidns_domain is an authoritative PUBLIC zone; private
+		// DNS is a separate product (PrivateZone) we do not model in the macro
+		// component. Surface a clean plan-time error rather than invent a resource.
+		return DNSZonePlan{}, ErrComponentUnsupported{
+			Component: TypeDNSZone, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Alibaba Cloud alicloud_alidns_domain is a public authoritative zone; for a " +
+				"PRIVATE zone use AWS Route53 private hosted zones or GCP Cloud DNS private zones",
+		}
+	}
+	if spec.Private && provider == ProviderStackIt {
+		return DNSZonePlan{}, ErrComponentUnsupported{
+			Component: TypeDNSZone, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt DNS (stackit_dns_zone) serves PUBLIC zones; for a PRIVATE zone " +
 				"use AWS Route53 private hosted zones or GCP Cloud DNS private zones",
 		}
 	}
@@ -90,6 +111,29 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		plan.ResourceType = "google_dns_managed_zone"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_domain"
+	case ProviderAzure:
+		if plan.Private {
+			plan.ResourceType = "azurerm_private_dns_zone"
+		} else {
+			plan.ResourceType = "azurerm_dns_zone"
+		}
+	case ProviderLinode:
+		plan.ResourceType = "linode_domain"
+	case ProviderOracle:
+		plan.ResourceType = "oci_dns_zone"
+	case ProviderIBM:
+		// IBM has two distinct DNS primitives: a PRIVATE zone in DNS Services
+		// (ibm_dns_zone, scoped to a VPC) and a PUBLIC zone in Cloud Internet
+		// Services (ibm_cis_domain). Map by the private flag.
+		if plan.Private {
+			plan.ResourceType = "ibm_dns_zone"
+		} else {
+			plan.ResourceType = "ibm_cis_domain"
+		}
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_alidns_domain"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_dns_zone"
 	}
 	return plan, nil
 }
@@ -159,12 +203,57 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 		return CDNPlan{}, err
 	}
 	provider := lc(spec.Provider)
+	if provider == ProviderLinode {
+		return CDNPlan{}, ErrComponentUnsupported{
+			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Linode has no managed CDN primitive; use AWS CloudFront or GCP Cloud CDN, " +
+				"or front the app with a third-party CDN (e.g. Cloudflare/Akamai) over the public endpoint",
+		}
+	}
+	if provider == ProviderOracle {
+		// OCI has no clean, first-class CDN Terraform resource (its edge/WAF and
+		// object-storage pre-authenticated/public access cover adjacent needs, but
+		// there is no managed CDN-distribution resource in oracle/oci to descend
+		// `cdn-service` to). Per SPEC §1/§4 we surface a clean plan-time error
+		// rather than invent a resource.
+		return CDNPlan{}, ErrComponentUnsupported{
+			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Oracle Cloud has no first-class CDN distribution resource in the oracle/oci " +
+				"Terraform provider; use AWS CloudFront or GCP Cloud CDN for the CDN tier, or front " +
+				"the OCI origin with a third-party CDN (the object-storage bucket can serve public " +
+				"objects directly where that suffices)",
+		}
+	}
 	if provider == ProviderDigitalOcean && originKind != CDNOriginObjectStorage {
 		return CDNPlan{}, ErrComponentUnsupported{
 			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
 			Alternative: "DigitalOcean CDN (digitalocean_cdn) can only front a Spaces (object-storage) " +
 				"origin, not an arbitrary load-balancer origin; use AWS CloudFront or GCP Cloud CDN " +
 				"for a dynamic/LB origin, or put a Spaces bucket in front",
+		}
+	}
+	if provider == ProviderIBM {
+		// IBM Cloud has no origin-scoped CDN distribution resource (CloudFront/Cloud
+		// CDN analogue). IBM Cloud Internet Services (CIS) caching is DOMAIN-scoped
+		// (ibm_cis_cache_settings on an ibm_cis_domain), not an origin-fronting
+		// distribution, so a clean object-storage/LB-origin CDN cannot be expressed
+		// — surface a clean plan-time error rather than invent a resource.
+		return CDNPlan{}, ErrComponentUnsupported{
+			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "IBM Cloud has no origin-fronting CDN distribution primitive; CIS caching is " +
+				"domain-scoped (ibm_cis_cache_settings on an ibm_cis_domain), configured per public " +
+				"domain rather than per origin. Front the public domain with a CIS domain + cache " +
+				"settings, or use AWS CloudFront / GCP Cloud CDN for an origin-scoped distribution",
+		}
+	}
+	if provider == ProviderStackIt {
+		// Out of wave-2 scope: StackIt's CDN product (stackit_cdn_distribution) has a
+		// distinct config/backend model not yet mapped to the canonical cdn-service.
+		// Surface a clean error rather than emit a partial/guessed resource.
+		return CDNPlan{}, ErrComponentUnsupported{
+			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "cdn-service is not yet mapped for StackIt in this wave; use AWS CloudFront " +
+				"or GCP Cloud CDN, or place the StackIt component behind one of those for CDN delivery",
 		}
 	}
 	plan := CDNPlan{
@@ -187,6 +276,11 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 		}
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_cdn"
+	case ProviderAzure:
+		// Azure Front Door fronts any origin (object-storage or load-balancer).
+		plan.ResourceType = "azurerm_cdn_frontdoor_profile"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_cdn_domain_new"
 	}
 	return plan, nil
 }
@@ -253,10 +347,14 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 		return WAFPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+		provName := "DigitalOcean"
+		if provider == ProviderLinode {
+			provName = "Linode"
+		}
 		return WAFPlan{}, ErrComponentUnsupported{
 			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean has no managed WAF primitive; use AWS WAFv2 or GCP Cloud Armor, " +
+			Alternative: provName + " has no managed WAF primitive; use AWS WAFv2 or GCP Cloud Armor, " +
 				"or front the app with a self-managed WAF (ModSecurity/Coraza) on a virtual-machine",
 		}
 	}
@@ -265,6 +363,34 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
 			Alternative: "the cloudfront WAF scope is AWS-specific; on GCP use the default (regional) " +
 				"Cloud Armor policy attached to a backend service",
+		}
+	}
+	if provider == ProviderOracle && scope == WAFScopeCloudFront {
+		return WAFPlan{}, ErrComponentUnsupported{
+			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "the cloudfront WAF scope is AWS-specific; on Oracle Cloud the WAF " +
+				"(oci_waf_web_app_firewall) attaches to a load balancer — use the default (regional) scope",
+		}
+	}
+	if provider == ProviderIBM && scope == WAFScopeCloudFront {
+		return WAFPlan{}, ErrComponentUnsupported{
+			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "the cloudfront WAF scope is AWS-specific; on IBM Cloud use the default " +
+				"(regional) CIS WAF managed rule group attached to a CIS domain",
+		}
+	}
+	if provider == ProviderAlibaba && scope == WAFScopeCloudFront {
+		return WAFPlan{}, ErrComponentUnsupported{
+			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "the cloudfront WAF scope is AWS-specific; on Alibaba Cloud use the default " +
+				"(regional) WAF domain protection (alicloud_waf_domain)",
+		}
+	}
+	if provider == ProviderStackIt {
+		return WAFPlan{}, ErrComponentUnsupported{
+			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt has no managed WAF primitive; use AWS WAFv2 or GCP Cloud Armor, " +
+				"or front the app with a self-managed WAF (Coraza/ModSecurity) on a stackit_server",
 		}
 	}
 	plan := WAFPlan{
@@ -281,6 +407,15 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 		plan.ResourceType = "aws_wafv2_web_acl"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_security_policy"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_cdn_frontdoor_firewall_policy"
+	case ProviderOracle:
+		plan.ResourceType = "oci_waf_web_app_firewall"
+	case ProviderIBM:
+		// IBM Cloud Internet Services managed WAF rule group on a CIS domain.
+		plan.ResourceType = "ibm_cis_waf_group"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_waf_domain"
 	}
 	return plan, nil
 }

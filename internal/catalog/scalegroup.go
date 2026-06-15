@@ -90,15 +90,23 @@ type ErrAutoscaleUnsupported struct {
 }
 
 func (e ErrAutoscaleUnsupported) Error() string {
+	// Name the provider's managed-kubernetes alternative (DOKS / LKE / SKE
+	// node-pool autoscaling) so the error directs the user to the supported mapping.
+	alt := "a `managed-kubernetes` component (DOKS node-pool autoscaling)"
+	if strings.EqualFold(e.Provider, ProviderLinode) {
+		alt = "a `managed-kubernetes` component (LKE node-pool autoscaling)"
+	}
+	if strings.EqualFold(e.Provider, ProviderStackIt) {
+		alt = "a `managed-kubernetes` component (StackIt SKE / stackit_ske_cluster node-pool autoscaling)"
+	}
 	return fmt.Sprintf(
 		"virtual-machine-scale-group is not supported on provider %q (csp=%q, csp_region=%q): "+
-			"DigitalOcean has no native VM autoscaling primitive (its `virtual_machine` catalog "+
+			"this provider has no native VM autoscaling primitive (its `virtual_machine` catalog "+
 			"rows are marked supports_autoscale=false), and PyxCloud does not invent a "+
-			"non-existent resource. For autoscaled compute on DigitalOcean use a "+
-			"`managed-kubernetes` component (DOKS node-pool autoscaling), or pin a fixed-size "+
+			"non-existent resource. For autoscaled compute use %s, or pin a fixed-size "+
 			"set of `virtual-machine` instances via `count`. "+
 			"(this is a hard plan-time error, never a silent fallback)",
-		e.Provider, e.CSP, e.CSPRegion,
+		e.Provider, e.CSP, e.CSPRegion, alt,
 	)
 }
 
@@ -121,10 +129,11 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 
 	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
 
-	// DigitalOcean has no native VM autoscaling primitive — clean plan-time error
-	// rather than an invented resource. This mirrors the catalog, whose DO
-	// virtual_machine rows are marked supports_autoscale=false.
-	if provider == ProviderDigitalOcean {
+	// DigitalOcean, Linode and StackIt have no native VM autoscaling primitive —
+	// clean plan-time error rather than an invented resource. This mirrors the
+	// catalog, whose DO/Linode/StackIt virtual_machine rows are marked
+	// supports_autoscale=false; the user is directed to managed-kubernetes.
+	if provider == ProviderDigitalOcean || provider == ProviderLinode || provider == ProviderStackIt {
 		return ScaleGroupPlan{}, ErrAutoscaleUnsupported{
 			Provider:  provider,
 			CSP:       row.CSP,
@@ -207,6 +216,14 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		plan.ResourceType = "aws_autoscaling_group"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_region_instance_group_manager"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_linux_virtual_machine_scale_set"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_instance_pool"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_instance_group"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_ess_scaling_group"
 	}
 	return plan, nil
 }

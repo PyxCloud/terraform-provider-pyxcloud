@@ -1,0 +1,13 @@
+csp,region,os_name,os_version,architecture,image
+ibm,eu-de,ubuntu,24.04,x86_64,ibm-ubuntu-24-04-2-minimal-amd64-1
+ibm,eu-de,ubuntu,22.04,x86_64,ibm-ubuntu-22-04-5-minimal-amd64-3
+ibm,eu-de,debian,12,x86_64,ibm-debian-12-9-minimal-amd64-1
+ibm,us-south,ubuntu,24.04,x86_64,ibm-ubuntu-24-04-2-minimal-amd64-1
+ibm,us-south,ubuntu,22.04,x86_64,ibm-ubuntu-22-04-5-minimal-amd64-3
+ibm,us-south,debian,12,x86_64,ibm-debian-12-9-minimal-amd64-1
+ibm,eu-gb,ubuntu,24.04,x86_64,ibm-ubuntu-24-04-2-minimal-amd64-1
+ibm,eu-gb,debian,12,x86_64,ibm-debian-12-9-minimal-amd64-1
+ibm,jp-tok,ubuntu,24.04,x86_64,ibm-ubuntu-24-04-2-minimal-amd64-1
+ibm,jp-tok,debian,12,x86_64,ibm-debian-12-9-minimal-amd64-1
+ibm,au-syd,ubuntu,24.04,x86_64,ibm-ubuntu-24-04-2-minimal-amd64-1
+ibm,au-syd,debian,12,x86_64,ibm-debian-12-9-minimal-amd64-1

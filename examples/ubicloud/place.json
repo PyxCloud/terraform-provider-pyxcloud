@@ -1,0 +1,31 @@
+{
+  "name": "production",
+  "region": "Frankfurt",
+  "cidr": "10.0.0.0/16",
+  "subnets": ["10.0.1.0/24", "10.0.2.0/24"],
+  "security_group": {
+    "name": "production-web",
+    "description": "PyxCloud web tier - HTTP/HTTPS public, SSH from network",
+    "expose": [80, 443],
+    "rules": [
+      { "direction": "ingress", "protocol": "tcp", "from_port": 22, "to_port": 22, "cidrs": ["10.0.0.0/16"] }
+    ]
+  },
+  "virtual_machine": {
+    "name": "web",
+    "architecture": "x86_64",
+    "cpu": 4,
+    "ram": 16,
+    "os": "ubuntu",
+    "count": 2
+  },
+  "managed_database": {
+    "name": "app-db",
+    "engine": "postgres",
+    "version": "16",
+    "cpu": 2,
+    "ram": 8,
+    "storage_gb": 64,
+    "ha": true
+  }
+}

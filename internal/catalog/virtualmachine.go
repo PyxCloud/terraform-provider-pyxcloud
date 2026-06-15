@@ -242,6 +242,20 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		plan.ResourceType = "google_compute_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_droplet"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_linux_virtual_machine"
+	case ProviderLinode:
+		plan.ResourceType = "linode_instance"
+	case ProviderUbicloud:
+		plan.ResourceType = "ubicloud_vm"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_instance"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_instance"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_instance"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_server"
 	}
 	return plan, nil
 }
@@ -306,14 +320,18 @@ func nearestSizes(candidates []VMRow, cpu, ram, n int) []VMRow {
 // not an instance-type map — the candidate set still comes entirely from the
 // `virtual_machine` catalog snapshot.
 var preferredFamilies = map[string]int{
-	"t3":      0, // AWS x86_64 burstable (t3.medium etc.)
-	"t4g":     0, // AWS arm64 burstable (Graviton)
-	"e2":      0, // GCP general-purpose
-	"Droplet": 0, // DigitalOcean standard droplet
-	"t3a":     1, // AWS AMD burstable
-	"m5":      2, // AWS general-purpose
-	"n2":      2, // GCP general-purpose
-	"c5":      3, // AWS compute-optimised
+	"t3":       0, // AWS x86_64 burstable (t3.medium etc.)
+	"t4g":      0, // AWS arm64 burstable (Graviton)
+	"e2":       0, // GCP general-purpose
+	"Droplet":  0, // DigitalOcean standard droplet
+	"t3a":      1, // AWS AMD burstable
+	"m5":       2, // AWS general-purpose
+	"n2":       2, // GCP general-purpose
+	"c5":       3, // AWS compute-optimised
+	"standard": 0, // Ubicloud standard dedicated-CPU line (wave-2)
+	"bx2":      0, // IBM balanced (general-purpose default)
+	"cx2":      3, // IBM compute-optimised
+	"mx2":      2, // IBM memory-optimised
 }
 
 func familyRank(r VMRow) int {

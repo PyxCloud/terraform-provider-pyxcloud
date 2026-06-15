@@ -1,0 +1,74 @@
+# PyxCloud Alibaba Cloud (alicloud) catalog snapshot — wave-2 (pd-TF-PROVIDERS-WAVE2: alibaba)
+#
+# SOURCE / PROVENANCE: there is NO live PyxCloud ETL for Alibaba Cloud yet (the
+# `region` / `virtual_machine` / `managed_database` censused tables cover the
+# wave-1 csps aws/gcp/do only). These rows are therefore AUTHORED from the public
+# Alibaba Cloud product catalog (regions: https://www.alibabacloud.com/help/en/ecs/regions-and-zones;
+# ECS instance families: https://www.alibabacloud.com/help/en/ecs/user-guide/overview-of-instance-families;
+# ApsaraDB RDS classes: https://www.alibabacloud.com/help/en/rds/apsaradb-rds-for-mysql/instance-types).
+# When the live Alibaba ETL lands, these rows are REPLACED by the censused snapshot
+# verbatim — the resolution code does not change (it is catalog-driven). Until then,
+# this file is the documented gap. The SAME rows are mirrored into the embedded
+# loader CSVs (region_catalog.csv, vm_catalog.csv, vm_os_catalog.csv, mdb_catalog.csv)
+# which is what EmbeddedCatalog actually parses; this file is the human-readable,
+# Alibaba-only source-of-truth + gap record.
+#
+# KNOWN CATALOG GAPS (surface as clean plan-time errors, never invented):
+#   - Alibaba Cloud has NO Ireland/Dublin region, so the pyx region_name "Dublin"
+#     does not resolve for alibaba (ErrRegionNotFound). Use Frankfurt or Singapore.
+#   - Only two regions are authored here (Frankfurt eu-central-1, Singapore
+#     ap-southeast-1); other pyx region_names resolve to ErrRegionNotFound until the
+#     live ETL adds them.
+#   - The ECS OS images below are the canonical Alibaba public-image family aliases
+#     (e.g. ubuntu_24_04_x64_20G_alibase) rather than per-region image ids; Alibaba's
+#     image aliases are region-stable, unlike AWS per-region AMIs.
+#
+# ── region (macro_region,country,region_name,csp_region,csp_region_description,csp) ──
+region,Europe,Germany,Frankfurt,eu-central-1,Germany (Frankfurt),alicloud
+region,Asia Pacific,Singapore,Singapore,ap-southeast-1,Singapore,alicloud
+#
+# ── virtual_machine (name,family,csp,region,architecture,cpu,ram,gpu,supports_autoscale) ──
+# Alibaba ECS: g7 = general-purpose, c7 = compute-optimised, g8y = Arm (Yitian 710).
+vm,ecs.t6-c1m1.large,ecs.t6,alicloud,eu-central-1,x86_64,2,1,0,true
+vm,ecs.t6-c1m2.large,ecs.t6,alicloud,eu-central-1,x86_64,2,2,0,true
+vm,ecs.g7.large,ecs.g7,alicloud,eu-central-1,x86_64,2,8,0,true
+vm,ecs.c7.large,ecs.c7,alicloud,eu-central-1,x86_64,2,4,0,true
+vm,ecs.c7.xlarge,ecs.c7,alicloud,eu-central-1,x86_64,4,8,0,true
+vm,ecs.g7.xlarge,ecs.g7,alicloud,eu-central-1,x86_64,4,16,0,true
+vm,ecs.g8y.large,ecs.g8y,alicloud,eu-central-1,arm64,2,8,0,true
+vm,ecs.g8y.xlarge,ecs.g8y,alicloud,eu-central-1,arm64,4,16,0,true
+vm,ecs.t6-c1m1.large,ecs.t6,alicloud,ap-southeast-1,x86_64,2,1,0,true
+vm,ecs.t6-c1m2.large,ecs.t6,alicloud,ap-southeast-1,x86_64,2,2,0,true
+vm,ecs.g7.large,ecs.g7,alicloud,ap-southeast-1,x86_64,2,8,0,true
+vm,ecs.c7.large,ecs.c7,alicloud,ap-southeast-1,x86_64,2,4,0,true
+vm,ecs.c7.xlarge,ecs.c7,alicloud,ap-southeast-1,x86_64,4,8,0,true
+vm,ecs.g7.xlarge,ecs.g7,alicloud,ap-southeast-1,x86_64,4,16,0,true
+vm,ecs.g8y.large,ecs.g8y,alicloud,ap-southeast-1,arm64,2,8,0,true
+vm,ecs.g8y.xlarge,ecs.g8y,alicloud,ap-southeast-1,arm64,4,16,0,true
+#
+# ── virtual_machine_operating_system (csp,region,os_name,os_version,architecture,image) ──
+os,alicloud,eu-central-1,ubuntu,24.04,x86_64,ubuntu_24_04_x64_20G_alibase_20240515.vhd
+os,alicloud,eu-central-1,ubuntu,24.04,arm64,ubuntu_24_04_arm64_20G_alibase_20240515.vhd
+os,alicloud,eu-central-1,ubuntu,22.04,x86_64,ubuntu_22_04_x64_20G_alibase_20240515.vhd
+os,alicloud,eu-central-1,ubuntu,22.04,arm64,ubuntu_22_04_arm64_20G_alibase_20240515.vhd
+os,alicloud,eu-central-1,debian,12,x86_64,debian_12_x64_20G_alibase_20240515.vhd
+os,alicloud,eu-central-1,debian,12,arm64,debian_12_arm64_20G_alibase_20240515.vhd
+os,alicloud,ap-southeast-1,ubuntu,24.04,x86_64,ubuntu_24_04_x64_20G_alibase_20240515.vhd
+os,alicloud,ap-southeast-1,ubuntu,24.04,arm64,ubuntu_24_04_arm64_20G_alibase_20240515.vhd
+os,alicloud,ap-southeast-1,ubuntu,22.04,x86_64,ubuntu_22_04_x64_20G_alibase_20240515.vhd
+os,alicloud,ap-southeast-1,ubuntu,22.04,arm64,ubuntu_22_04_arm64_20G_alibase_20240515.vhd
+os,alicloud,ap-southeast-1,debian,12,x86_64,debian_12_x64_20G_alibase_20240515.vhd
+os,alicloud,ap-southeast-1,debian,12,arm64,debian_12_arm64_20G_alibase_20240515.vhd
+#
+# ── managed_database (name,family,csp,region,engine,cpu,ram) ──
+# ApsaraDB RDS instance classes: mysql.n2.* / pg.n2.* (general-purpose), n4 (dedicated).
+mdb,mysql.n2.medium.1,mysql.n2,alicloud,eu-central-1,mysql,2,4
+mdb,mysql.n2.large.1,mysql.n2,alicloud,eu-central-1,mysql,2,8
+mdb,mysql.n4.xlarge.1,mysql.n4,alicloud,eu-central-1,mysql,4,16
+mdb,pg.n2.medium.1,pg.n2,alicloud,eu-central-1,postgres,2,4
+mdb,pg.n2.large.1,pg.n2,alicloud,eu-central-1,postgres,2,8
+mdb,pg.n4.xlarge.1,pg.n4,alicloud,eu-central-1,postgres,4,16
+mdb,mysql.n2.medium.1,mysql.n2,alicloud,ap-southeast-1,mysql,2,4
+mdb,mysql.n2.large.1,mysql.n2,alicloud,ap-southeast-1,mysql,2,8
+mdb,pg.n2.medium.1,pg.n2,alicloud,ap-southeast-1,postgres,2,4
+mdb,pg.n2.large.1,pg.n2,alicloud,ap-southeast-1,postgres,2,8

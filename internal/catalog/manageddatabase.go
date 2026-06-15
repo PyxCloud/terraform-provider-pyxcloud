@@ -251,6 +251,41 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		plan.ResourceType = "google_sql_database_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_database_cluster"
+	case ProviderAzure:
+		if engine == DBEngineMySQL {
+			plan.ResourceType = "azurerm_mysql_flexible_server"
+		} else {
+			plan.ResourceType = "azurerm_postgresql_flexible_server"
+		}
+	case ProviderLinode:
+		plan.ResourceType = "linode_database_postgresql_v2"
+	case ProviderUbicloud:
+		// Ubicloud Managed Database is PostgreSQL-only (ubicloud_postgres). A MySQL
+		// engine has no Ubicloud resource; the render step rejects it cleanly. We
+		// still set the postgres resource type here so a postgres plan is concrete.
+		plan.ResourceType = "ubicloud_postgres"
+	case ProviderOracle:
+		// OCI's managed-database split: PostgreSQL -> oci_psql_db_system,
+		// MySQL -> oci_mysql_mysql_db_system. Both are encrypted at rest by default.
+		if engine == DBEngineMySQL {
+			plan.ResourceType = "oci_mysql_mysql_db_system"
+		} else {
+			plan.ResourceType = "oci_psql_db_system"
+		}
+	case ProviderIBM:
+		plan.ResourceType = "ibm_database"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_db_instance"
+	case ProviderOVH:
+		plan.ResourceType = "ovh_cloud_project_database"
+	case ProviderStackIt:
+		// StackIt PostgreSQL Flex (default) / MariaDB Flex. The data-safety guard
+		// (CheckManagedDatabaseDataSafety) is provider-agnostic and covers StackIt.
+		if engine == DBEngineMySQL {
+			plan.ResourceType = "stackit_mariadb_instance"
+		} else {
+			plan.ResourceType = "stackit_postgresflex_instance"
+		}
 	}
 	return plan, nil
 }

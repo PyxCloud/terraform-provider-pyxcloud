@@ -17,7 +17,9 @@ func TestProviderToCSP(t *testing.T) {
 		"digitalocean": {"do", true}, // provider name -> catalog token
 		"DigitalOcean": {"do", true}, // case-insensitive
 		"  aws  ":      {"aws", true},
-		"azure":        {"", false}, // wave-2, not enabled
+		"azure":        {"azure", true}, // wave-2: now enabled (pd-TF-W2-AZURE)
+		"oracle":       {"oci", true},   // wave-2: now enabled (pd-TF-W2-ORACLE)
+		"vultr":        {"", false},     // a genuinely-unsupported provider sentinel
 		"":             {"", false},
 	}
 	for in, exp := range cases {
@@ -80,9 +82,10 @@ func TestEmbeddedResolveRegionMissing(t *testing.T) {
 		t.Fatal("expected error for unknown region Atlantis")
 	}
 
-	// Unknown provider.
-	if _, err := cat.ResolveRegion(ctx, "Dublin", "azure"); err == nil {
-		t.Fatal("expected error for wave-2 provider azure")
+	// Unknown provider: a provider that is genuinely NOT supported by any wave.
+	// ("vultr" is the consistent not-supported sentinel after the wave-2 union.)
+	if _, err := cat.ResolveRegion(ctx, "Dublin", "vultr"); err == nil {
+		t.Fatal("expected error for unsupported provider vultr")
 	}
 }
 
@@ -97,9 +100,9 @@ func TestEmbeddedSnapshotWellFormed(t *testing.T) {
 			t.Errorf("malformed row: %+v", r)
 		}
 		switch r.CSP {
-		case "aws", "gcp", "do":
+		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci", "ibm", "alicloud", "ovh", "stackit":
 		default:
-			t.Errorf("unexpected csp %q in wave-1 snapshot (row %+v)", r.CSP, r)
+			t.Errorf("unexpected csp %q in catalog snapshot (row %+v)", r.CSP, r)
 		}
 	}
 }

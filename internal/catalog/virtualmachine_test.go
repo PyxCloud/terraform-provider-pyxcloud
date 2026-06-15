@@ -205,7 +205,7 @@ func TestVMValidation(t *testing.T) {
 	}{
 		{"missing region", VMSpec{Provider: "aws", CPU: 2, RAM: 4}},
 		{"missing provider", VMSpec{Region: "Dublin", CPU: 2, RAM: 4}},
-		{"unknown provider", VMSpec{Region: "Dublin", Provider: "azure", CPU: 2, RAM: 4}},
+		{"unknown provider", VMSpec{Region: "Dublin", Provider: "vultr", CPU: 2, RAM: 4}},
 		{"bad architecture", VMSpec{Region: "Dublin", Provider: "aws", Architecture: "riscv", CPU: 2, RAM: 4}},
 		{"bad os", VMSpec{Region: "Dublin", Provider: "aws", OS: "windows", CPU: 2, RAM: 4}},
 		{"cpu < 1", VMSpec{Region: "Dublin", Provider: "aws", CPU: 0, RAM: 4}},

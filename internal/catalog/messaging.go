@@ -106,12 +106,40 @@ func TranslateQueue(ctx context.Context, cat RegionCatalog, spec QueueSpec) (Mes
 		return MessagingPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+		provName := "DigitalOcean"
+		if provider == ProviderLinode {
+			provName = "Linode"
+		}
 		return MessagingPlan{}, ErrComponentUnsupported{
 			Component: TypeManagedQueue, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean has no managed message-queue/broker primitive; use a queue on " +
+			Alternative: provName + " has no managed message-queue/broker primitive; use a queue on " +
 				"AWS (SQS) or GCP (Pub/Sub topic+subscription), or run a self-managed broker on a " +
 				"virtual-machine",
+		}
+	}
+	if provider == ProviderIBM {
+		// IBM Cloud has no managed point-to-point work-queue primitive (MQ on Cloud
+		// is an exotic, dedicated-queue-manager product, not the cross-provider
+		// queue this component models). Event Streams (Kafka) is a STREAM, not a
+		// work queue, so it maps to event-streaming, not managed-queue.
+		return MessagingPlan{}, ErrComponentUnsupported{
+			Component: TypeManagedQueue, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "IBM Cloud has no managed work-queue primitive comparable to SQS/Pub-Sub " +
+				"(MQ on Cloud is a dedicated queue-manager product, not a simple managed queue); use a " +
+				"queue on AWS (SQS) or GCP (Pub/Sub), use an `event-streaming` component for IBM Event " +
+				"Streams (Kafka), or run a self-managed broker on a virtual-machine",
+		}
+	}
+	if provider == ProviderStackIt {
+		// StackIt's broker (stackit_rabbitmq_instance) is provisioned by a service
+		// plan_id (a project/region-specific UUID) that cannot be authored in the
+		// catalog; surface a clean error rather than an unresolvable required field.
+		return MessagingPlan{}, ErrComponentUnsupported{
+			Component: TypeManagedQueue, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt RabbitMQ (stackit_rabbitmq_instance) requires a service plan_id (a " +
+				"project/region-specific UUID) PyxCloud cannot resolve from the catalog; provision " +
+				"it directly, or use AWS SQS / GCP Pub/Sub for a fully managed canonical queue",
 		}
 	}
 	plan := MessagingPlan{
@@ -130,6 +158,12 @@ func TranslateQueue(ctx context.Context, cat RegionCatalog, spec QueueSpec) (Mes
 		plan.ResourceType = "aws_sqs_queue"
 	case ProviderGCP:
 		plan.ResourceType = "google_pubsub_subscription"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_servicebus_queue"
+	case ProviderOracle:
+		plan.ResourceType = "oci_queue_queue"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_message_service_queue"
 	}
 	return plan, nil
 }
@@ -154,11 +188,24 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 		return MessagingPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+		provName := "DigitalOcean"
+		if provider == ProviderLinode {
+			provName = "Linode"
+		}
 		return MessagingPlan{}, ErrComponentUnsupported{
 			Component: TypeEventStreaming, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean has no managed event-streaming primitive; use AWS Kinesis or " +
+			Alternative: provName + " has no managed event-streaming primitive; use AWS Kinesis or " +
 				"GCP Pub/Sub, or run a self-managed broker (Kafka/Redpanda) on a virtual-machine",
+		}
+	}
+	// IBM Event Streams (managed Kafka) IS a clean event-streaming primitive,
+	// provisioned as an ibm_resource_instance (service=messagehub). Supported.
+	if provider == ProviderStackIt {
+		return MessagingPlan{}, ErrComponentUnsupported{
+			Component: TypeEventStreaming, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt has no managed event-streaming primitive; use AWS Kinesis or GCP " +
+				"Pub/Sub, or run a self-managed broker (Kafka/Redpanda) on a stackit_server",
 		}
 	}
 	plan := MessagingPlan{
@@ -176,6 +223,14 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 		plan.ResourceType = "aws_kinesis_stream"
 	case ProviderGCP:
 		plan.ResourceType = "google_pubsub_topic"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_eventhub"
+	case ProviderOracle:
+		plan.ResourceType = "oci_streaming_stream"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_resource_instance"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_alikafka_instance"
 	}
 	return plan, nil
 }

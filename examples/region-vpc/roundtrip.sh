@@ -60,4 +60,31 @@ else
   echo ">>> SKIP DO apply/destroy: no DIGITALOCEAN_TOKEN (plan only)"
 fi
 
+# --- Azure (wave-2) ---
+# Azure expects no test creds here; we generate + init + validate only (plan/apply
+# are gated on ARM_SUBSCRIPTION_ID and SKIPPED EXPLICITLY when absent).
+gen azure azure
+( cd azure && terraform init -input=false >/dev/null && terraform validate -no-color )
+if [[ -n "${ARM_SUBSCRIPTION_ID:-}" ]]; then
+  echo ">>> Azure creds present: real plan + apply + destroy"
+  ( cd azure && terraform plan -input=false -no-color )
+  apply_destroy azure
+else
+  echo ">>> SKIP Azure plan/apply/destroy: no ARM_SUBSCRIPTION_ID (validate only)"
+fi
+
 echo "round-trip complete."
+
+# --- Oracle Cloud / OCI (wave-2; Frankfurt -> eu-frankfurt-1) ---
+# No OCI creds in CI -> init + validate only (explicit), never a real apply.
+: > oracle/generated.tf
+"$RENDER_BIN" -fixture "../region-vpc/place.json" -provider oracle -component network >> oracle/generated.tf
+echo "" >> oracle/generated.tf
+echo "generated oracle/generated.tf"
+( cd oracle && terraform init -input=false >/dev/null && terraform validate -no-color )
+if [[ -n "${OCI_CLI_TENANCY:-}" || -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ]] && [[ -n "${PYX_OCI_APPLY:-}" ]]; then
+  echo ">>> OCI creds present + PYX_OCI_APPLY set: real plan + apply + destroy"
+  ( cd oracle && terraform plan -input=false -no-color && terraform apply -auto-approve -no-color && terraform destroy -auto-approve -no-color )
+else
+  echo ">>> SKIP OCI apply/destroy: no OCI creds or PYX_OCI_APPLY unset (validate only)"
+fi

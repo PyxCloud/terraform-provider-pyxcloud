@@ -26,6 +26,18 @@ const (
 	cspAWS = "aws"
 	cspGCP = "gcp"
 	cspDO  = "do"
+	// cspLinode is the wave-2 Linode (Akamai) catalog token. Linode rows are
+	// folded into the embedded catalog from linode_catalog.csv (see embedded.go).
+	cspLinode = "linode"
+	// cspOracle is the catalog csp token for Oracle Cloud Infrastructure (wave-2).
+	// The provider-facing name is "oracle"; the catalog token is "oci".
+	cspOracle = "oci"
+	cspIBM    = "ibm" // wave-2: IBM Cloud (IBM-Cloud/ibm provider)
+	// cspAlibaba is the catalog csp token for Alibaba Cloud (wave-2). The catalog
+	// rows and the Terraform `alicloud` provider both speak "alicloud", so unlike
+	// "do"/"digitalocean" the provider-facing name and the csp token coincide.
+	cspAlibaba = "alicloud"
+	cspStackIt = "stackit" // wave-2: StackIt (Schwarz Group, EU sovereign cloud)
 )
 
 // Provider-facing names (Terraform `provider` attribute / ENABLED_LAUNCH_PROVIDERS).
@@ -33,13 +45,45 @@ const (
 	ProviderAWS          = "aws"
 	ProviderGCP          = "gcp"
 	ProviderDigitalOcean = "digitalocean"
+	// ProviderLinode is the wave-2 Linode (Akamai) provider — the `linode/linode`
+	// Terraform provider. Its catalog token is the same string ("linode").
+	ProviderLinode = "linode"
+	// ProviderOracle is the wave-2 Oracle Cloud Infrastructure provider. It
+	// descends to the oracle/oci Terraform provider (oci_* resources). The
+	// provider-facing name is "oracle"; the catalog csp token is "oci".
+	ProviderOracle = "oracle"
+	// ProviderIBM is the wave-2 IBM Cloud provider. The provider-facing name and
+	// the catalog csp token are both "ibm" (unlike DigitalOcean, where the
+	// provider speaks "digitalocean" but the catalog csp token is "do").
+	ProviderIBM = "ibm"
+	// ProviderAlibaba is the wave-2 Alibaba Cloud provider (pd-TF-PROVIDERS-WAVE2:
+	// alibaba). The Terraform provider name is "alicloud" (the official
+	// aliyun/alicloud provider), matching the catalog csp token.
+	ProviderAlibaba = "alicloud"
+	// ProviderStackIt is the wave-2 StackIt provider (Terraform provider
+	// stackitcloud/stackit). Unlike the wave-1 providers the catalog csp token and
+	// the provider-facing name are identical ("stackit").
+	ProviderStackIt = "stackit"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
+// ProviderAzure (wave-2) is defined in render_azure.go and registered here.
+// ProviderUbicloud (wave-2) is defined in render_ubicloud.go and registered here.
+// ProviderOVH (wave-2) is defined in render_ovh.go and registered here so OVH is
+// reachable through the SAME main translate/render dispatch as the other seven
+// wave-2 providers (its region/flavor rows are folded into EmbeddedCatalog).
 var providerToCSP = map[string]string{
 	ProviderAWS:          cspAWS,
 	ProviderGCP:          cspGCP,
 	ProviderDigitalOcean: cspDO,
+	ProviderAzure:        cspAzure,
+	ProviderLinode:       cspLinode,
+	ProviderUbicloud:     cspUbicloud,
+	ProviderOracle:       cspOracle,
+	ProviderIBM:          cspIBM,
+	ProviderAlibaba:      cspAlibaba,
+	ProviderOVH:          cspOVH,
+	ProviderStackIt:      cspStackIt,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

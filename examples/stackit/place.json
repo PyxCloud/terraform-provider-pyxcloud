@@ -1,0 +1,53 @@
+{
+  "name": "production",
+  "region": "Frankfurt",
+  "cidr": "10.0.0.0/16",
+  "subnets": ["10.0.1.0/24", "10.0.2.0/24"],
+  "security_group": {
+    "name": "web",
+    "description": "web tier",
+    "expose": [80, 443],
+    "rules": [
+      { "direction": "ingress", "protocol": "tcp", "from_port": 8080, "to_port": 8080, "source_sg": "lb" }
+    ]
+  },
+  "virtual_machine": {
+    "name": "web",
+    "cpu": 2,
+    "ram": 8,
+    "os": "ubuntu",
+    "count": 2
+  },
+  "managed_database": {
+    "name": "app-db",
+    "engine": "postgres",
+    "cpu": 2,
+    "ram": 8,
+    "storage_gb": 20,
+    "ha": true
+  },
+  "object_storage": {
+    "name": "assets"
+  },
+  "kubernetes": {
+    "name": "cluster",
+    "version": "1.30",
+    "node_cpu": 2,
+    "node_ram": 8,
+    "min_nodes": 1,
+    "max_nodes": 3
+  },
+  "dns_zone": {
+    "name": "zone",
+    "domain": "example.com"
+  },
+  "secrets": {
+    "name": "app-secrets"
+  },
+  "load_balancer": {
+    "name": "web-lb",
+    "listeners": [{ "port": 443, "protocol": "tcp" }],
+    "target_kind": "virtual-machine",
+    "target_name": "web"
+  }
+}

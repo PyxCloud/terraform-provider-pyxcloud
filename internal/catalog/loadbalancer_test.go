@@ -270,7 +270,7 @@ func TestLoadBalancerValidation(t *testing.T) {
 	}{
 		{"missing region", LoadBalancerSpec{Provider: "aws", Listeners: []LBListenerSpec{{Port: 80}}}},
 		{"missing provider", LoadBalancerSpec{Region: "Dublin", Listeners: []LBListenerSpec{{Port: 80}}}},
-		{"unknown provider", LoadBalancerSpec{Region: "Dublin", Provider: "azure", Listeners: []LBListenerSpec{{Port: 80}}}},
+		{"unknown provider", LoadBalancerSpec{Region: "Dublin", Provider: "vultr", Listeners: []LBListenerSpec{{Port: 80}}}},
 		{"no listeners", LoadBalancerSpec{Region: "Dublin", Provider: "aws"}},
 		{"bad listener port", LoadBalancerSpec{Region: "Dublin", Provider: "aws", Listeners: []LBListenerSpec{{Port: 0}}}},
 		{"bad listener proto", LoadBalancerSpec{Region: "Dublin", Provider: "aws", Listeners: []LBListenerSpec{{Port: 80, Protocol: "grpc"}}}},
@@ -345,7 +345,7 @@ func TestRenderLoadBalancerAWSNoStickiness(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateLoadBalancer(context.Background(), MustEmbedded(), LoadBalancerSpec{
 		Name: "web-lb", Region: "Dublin", Provider: "aws",
-		Listeners: []LBListenerSpec{{Port: 80}},
+		Listeners:  []LBListenerSpec{{Port: 80}},
 		TargetName: "web", Network: "production", Subnets: []string{"production-subnet-1"},
 	})
 	if err != nil {
@@ -363,7 +363,7 @@ func TestRenderLoadBalancerAWSVMTarget(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateLoadBalancer(context.Background(), MustEmbedded(), LoadBalancerSpec{
 		Name: "web-lb", Region: "Dublin", Provider: "aws",
-		Listeners: []LBListenerSpec{{Port: 80}},
+		Listeners:  []LBListenerSpec{{Port: 80}},
 		TargetKind: "vm", TargetName: "web",
 		Network: "production", Subnets: []string{"production-subnet-1"},
 	})
@@ -452,7 +452,7 @@ func TestRenderLoadBalancerDO(t *testing.T) {
 // unknown provider (defence in depth for a hand-built plan).
 func TestRenderLoadBalancerUnsupportedProvider(t *testing.T) {
 	t.Parallel()
-	if _, err := RenderLoadBalancerHCL(LoadBalancerPlan{Provider: "azure"}); err == nil {
+	if _, err := RenderLoadBalancerHCL(LoadBalancerPlan{Provider: "vultr"}); err == nil {
 		t.Fatal("expected render error for unsupported provider, got nil")
 	}
 }

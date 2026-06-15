@@ -23,7 +23,14 @@ to a deployment **provider** and an abstract **macro-region**:
 - **VM sizing** (mirrors `properties.virtual-machine.type.*` / `os.osName`):
   `architecture`, `cpu`, `ram`, `os_name`.
 - **Providers** (mirrors vibe-frontend `ENABLED_LAUNCH_PROVIDERS`):
-  `aws`, `gcp`, `digitalocean`.
+  wave-1: `aws`, `gcp`, `digitalocean`. wave-2: `azure`, `linode`, `ubicloud`,
+  `oracle` (Oracle Cloud / OCI), `ibm` (IBM Cloud), `alicloud` (Alibaba Cloud),
+  `ovh` (OVHcloud), `stackit` (EU sovereign cloud, Schwarz Group). Each wave-2
+  provider maps the components it has a clean Terraform resource for and surfaces a
+  clean plan-time error for the rest (e.g. StackIt has no scale-group / cache /
+  managed-queue / event-streaming / cdn / waf / serverless; OVH has no
+  security-group / scale-group / load-balancer / cache / messaging / edge /
+  secrets / serverless). See `examples/<provider>/` for per-provider fixtures.
 - **Macro-region**: abstract region such as `EU West`, `US East`, `Asia` —
   resolved to a concrete CSP region at deploy time.
 
@@ -489,6 +496,39 @@ output "cheapest" { value = data.pyxcloud_compare.options.cheapest }
 ```
 
 A full example lives in [`examples/main.tf`](examples/main.tf).
+
+## Wave-2 providers
+
+### OVHcloud (`ovh`) — `pd-TF-PROVIDERS-WAVE2: ovh`
+
+OVHcloud Public Cloud is OpenStack-based, and many compute primitives live in the
+**OpenStack** provider, **not** in `ovh/ovh`. The provider emits ONLY resources
+verified to exist in `ovh/ovh`; every other canonical component surfaces a clean
+plan-time `unsupported on ovh` error naming the alternative (never an invented
+resource, SPEC §1). The OVH path is standalone and catalog-driven
+([`render_ovh.go`](internal/catalog/render_ovh.go) + the
+[`ovh_catalog.csv`](internal/catalog/ovh_catalog.csv) region/flavor snapshot).
+
+| Canonical component             | OVH (`ovh/ovh`)                                                  | Status |
+| ------------------------------- | --------------------------------------------------------------- | ------ |
+| `network` / `vpc`               | `ovh_cloud_project_network_private` + `_subnet`                 | ✅ supported |
+| `managed-database`              | `ovh_cloud_project_database` (+ data-safety guard)              | ✅ supported |
+| `managed-kubernetes`            | `ovh_cloud_project_kube` + `_nodepool` (autoscale)              | ✅ supported |
+| `object-storage`                | `ovh_cloud_project_storage` (S3 high-perf, private, SSE)        | ✅ supported |
+| `virtual-machine`               | `ovh_cloud_project_instance` is UUID-driven (flavor_id/image_id), not catalog-name-driven → use kube / OpenStack provider | ❌ unsupported |
+| `virtual-machine-scale-group`   | no native VM ASG → use `ovh_cloud_project_kube_nodepool`        | ❌ unsupported |
+| `security-group`                | OpenStack neutron SGs live in the OpenStack provider            | ❌ unsupported |
+| `load-balancer`                 | `ovh_iploadbalancing` is a separate order/cart billing product, not place-scoped | ❌ unsupported |
+| `cache`, `managed-queue`, `event-streaming`, `dns-zone`, `cdn-service`, `waf-service`, `secrets-manager`, `serverless-function` | no clean `ovh/ovh` primitive | ❌ unsupported |
+
+Every OVH Public Cloud resource is scoped to a Public Cloud **project**; its id is
+provided out of band via the `ovh_service_name` Terraform variable (the same
+out-of-band-credential pattern wave-1 uses for IAM role ARNs / DB passwords), so it
+never lands in the canonical topology or state plaintext. **Catalog gap:** the live
+ETL does not yet census OVH, so `ovh_catalog.csv` is authored from the public OVH
+catalog with the same flat shape, to be replaced wholesale when the OVH ETL lands.
+See [`examples/ovh`](examples/ovh) for the render + `terraform validate`/`plan`
+round-trip harness (real apply/destroy gated on `OVH_*` creds, never in CI).
 
 ## What's stubbed vs real
 

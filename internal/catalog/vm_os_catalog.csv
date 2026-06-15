@@ -29,3 +29,15 @@ do,ams3,ubuntu,22.04,x86_64,ubuntu-22-04-x64
 do,ams3,ubuntu,22.04,arm64,ubuntu-22-04-arm64
 do,ams3,debian,12,x86_64,debian-12-x64
 do,ams3,debian,12,arm64,debian-12-arm64
+alicloud,eu-central-1,ubuntu,24.04,x86_64,ubuntu_24_04_x64_20G_alibase_20240515.vhd
+alicloud,eu-central-1,ubuntu,24.04,arm64,ubuntu_24_04_arm64_20G_alibase_20240515.vhd
+alicloud,eu-central-1,ubuntu,22.04,x86_64,ubuntu_22_04_x64_20G_alibase_20240515.vhd
+alicloud,eu-central-1,ubuntu,22.04,arm64,ubuntu_22_04_arm64_20G_alibase_20240515.vhd
+alicloud,eu-central-1,debian,12,x86_64,debian_12_x64_20G_alibase_20240515.vhd
+alicloud,eu-central-1,debian,12,arm64,debian_12_arm64_20G_alibase_20240515.vhd
+alicloud,ap-southeast-1,ubuntu,24.04,x86_64,ubuntu_24_04_x64_20G_alibase_20240515.vhd
+alicloud,ap-southeast-1,ubuntu,24.04,arm64,ubuntu_24_04_arm64_20G_alibase_20240515.vhd
+alicloud,ap-southeast-1,ubuntu,22.04,x86_64,ubuntu_22_04_x64_20G_alibase_20240515.vhd
+alicloud,ap-southeast-1,ubuntu,22.04,arm64,ubuntu_22_04_arm64_20G_alibase_20240515.vhd
+alicloud,ap-southeast-1,debian,12,x86_64,debian_12_x64_20G_alibase_20240515.vhd
+alicloud,ap-southeast-1,debian,12,arm64,debian_12_arm64_20G_alibase_20240515.vhd

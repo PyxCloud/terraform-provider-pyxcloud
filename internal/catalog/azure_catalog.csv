@@ -1,0 +1,128 @@
+kind,c1,c2,c3,c4,c5,c6,c7,c8
+# Azure (wave-2) catalog snapshot. Mirrors the SAME shape as the wave-1
+# region/virtual_machine/virtual_machine_operating_system/managed_database
+# tables, but lives in its own file so the wave-2 Azure PR never conflicts with
+# the concurrent wave-1 / sibling-provider snapshots (shared CSVs). Each row is
+# discriminated by the leading `kind` column:
+#
+#   region : macro_region, country, region_name, csp_region(=azure location),
+#            csp_region_description, csp(=azure)            -> RegionRow
+#   vm     : name(=azure vm size), family, csp_region, architecture, cpu,
+#            ram(GiB), gpu, supports_autoscale             -> VMRow
+#   os     : csp_region, os_name, os_version, architecture, image(=azure URN)  -> OSImageRow
+#   mdb    : name(=azure flexible-server sku), family, csp_region, engine,
+#            cpu, ram(GiB)                                  -> MDBRow
+#
+# GAP / provenance: the live Azure ETL CSV (core/database/.../etl/data/azure_vm.csv)
+# is NOT present in this provider repo clone, so the VM/OS/MDB rows below were
+# authored from the public Azure SKU catalog (Dv5/Dpsv5 general-purpose families,
+# Flexible Server B/D SKUs, Canonical/Debian marketplace image URNs) for the four
+# regions matching the wave-1 test regions. When the Azure ETL lands, this file is
+# regenerated from it exactly like the wave-1 snapshots; the schema does not change.
+#
+# ── regions (region_name -> azure location) ─────────────────────────────────
+region,Europe,Ireland,Dublin,northeurope,Azure North Europe (Ireland),azure
+region,Europe,Netherlands,Amsterdam,westeurope,Azure West Europe (Netherlands),azure
+region,Europe,Germany,Frankfurt,germanywestcentral,Azure Germany West Central,azure
+region,Europe,United Kingdom,London,uksouth,Azure UK South,azure
+region,Europe,France,Paris,francecentral,Azure France Central,azure
+region,Europe,Switzerland,Zurich,switzerlandnorth,Azure Switzerland North,azure
+region,Europe,Sweden,Stockholm,swedencentral,Azure Sweden Central,azure
+region,Europe,Italy,Milan,italynorth,Azure Italy North,azure
+region,Europe,Spain,Madrid,spaincentral,Azure Spain Central,azure
+region,Europe,Poland,Warsaw,polandcentral,Azure Poland Central,azure
+region,United States,East Coast North,North Virginia,eastus,Azure East US (Virginia),azure
+region,United States,Midwest,Iowa,centralus,Azure Central US (Iowa),azure
+region,United States,East Coast South,South Carolina,eastus2,Azure East US 2,azure
+region,United States,West Coast North,Oregon,westus2,Azure West US 2,azure
+region,United States,West Coast South,California,westus,Azure West US (California),azure
+region,United States,South,Dallas,southcentralus,Azure South Central US (Texas),azure
+region,North America (ex US),Canada,Toronto,canadacentral,Azure Canada Central (Toronto),azure
+region,North America (ex US),Canada,Quebec,canadaeast,Azure Canada East (Quebec),azure
+region,Asia Pacific,Japan,Tokyo,japaneast,Azure Japan East (Tokyo),azure
+region,Asia Pacific,Japan,Osaka,japanwest,Azure Japan West (Osaka),azure
+region,Asia Pacific,Singapore,Singapore,southeastasia,Azure Southeast Asia (Singapore),azure
+region,Asia Pacific,India,Mumbai,centralindia,Azure Central India (Pune),azure
+region,Asia Pacific,Australia,Sydney,australiaeast,Azure Australia East (Sydney),azure
+region,Asia Pacific,South Korea,Seoul,koreacentral,Azure Korea Central (Seoul),azure
+region,Middle East,United Arab Emirates,Dubai,uaenorth,Azure UAE North (Dubai),azure
+region,Middle East,Qatar,Doha,qatarcentral,Azure Qatar Central (Doha),azure
+region,Middle East,Israel,Tel Aviv,israelcentral,Azure Israel Central,azure
+region,Africa,South Africa,Johannesburg,southafricanorth,Azure South Africa North (Johannesburg),azure
+region,South America,Brazil,São Paulo,brazilsouth,Azure Brazil South (Sao Paulo),azure
+#
+# ── virtual_machine SKUs (Dv5 x86_64 + Dpsv5 arm64 general-purpose) ──────────
+# northeurope (Dublin)
+vm,Standard_D2s_v5,Dsv5,northeurope,x86_64,2,8,0,true
+vm,Standard_D4s_v5,Dsv5,northeurope,x86_64,4,16,0,true
+vm,Standard_D8s_v5,Dsv5,northeurope,x86_64,8,32,0,true
+vm,Standard_B1ms,B,northeurope,x86_64,1,2,0,true
+vm,Standard_B2s,B,northeurope,x86_64,2,4,0,true
+vm,Standard_D2ps_v5,Dpsv5,northeurope,arm64,2,8,0,true
+vm,Standard_D4ps_v5,Dpsv5,northeurope,arm64,4,16,0,true
+# westeurope (Amsterdam)
+vm,Standard_D2s_v5,Dsv5,westeurope,x86_64,2,8,0,true
+vm,Standard_D4s_v5,Dsv5,westeurope,x86_64,4,16,0,true
+vm,Standard_D8s_v5,Dsv5,westeurope,x86_64,8,32,0,true
+vm,Standard_B1ms,B,westeurope,x86_64,1,2,0,true
+vm,Standard_B2s,B,westeurope,x86_64,2,4,0,true
+vm,Standard_D2ps_v5,Dpsv5,westeurope,arm64,2,8,0,true
+vm,Standard_D4ps_v5,Dpsv5,westeurope,arm64,4,16,0,true
+# germanywestcentral (Frankfurt)
+vm,Standard_D2s_v5,Dsv5,germanywestcentral,x86_64,2,8,0,true
+vm,Standard_D4s_v5,Dsv5,germanywestcentral,x86_64,4,16,0,true
+vm,Standard_D8s_v5,Dsv5,germanywestcentral,x86_64,8,32,0,true
+vm,Standard_B1ms,B,germanywestcentral,x86_64,1,2,0,true
+vm,Standard_B2s,B,germanywestcentral,x86_64,2,4,0,true
+vm,Standard_D2ps_v5,Dpsv5,germanywestcentral,arm64,2,8,0,true
+vm,Standard_D4ps_v5,Dpsv5,germanywestcentral,arm64,4,16,0,true
+# eastus (North Virginia)
+vm,Standard_D2s_v5,Dsv5,eastus,x86_64,2,8,0,true
+vm,Standard_D4s_v5,Dsv5,eastus,x86_64,4,16,0,true
+vm,Standard_D8s_v5,Dsv5,eastus,x86_64,8,32,0,true
+vm,Standard_B1ms,B,eastus,x86_64,1,2,0,true
+vm,Standard_B2s,B,eastus,x86_64,2,4,0,true
+vm,Standard_D2ps_v5,Dpsv5,eastus,arm64,2,8,0,true
+vm,Standard_D4ps_v5,Dpsv5,eastus,arm64,4,16,0,true
+#
+# ── OS images (Azure marketplace URN: publisher:offer:sku:version) ───────────
+# Ubuntu Pro/Server 24.04 + 22.04 (Canonical), Debian 12 (Debian).
+os,northeurope,ubuntu,24.04,x86_64,Canonical:ubuntu-24_04-lts:server:latest
+os,northeurope,ubuntu,24.04,arm64,Canonical:ubuntu-24_04-lts:server-arm64:latest
+os,northeurope,ubuntu,22.04,x86_64,Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest
+os,northeurope,debian,12,x86_64,Debian:debian-12:12-gen2:latest
+os,westeurope,ubuntu,24.04,x86_64,Canonical:ubuntu-24_04-lts:server:latest
+os,westeurope,ubuntu,24.04,arm64,Canonical:ubuntu-24_04-lts:server-arm64:latest
+os,westeurope,ubuntu,22.04,x86_64,Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest
+os,westeurope,debian,12,x86_64,Debian:debian-12:12-gen2:latest
+os,germanywestcentral,ubuntu,24.04,x86_64,Canonical:ubuntu-24_04-lts:server:latest
+os,germanywestcentral,ubuntu,24.04,arm64,Canonical:ubuntu-24_04-lts:server-arm64:latest
+os,germanywestcentral,ubuntu,22.04,x86_64,Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest
+os,germanywestcentral,debian,12,x86_64,Debian:debian-12:12-gen2:latest
+os,eastus,ubuntu,24.04,x86_64,Canonical:ubuntu-24_04-lts:server:latest
+os,eastus,ubuntu,24.04,arm64,Canonical:ubuntu-24_04-lts:server-arm64:latest
+os,eastus,ubuntu,22.04,x86_64,Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest
+os,eastus,debian,12,x86_64,Debian:debian-12:12-gen2:latest
+#
+# ── managed_database SKUs (PostgreSQL/MySQL Flexible Server) ─────────────────
+# B-series burstable + D-series general-purpose, postgres + mysql.
+mdb,Standard_B1ms,Burstable,northeurope,postgres,1,2
+mdb,Standard_B2s,Burstable,northeurope,postgres,2,4
+mdb,Standard_D2ds_v5,GeneralPurpose,northeurope,postgres,2,8
+mdb,Standard_D4ds_v5,GeneralPurpose,northeurope,postgres,4,16
+mdb,Standard_B1ms,Burstable,northeurope,mysql,1,2
+mdb,Standard_D2ds_v5,GeneralPurpose,northeurope,mysql,2,8
+mdb,Standard_B1ms,Burstable,westeurope,postgres,1,2
+mdb,Standard_B2s,Burstable,westeurope,postgres,2,4
+mdb,Standard_D2ds_v5,GeneralPurpose,westeurope,postgres,2,8
+mdb,Standard_D4ds_v5,GeneralPurpose,westeurope,postgres,4,16
+mdb,Standard_B1ms,Burstable,germanywestcentral,postgres,1,2
+mdb,Standard_B2s,Burstable,germanywestcentral,postgres,2,4
+mdb,Standard_D2ds_v5,GeneralPurpose,germanywestcentral,postgres,2,8
+mdb,Standard_D4ds_v5,GeneralPurpose,germanywestcentral,postgres,4,16
+mdb,Standard_B1ms,Burstable,eastus,postgres,1,2
+mdb,Standard_B2s,Burstable,eastus,postgres,2,4
+mdb,Standard_D2ds_v5,GeneralPurpose,eastus,postgres,2,8
+mdb,Standard_D4ds_v5,GeneralPurpose,eastus,postgres,4,16
+mdb,Standard_B1ms,Burstable,eastus,mysql,1,2
+mdb,Standard_D2ds_v5,GeneralPurpose,eastus,mysql,2,8

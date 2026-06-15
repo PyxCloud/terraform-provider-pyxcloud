@@ -1,0 +1,28 @@
+{
+  "name": "production",
+  "region": "Gravelines",
+  "cidr": "10.0.0.0/16",
+  "subnets": ["10.0.1.0/24", "10.0.2.0/24"],
+  "managed_database": {
+    "name": "app-db",
+    "engine": "postgres",
+    "cpu": 2,
+    "ram": 7,
+    "storage_gb": 40,
+    "ha": true,
+    "deletion_protection": false
+  },
+  "kubernetes": {
+    "name": "app-kube",
+    "version": "1.30",
+    "node_cpu": 2,
+    "node_ram": 8,
+    "min_nodes": 1,
+    "max_nodes": 5,
+    "desired_nodes": 3
+  },
+  "object_storage": {
+    "name": "app-assets",
+    "versioning": true
+  }
+}

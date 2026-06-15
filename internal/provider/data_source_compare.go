@@ -99,7 +99,7 @@ func (d *compareDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 					Attributes: map[string]schema.Attribute{
 						"provider": schema.StringAttribute{
 							Required:            true,
-							MarkdownDescription: "`aws`, `gcp`, or `digitalocean`.",
+							MarkdownDescription: "`aws`, `gcp`, `digitalocean`, or `ovh` (wave-2).",
 						},
 						"region": schema.StringAttribute{
 							Required:            true,

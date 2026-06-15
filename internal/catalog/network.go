@@ -90,6 +90,22 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "google_compute_network"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_vpc"
+	case ProviderAzure:
+		plan.ResourceType = "azurerm_virtual_network"
+	case ProviderLinode:
+		plan.ResourceType = "linode_vpc"
+	case ProviderUbicloud:
+		plan.ResourceType = "ubicloud_private_subnet"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_vcn"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_vpc"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_vpc"
+	case ProviderOVH:
+		plan.ResourceType = "ovh_cloud_project_network_private"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_network"
 	}
 	return plan, nil
 }
@@ -101,6 +117,10 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 //     naming convention; spreads subnets multi-AZ.
 //   - GCP: <region>-<a|b|c|...> e.g. europe-west1-a — GCP zone naming.
 //   - DigitalOcean: VPCs are region-scoped with no sub-zones, so no zones.
+//   - IBM: <region>-<1|2|3|...> e.g. eu-de-1 — IBM Cloud VPC zone naming (a
+//     region has up to 3 numbered zones; the universal IBM VPC convention).
+//   - Alibaba: <region><a|b|c|...> e.g. eu-central-1a — the alicloud zone-id
+//     convention (same shape as AWS); vswitches are zonal, so spread multi-zone.
 func deriveZones(provider, cspRegion string, n int) []string {
 	if n <= 0 {
 		return nil
@@ -108,7 +128,7 @@ func deriveZones(provider, cspRegion string, n int) []string {
 	letters := []string{"a", "b", "c", "d", "e", "f"}
 	zones := make([]string, 0, n)
 	switch provider {
-	case ProviderAWS:
+	case ProviderAWS, ProviderAlibaba:
 		for i := 0; i < n; i++ {
 			zones = append(zones, cspRegion+letters[i%len(letters)])
 		}
@@ -116,8 +136,31 @@ func deriveZones(provider, cspRegion string, n int) []string {
 		for i := 0; i < n; i++ {
 			zones = append(zones, cspRegion+"-"+letters[i%len(letters)])
 		}
-	case ProviderDigitalOcean:
-		return nil
+	case ProviderDigitalOcean, ProviderLinode:
+		// DigitalOcean and Linode VPCs are region-scoped with no sub-zones.
+	case ProviderIBM:
+		// IBM VPC zones are numbered 1..3 within a region (cycle within the 3
+		// available zones if more subnets than zones are requested).
+		for i := 0; i < n; i++ {
+			zones = append(zones, fmt.Sprintf("%s-%d", cspRegion, (i%3)+1))
+		}
+	case ProviderOracle:
+		// OCI availability domains carry an opaque, tenancy-specific prefix
+		// (e.g. "Uocm:PHX-AD-1"), so they cannot be derived from the region name
+		// the way AWS AZs / GCP zones can; the concrete AD name is only known at
+		// apply time via the oci_identity_availability_domains data source. We
+		// therefore carry the AD ORDINAL ("1","2","3"...) as the zone, and the
+		// renderer indexes the data source by (ordinal-1). This keeps the multi-AD
+		// spread deterministic and catalog-free without inventing an AD name.
+		for i := 0; i < n; i++ {
+			zones = append(zones, fmt.Sprintf("%d", i+1))
+		}
+	case ProviderStackIt:
+		// StackIt availability zones are <region>-<1|2|3> e.g. eu01-1, eu01-2,
+		// eu01-3 (the documented IaaS AZ naming); spread subnets across them.
+		for i := 0; i < n; i++ {
+			zones = append(zones, fmt.Sprintf("%s-%d", cspRegion, (i%3)+1))
+		}
 	}
 	return zones
 }
@@ -127,10 +170,10 @@ func validateSpec(spec NetworkSpec) error {
 		return fmt.Errorf("network: region (abstract pyx region_name) is required")
 	}
 	if strings.TrimSpace(spec.Provider) == "" {
-		return fmt.Errorf("network: provider is required (aws | gcp | digitalocean)")
+		return fmt.Errorf("network: provider is required (aws | gcp | digitalocean | oracle)")
 	}
 	if _, ok := ProviderToCSP(spec.Provider); !ok {
-		return fmt.Errorf("network: unknown provider %q (aws | gcp | digitalocean)", spec.Provider)
+		return fmt.Errorf("network: unknown provider %q (aws | gcp | digitalocean | oracle)", spec.Provider)
 	}
 	if strings.TrimSpace(spec.CIDR) == "" {
 		return fmt.Errorf("network: cidr is required, e.g. 10.0.0.0/16")

@@ -1,0 +1,53 @@
+kind,c1,c2,c3,c4,c5,c6,c7,c8,c9
+region,Europe,Germany,Frankfurt,eu-frankfurt-1,Germany Central Frankfurt,oci
+region,Europe,Netherlands,Amsterdam,eu-amsterdam-1,Netherlands Northwest Amsterdam,oci
+region,Europe,United Kingdom,London,uk-london-1,UK South London,oci
+region,United States,East Coast,North Virginia,us-ashburn-1,US East Ashburn,oci
+region,Asia Pacific,Singapore,Singapore,ap-singapore-1,Singapore,oci
+vm,VM.Standard.E4.Flex.1.8,VM.Standard.E4.Flex,oci,eu-frankfurt-1,x86_64,1,8,0,true
+vm,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,eu-frankfurt-1,x86_64,2,16,0,true
+vm,VM.Standard.E4.Flex.2.4,VM.Standard.E4.Flex,oci,eu-frankfurt-1,x86_64,2,4,0,true
+vm,VM.Standard.E4.Flex.4.32,VM.Standard.E4.Flex,oci,eu-frankfurt-1,x86_64,4,32,0,true
+vm,VM.Standard.A1.Flex.1.6,VM.Standard.A1.Flex,oci,eu-frankfurt-1,arm64,1,6,0,true
+vm,VM.Standard.A1.Flex.2.12,VM.Standard.A1.Flex,oci,eu-frankfurt-1,arm64,2,12,0,true
+vm,VM.Standard.A1.Flex.2.4,VM.Standard.A1.Flex,oci,eu-frankfurt-1,arm64,2,4,0,true
+vm,VM.Standard.E4.Flex.1.8,VM.Standard.E4.Flex,oci,eu-amsterdam-1,x86_64,1,8,0,true
+vm,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,eu-amsterdam-1,x86_64,2,16,0,true
+vm,VM.Standard.E4.Flex.2.4,VM.Standard.E4.Flex,oci,eu-amsterdam-1,x86_64,2,4,0,true
+vm,VM.Standard.A1.Flex.2.4,VM.Standard.A1.Flex,oci,eu-amsterdam-1,arm64,2,4,0,true
+vm,VM.Standard.E4.Flex.2.4,VM.Standard.E4.Flex,oci,uk-london-1,x86_64,2,4,0,true
+vm,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,uk-london-1,x86_64,2,16,0,true
+vm,VM.Standard.A1.Flex.2.4,VM.Standard.A1.Flex,oci,uk-london-1,arm64,2,4,0,true
+vm,VM.Standard.E4.Flex.2.4,VM.Standard.E4.Flex,oci,us-ashburn-1,x86_64,2,4,0,true
+vm,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,us-ashburn-1,x86_64,2,16,0,true
+vm,VM.Standard.A1.Flex.2.4,VM.Standard.A1.Flex,oci,us-ashburn-1,arm64,2,4,0,true
+vm,VM.Standard.E4.Flex.2.4,VM.Standard.E4.Flex,oci,ap-singapore-1,x86_64,2,4,0,true
+vm,VM.Standard.A1.Flex.2.4,VM.Standard.A1.Flex,oci,ap-singapore-1,arm64,2,4,0,true
+os,oci,eu-frankfurt-1,ubuntu,24.04,x86_64,ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaubuntu2404x86frankfurt
+os,oci,eu-frankfurt-1,ubuntu,24.04,arm64,ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaubuntu2404armfrankfurt
+os,oci,eu-frankfurt-1,ubuntu,22.04,x86_64,ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaubuntu2204x86frankfurt
+os,oci,eu-frankfurt-1,debian,12,x86_64,ocid1.image.oc1.eu-frankfurt-1.aaaaaaaadebian12x86frankfurt
+os,oci,eu-amsterdam-1,ubuntu,24.04,x86_64,ocid1.image.oc1.eu-amsterdam-1.aaaaaaaaubuntu2404x86amsterdam
+os,oci,eu-amsterdam-1,ubuntu,24.04,arm64,ocid1.image.oc1.eu-amsterdam-1.aaaaaaaaubuntu2404armamsterdam
+os,oci,eu-amsterdam-1,debian,12,x86_64,ocid1.image.oc1.eu-amsterdam-1.aaaaaaaadebian12x86amsterdam
+os,oci,uk-london-1,ubuntu,24.04,x86_64,ocid1.image.oc1.uk-london-1.aaaaaaaaubuntu2404x86london
+os,oci,uk-london-1,ubuntu,24.04,arm64,ocid1.image.oc1.uk-london-1.aaaaaaaaubuntu2404armlondon
+os,oci,us-ashburn-1,ubuntu,24.04,x86_64,ocid1.image.oc1.iad.aaaaaaaaubuntu2404x86ashburn
+os,oci,us-ashburn-1,ubuntu,24.04,arm64,ocid1.image.oc1.iad.aaaaaaaaubuntu2404armashburn
+os,oci,us-ashburn-1,debian,12,x86_64,ocid1.image.oc1.iad.aaaaaaaadebian12x86ashburn
+os,oci,ap-singapore-1,ubuntu,24.04,x86_64,ocid1.image.oc1.ap-singapore-1.aaaaaaaaubuntu2404x86singapore
+os,oci,ap-singapore-1,ubuntu,24.04,arm64,ocid1.image.oc1.ap-singapore-1.aaaaaaaaubuntu2404armsingapore
+mdb,VM.Standard.E4.Flex.2.32,VM.Standard.E4.Flex,oci,eu-frankfurt-1,mysql,2,32
+mdb,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,eu-frankfurt-1,mysql,2,16
+mdb,VM.Standard.E4.Flex.4.64,VM.Standard.E4.Flex,oci,eu-frankfurt-1,mysql,4,64
+mdb,PostgreSQL.VM.Standard.E4.Flex.2.32,PostgreSQL.VM.Standard.E4.Flex,oci,eu-frankfurt-1,postgres,2,32
+mdb,PostgreSQL.VM.Standard.E4.Flex.2.16,PostgreSQL.VM.Standard.E4.Flex,oci,eu-frankfurt-1,postgres,2,16
+mdb,PostgreSQL.VM.Standard.E4.Flex.4.64,PostgreSQL.VM.Standard.E4.Flex,oci,eu-frankfurt-1,postgres,4,64
+mdb,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,eu-amsterdam-1,mysql,2,16
+mdb,PostgreSQL.VM.Standard.E4.Flex.2.16,PostgreSQL.VM.Standard.E4.Flex,oci,eu-amsterdam-1,postgres,2,16
+mdb,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,uk-london-1,mysql,2,16
+mdb,PostgreSQL.VM.Standard.E4.Flex.2.16,PostgreSQL.VM.Standard.E4.Flex,oci,uk-london-1,postgres,2,16
+mdb,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,us-ashburn-1,mysql,2,16
+mdb,PostgreSQL.VM.Standard.E4.Flex.2.16,PostgreSQL.VM.Standard.E4.Flex,oci,us-ashburn-1,postgres,2,16
+mdb,VM.Standard.E4.Flex.2.16,VM.Standard.E4.Flex,oci,ap-singapore-1,mysql,2,16
+mdb,PostgreSQL.VM.Standard.E4.Flex.2.16,PostgreSQL.VM.Standard.E4.Flex,oci,ap-singapore-1,postgres,2,16
