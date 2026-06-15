@@ -1,0 +1,12 @@
+# Go
+*.exe
+*.test
+*.out
+/terraform-provider-pyxcloud
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log

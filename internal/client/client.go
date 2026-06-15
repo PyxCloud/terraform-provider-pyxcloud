@@ -1,0 +1,170 @@
+package client
+
+import (
+	"context"
+	"fmt"
+	"hash/fnv"
+	"sort"
+	"strconv"
+	"sync"
+)
+
+// Client is the interface the provider's resources and data sources depend on.
+//
+// MVP NOTE: network calls against the live PyxCloud API
+// (https://passo.build) are NOT implemented yet. The concrete type below
+// (StubClient) satisfies this interface in-memory so the provider compiles,
+// vets, tests, and demos end-to-end without touching the network or any cloud.
+// A future HTTPClient implementation will back these with real REST/GraphQL
+// calls — see the TODOs on each method.
+type Client interface {
+	// CreateTopology persists a canonical topology and returns it with an ID assigned.
+	CreateTopology(ctx context.Context, t Topology) (Topology, error)
+	// GetTopology fetches a topology by ID. Returns (Topology{}, false, nil) when absent.
+	GetTopology(ctx context.Context, id string) (Topology, bool, error)
+	// UpdateTopology replaces the topology identified by t.ID.
+	UpdateTopology(ctx context.Context, t Topology) (Topology, error)
+	// DeleteTopology removes a topology by ID. Deleting an absent topology is a no-op.
+	DeleteTopology(ctx context.Context, id string) error
+
+	// Compare prices a canonical topology against each candidate (provider, region),
+	// mirroring the console Compare page / backend PricingRanker.rank.
+	Compare(ctx context.Context, t Topology, candidates []Candidate) ([]CandidateCost, error)
+}
+
+// Config holds the provider-level connection settings.
+type Config struct {
+	Endpoint string // PyxCloud API base, e.g. "https://passo.build"
+	Token    string // OAuth/SSO-issued bearer token (PYXCLOUD_TOKEN)
+}
+
+// DefaultEndpoint is the PyxCloud API base used when none is configured.
+const DefaultEndpoint = "https://passo.build"
+
+// StubClient is the MVP in-memory implementation of Client. It stores topologies
+// in a map and computes a deterministic synthetic price so the Compare data
+// source produces stable, demonstrable output without network access.
+type StubClient struct {
+	cfg Config
+
+	mu    sync.Mutex
+	store map[string]Topology
+	seq   int
+}
+
+// NewStub returns a Client backed by in-memory storage and synthetic pricing.
+func NewStub(cfg Config) *StubClient {
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = DefaultEndpoint
+	}
+	return &StubClient{cfg: cfg, store: map[string]Topology{}}
+}
+
+var _ Client = (*StubClient)(nil)
+
+func (c *StubClient) CreateTopology(_ context.Context, t Topology) (Topology, error) {
+	// TODO(pd-FEAT-TF-PROVIDER): POST {endpoint}/api/topology with bearer auth.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seq++
+	t.ID = fmt.Sprintf("top-%d", c.seq)
+	c.store[t.ID] = t
+	return t, nil
+}
+
+func (c *StubClient) GetTopology(_ context.Context, id string) (Topology, bool, error) {
+	// TODO(pd-FEAT-TF-PROVIDER): GET {endpoint}/api/topology/{id}.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t, ok := c.store[id]
+	return t, ok, nil
+}
+
+func (c *StubClient) UpdateTopology(_ context.Context, t Topology) (Topology, error) {
+	// TODO(pd-FEAT-TF-PROVIDER): PUT {endpoint}/api/topology/{id}.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if t.ID == "" {
+		return Topology{}, fmt.Errorf("update requires a topology ID")
+	}
+	c.store[t.ID] = t
+	return t, nil
+}
+
+func (c *StubClient) DeleteTopology(_ context.Context, id string) error {
+	// TODO(pd-FEAT-TF-PROVIDER): DELETE {endpoint}/api/topology/{id}.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.store, id)
+	return nil
+}
+
+// Compare computes a synthetic per-candidate cost. Real pricing will call the
+// backend get_comparison_prices stored procedure path via PricingRanker.
+//
+// TODO(pd-FEAT-TF-PROVIDER): POST {endpoint}/api/compare with the canonical
+// topology + candidates and return the live ranked costs.
+func (c *StubClient) Compare(_ context.Context, t Topology, candidates []Candidate) ([]CandidateCost, error) {
+	out := make([]CandidateCost, 0, len(candidates))
+	for _, cand := range candidates {
+		hourly := syntheticHourly(t, cand)
+		out = append(out, CandidateCost{
+			Provider:   cand.Provider,
+			Region:     cand.Region,
+			HourlyUSD:  hourly,
+			MonthlyUSD: hourly * HoursPerMonth,
+			Priceable:  hourly > 0,
+		})
+	}
+	// Cheapest first, matching PricingRanker's ordering.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].HourlyUSD < out[j].HourlyUSD })
+	return out, nil
+}
+
+// syntheticHourly produces a deterministic, plausible hourly price from the
+// topology sizing and a per-(provider,region) multiplier. Stub-only.
+func syntheticHourly(t Topology, cand Candidate) float64 {
+	var base float64
+	for _, comp := range t.Components {
+		n := comp.Count
+		if n <= 0 {
+			n = 1
+		}
+		switch comp.Type {
+		case "virtual-machine", "virtual-machine-scale-group":
+			cpu, ram := 1.0, 1.0
+			if comp.VM != nil {
+				if v, err := strconv.ParseFloat(comp.VM.CPU, 64); err == nil && v > 0 {
+					cpu = v
+				}
+				if v, err := strconv.ParseFloat(comp.VM.RAM, 64); err == nil && v > 0 {
+					ram = v
+				}
+			}
+			base += float64(n) * (cpu*0.018 + ram*0.006)
+		case "managed-database":
+			base += float64(n) * 0.090
+		case "load-balancer":
+			base += float64(n) * 0.025
+		case "cache":
+			base += float64(n) * 0.040
+		case "object-storage", "blob-storage":
+			base += float64(n) * 0.005
+		default:
+			base += float64(n) * 0.010
+		}
+	}
+	return round4(base * providerRegionMultiplier(cand))
+}
+
+// providerRegionMultiplier yields a stable in-range multiplier (~0.85–1.20) per
+// (provider, region) so candidates rank differently and reproducibly.
+func providerRegionMultiplier(cand Candidate) float64 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(cand.Provider + "|" + cand.Region))
+	return 0.85 + float64(h.Sum32()%36)/100.0 // 0.85 .. 1.20
+}
+
+func round4(f float64) float64 {
+	return float64(int64(f*10000+0.5)) / 10000
+}
