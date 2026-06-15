@@ -50,3 +50,13 @@ db-s-1vcpu-1gb,db-s,do,ams3,postgres,1,1
 db-s-1vcpu-2gb,db-s,do,ams3,postgres,1,2
 db-s-2vcpu-4gb,db-s,do,ams3,postgres,2,4
 db-s-4vcpu-8gb,db-s,do,ams3,postgres,4,8
+mysql.n2.medium.1,mysql.n2,alicloud,eu-central-1,mysql,2,4
+mysql.n2.large.1,mysql.n2,alicloud,eu-central-1,mysql,2,8
+mysql.n4.xlarge.1,mysql.n4,alicloud,eu-central-1,mysql,4,16
+pg.n2.medium.1,pg.n2,alicloud,eu-central-1,postgres,2,4
+pg.n2.large.1,pg.n2,alicloud,eu-central-1,postgres,2,8
+pg.n4.xlarge.1,pg.n4,alicloud,eu-central-1,postgres,4,16
+mysql.n2.medium.1,mysql.n2,alicloud,ap-southeast-1,mysql,2,4
+mysql.n2.large.1,mysql.n2,alicloud,ap-southeast-1,mysql,2,8
+pg.n2.medium.1,pg.n2,alicloud,ap-southeast-1,postgres,2,4
+pg.n2.large.1,pg.n2,alicloud,ap-southeast-1,postgres,2,8

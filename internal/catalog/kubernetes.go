@@ -123,6 +123,8 @@ func TranslateKubernetes(ctx context.Context, cat VMCatalog, spec K8sSpec) (K8sP
 		plan.ResourceType = "google_container_cluster"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_kubernetes_cluster"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_cs_managed_kubernetes"
 	}
 	return plan, nil
 }

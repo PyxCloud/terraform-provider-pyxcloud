@@ -26,6 +26,10 @@ const (
 	cspAWS = "aws"
 	cspGCP = "gcp"
 	cspDO  = "do"
+	// cspAlibaba is the catalog csp token for Alibaba Cloud (wave-2). The catalog
+	// rows and the Terraform `alicloud` provider both speak "alicloud", so unlike
+	// "do"/"digitalocean" the provider-facing name and the csp token coincide.
+	cspAlibaba = "alicloud"
 )
 
 // Provider-facing names (Terraform `provider` attribute / ENABLED_LAUNCH_PROVIDERS).
@@ -33,6 +37,10 @@ const (
 	ProviderAWS          = "aws"
 	ProviderGCP          = "gcp"
 	ProviderDigitalOcean = "digitalocean"
+	// ProviderAlibaba is the wave-2 Alibaba Cloud provider (pd-TF-PROVIDERS-WAVE2:
+	// alibaba). The Terraform provider name is "alicloud" (the official
+	// aliyun/alicloud provider), matching the catalog csp token.
+	ProviderAlibaba = "alicloud"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -40,6 +48,7 @@ var providerToCSP = map[string]string{
 	ProviderAWS:          cspAWS,
 	ProviderGCP:          cspGCP,
 	ProviderDigitalOcean: cspDO,
+	ProviderAlibaba:      cspAlibaba,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

@@ -97,9 +97,10 @@ func TestEmbeddedSnapshotWellFormed(t *testing.T) {
 			t.Errorf("malformed row: %+v", r)
 		}
 		switch r.CSP {
-		case "aws", "gcp", "do":
+		// wave-1 csps + the wave-2 alicloud snapshot (pd-TF-PROVIDERS-WAVE2: alibaba).
+		case "aws", "gcp", "do", "alicloud":
 		default:
-			t.Errorf("unexpected csp %q in wave-1 snapshot (row %+v)", r.CSP, r)
+			t.Errorf("unexpected csp %q in embedded snapshot (row %+v)", r.CSP, r)
 		}
 	}
 }

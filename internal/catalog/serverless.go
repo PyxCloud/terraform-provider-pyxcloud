@@ -133,6 +133,8 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 		plan.ResourceType = "google_cloudfunctions2_function"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_app"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_fcv3_function"
 	}
 	return plan, nil
 }
@@ -169,6 +171,16 @@ func concreteRuntime(provider, runtime, version string) string {
 			return "python:" + version
 		case RuntimeGo:
 			return "go:" + strings.TrimSuffix(version, ".x")
+		}
+	case ProviderAlibaba:
+		// Alibaba Function Compute (FC) v3 runtime identifiers.
+		switch runtime {
+		case RuntimeNode:
+			return "nodejs" + version
+		case RuntimePython:
+			return "python" + version
+		case RuntimeGo:
+			return "go1"
 		}
 	}
 	return runtime + version

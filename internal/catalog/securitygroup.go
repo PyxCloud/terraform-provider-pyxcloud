@@ -21,6 +21,9 @@ const (
 	awsRulesPerDirectionMax = 60
 	gcpRulesPerFirewallMax  = 100
 	doRulesPerDirectionMax  = 50
+	// Alibaba: an ECS security group allows up to 200 rules per direction
+	// (basic security group); we enforce that cap as a hard plan-time error.
+	alibabaRulesPerDirectionMax = 200
 )
 
 // Protocol tokens (canonical, provider-neutral).
@@ -192,6 +195,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "google_compute_firewall"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_firewall"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_security_group"
 	}
 	return plan, nil
 }
@@ -244,6 +249,13 @@ func enforceRuleLimits(provider string, rules []RulePlan) error {
 		}
 		if egress > doRulesPerDirectionMax {
 			return fmt.Errorf("security-group: %d outbound rules exceed the DigitalOcean firewall limit of %d", egress, doRulesPerDirectionMax)
+		}
+	case ProviderAlibaba:
+		if ingress > alibabaRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d ingress rules exceed the Alibaba Cloud security-group limit of %d per direction", ingress, alibabaRulesPerDirectionMax)
+		}
+		if egress > alibabaRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d egress rules exceed the Alibaba Cloud security-group limit of %d per direction", egress, alibabaRulesPerDirectionMax)
 		}
 	}
 	return nil

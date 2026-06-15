@@ -251,6 +251,8 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		plan.ResourceType = "google_sql_database_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_database_cluster"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_db_instance"
 	}
 	return plan, nil
 }

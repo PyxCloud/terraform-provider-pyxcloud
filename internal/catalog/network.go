@@ -90,6 +90,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "google_compute_network"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_vpc"
+	case ProviderAlibaba:
+		plan.ResourceType = "alicloud_vpc"
 	}
 	return plan, nil
 }
@@ -101,6 +103,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 //     naming convention; spreads subnets multi-AZ.
 //   - GCP: <region>-<a|b|c|...> e.g. europe-west1-a — GCP zone naming.
 //   - DigitalOcean: VPCs are region-scoped with no sub-zones, so no zones.
+//   - Alibaba: <region><a|b|c|...> e.g. eu-central-1a — the alicloud zone-id
+//     convention (same shape as AWS); vswitches are zonal, so spread multi-zone.
 func deriveZones(provider, cspRegion string, n int) []string {
 	if n <= 0 {
 		return nil
@@ -108,7 +112,7 @@ func deriveZones(provider, cspRegion string, n int) []string {
 	letters := []string{"a", "b", "c", "d", "e", "f"}
 	zones := make([]string, 0, n)
 	switch provider {
-	case ProviderAWS:
+	case ProviderAWS, ProviderAlibaba:
 		for i := 0; i < n; i++ {
 			zones = append(zones, cspRegion+letters[i%len(letters)])
 		}
