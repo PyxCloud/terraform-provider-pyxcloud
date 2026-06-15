@@ -91,6 +91,14 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 		return ServerlessPlan{}, err
 	}
 	provider := lc(spec.Provider)
+	if provider == ProviderStackIt {
+		return ServerlessPlan{}, ErrComponentUnsupported{
+			Component: TypeServerlessFunction, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt has no serverless-function (FaaS) primitive; deploy the function " +
+				"as a container/service on a stackit_ske_cluster (managed-kubernetes) or a " +
+				"stackit_server (virtual-machine), or use AWS Lambda / GCP Cloud Functions",
+		}
+	}
 
 	runtime := lc(spec.Runtime)
 	if runtime == "" {

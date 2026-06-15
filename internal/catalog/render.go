@@ -21,6 +21,8 @@ func RenderHCL(plan NetworkPlan) (string, error) {
 		return renderGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderDO(plan), nil
+	case ProviderStackIt:
+		return renderStackItNetwork(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -114,6 +116,8 @@ func RenderSGHCL(plan SecurityGroupPlan) (string, error) {
 		return renderSGGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderSGDO(plan), nil
+	case ProviderStackIt:
+		return renderStackItSG(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -272,6 +276,8 @@ func RenderVMHCL(plan VMPlan) (string, error) {
 		return renderVMGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderVMDO(plan), nil
+	case ProviderStackIt:
+		return renderStackItVM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -561,6 +567,8 @@ func RenderLoadBalancerHCL(plan LoadBalancerPlan) (string, error) {
 		return renderLBGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderLBDO(plan), nil
+	case ProviderStackIt:
+		return renderStackItLoadBalancer(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -896,6 +904,8 @@ func RenderManagedDatabaseHCL(plan ManagedDatabasePlan) (string, error) {
 		return renderMDBGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderMDBDO(plan), nil
+	case ProviderStackIt:
+		return renderStackItMDB(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -1080,6 +1090,8 @@ func RenderObjectStorageHCL(plan ObjectStoragePlan) (string, error) {
 		return renderObjectStorageGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderObjectStorageDO(plan), nil
+	case ProviderStackIt:
+		return renderStackItObjectStorage(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}

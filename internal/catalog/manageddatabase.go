@@ -251,6 +251,14 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		plan.ResourceType = "google_sql_database_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_database_cluster"
+	case ProviderStackIt:
+		// StackIt PostgreSQL Flex (default) / MariaDB Flex. The data-safety guard
+		// (CheckManagedDatabaseDataSafety) is provider-agnostic and covers StackIt.
+		if engine == DBEngineMySQL {
+			plan.ResourceType = "stackit_mariadb_instance"
+		} else {
+			plan.ResourceType = "stackit_postgresflex_instance"
+		}
 	}
 	return plan, nil
 }

@@ -45,6 +45,17 @@ var vmOSCatalogCSV string
 //go:embed mdb_catalog.csv
 var mdbCatalogCSV string
 
+// stackitCatalogCSV is the wave-2 StackIt catalog snapshot (pd-TF-PROVIDERS-WAVE2:
+// stackit). It is a SINGLE multi-section file (region / vm / mdb / os) parsed by
+// parseStackItCatalog and merged into the same resolution maps the wave-1 rows
+// populate, so StackIt resolution is catalog-driven exactly like aws/gcp/do.
+// Authored from the public StackIt catalog because no live ETL exists for stackit
+// yet (the gap is documented at the top of the file); swap for a live snapshot
+// when stackit is censused — no code change needed.
+//
+//go:embed stackit_catalog.csv
+var stackitCatalogCSV string
+
 // EmbeddedCatalog resolves regions, virtual_machine SKUs, and OS images against
 // the embedded snapshots.
 type EmbeddedCatalog struct {
@@ -122,7 +133,102 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 		k := mdbRegionEngineKey(r.CSP, r.CSPRegion, r.Engine)
 		c.mdbByRegionEng[k] = append(c.mdbByRegionEng[k], r)
 	}
+
+	// Wave-2: merge the StackIt catalog (one multi-section file) into the same
+	// resolution maps. Done after the wave-1 rows so the wave-1 indices are intact;
+	// StackIt rows simply extend them (different csp token, no collision).
+	if err := c.mergeStackIt(stackitCatalogCSV); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// mergeStackIt parses the multi-section StackIt catalog and merges its rows into
+// the region / vm / mdb / os resolution maps. It mirrors how the wave-1 CSVs are
+// loaded; the only difference is the sections live in one file (kept separate from
+// the wave-1 CSVs to keep wave-2 merge-conflict-free).
+func (c *EmbeddedCatalog) mergeStackIt(data string) error {
+	sections, err := parseStackItCatalog(data)
+	if err != nil {
+		return err
+	}
+	for _, rec := range sections["region"] {
+		if len(rec) != 6 {
+			return fmt.Errorf("stackit catalog: region row needs 6 fields, got %d: %v", len(rec), rec)
+		}
+		row := RegionRow{
+			MacroRegion: rec[0], Country: rec[1], RegionName: rec[2],
+			CSPRegion: rec[3], CSPRegionDescription: rec[4], CSP: rec[5],
+		}
+		c.rows = append(c.rows, row)
+		k := key(row.CSP, row.RegionName)
+		if _, exists := c.byCSPRegion[k]; !exists {
+			c.byCSPRegion[k] = row
+		}
+	}
+	for _, rec := range sections["vm"] {
+		if len(rec) != 9 {
+			return fmt.Errorf("stackit catalog: vm row needs 9 fields, got %d: %v", len(rec), rec)
+		}
+		row := VMRow{
+			Name: rec[0], Family: rec[1], CSP: rec[2], CSPRegion: rec[3],
+			Architecture: rec[4], CPU: atoiOrZero(rec[5]), RAM: atoiOrZero(rec[6]),
+			GPU: rec[7], SupportsAutoscale: strings.EqualFold(strings.TrimSpace(rec[8]), "true"),
+		}
+		c.vmRows = append(c.vmRows, row)
+		k := vmRegionArchKey(row.CSP, row.CSPRegion, row.Architecture)
+		c.vmByRegionArch[k] = append(c.vmByRegionArch[k], row)
+	}
+	for _, rec := range sections["mdb"] {
+		if len(rec) != 7 {
+			return fmt.Errorf("stackit catalog: mdb row needs 7 fields, got %d: %v", len(rec), rec)
+		}
+		row := MDBRow{
+			Name: rec[0], Family: rec[1], CSP: rec[2], CSPRegion: rec[3],
+			Engine: rec[4], CPU: atoiOrZero(rec[5]), RAM: atoiOrZero(rec[6]),
+		}
+		c.mdbRows = append(c.mdbRows, row)
+		k := mdbRegionEngineKey(row.CSP, row.CSPRegion, row.Engine)
+		c.mdbByRegionEng[k] = append(c.mdbByRegionEng[k], row)
+	}
+	for _, rec := range sections["os"] {
+		if len(rec) != 6 {
+			return fmt.Errorf("stackit catalog: os row needs 6 fields, got %d: %v", len(rec), rec)
+		}
+		row := OSImageRow{
+			CSP: rec[0], CSPRegion: rec[1], OSName: rec[2],
+			OSVersion: rec[3], Architecture: rec[4], Image: rec[5],
+		}
+		c.osByKey[osKey(row.CSP, row.CSPRegion, row.OSName, row.OSVersion, row.Architecture)] = row
+	}
+	return nil
+}
+
+// parseStackItCatalog splits the multi-section StackIt catalog into per-section
+// CSV records. Sections start with "@section <name>"; '#' lines and blank lines
+// are ignored. Each data line is comma-split (the values carry no embedded commas).
+func parseStackItCatalog(data string) (map[string][][]string, error) {
+	out := map[string][][]string{}
+	current := ""
+	for _, raw := range strings.Split(data, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "@section "); ok {
+			current = strings.TrimSpace(rest)
+			continue
+		}
+		if current == "" {
+			return nil, fmt.Errorf("stackit catalog: data line before any @section: %q", line)
+		}
+		fields := strings.Split(line, ",")
+		for i := range fields {
+			fields[i] = strings.TrimSpace(fields[i])
+		}
+		out[current] = append(out[current], fields)
+	}
+	return out, nil
 }
 
 func mdbRegionEngineKey(csp, cspRegion, engine string) string {

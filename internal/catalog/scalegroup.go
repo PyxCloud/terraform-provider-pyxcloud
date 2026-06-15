@@ -90,15 +90,20 @@ type ErrAutoscaleUnsupported struct {
 }
 
 func (e ErrAutoscaleUnsupported) Error() string {
+	detail := "DigitalOcean has no native VM autoscaling primitive (its `virtual_machine` " +
+		"catalog rows are marked supports_autoscale=false); for autoscaled compute use a " +
+		"`managed-kubernetes` component (DOKS node-pool autoscaling)"
+	if e.Provider == ProviderStackIt {
+		detail = "StackIt has no native VM autoscaling primitive (no managed instance " +
+			"group); for autoscaled compute use a `managed-kubernetes` component " +
+			"(stackit_ske_cluster node-pool autoscaling)"
+	}
 	return fmt.Sprintf(
 		"virtual-machine-scale-group is not supported on provider %q (csp=%q, csp_region=%q): "+
-			"DigitalOcean has no native VM autoscaling primitive (its `virtual_machine` catalog "+
-			"rows are marked supports_autoscale=false), and PyxCloud does not invent a "+
-			"non-existent resource. For autoscaled compute on DigitalOcean use a "+
-			"`managed-kubernetes` component (DOKS node-pool autoscaling), or pin a fixed-size "+
-			"set of `virtual-machine` instances via `count`. "+
+			"%s, and PyxCloud does not invent a non-existent resource. Alternatively pin a "+
+			"fixed-size set of `virtual-machine` instances via `count`. "+
 			"(this is a hard plan-time error, never a silent fallback)",
-		e.Provider, e.CSP, e.CSPRegion,
+		e.Provider, e.CSP, e.CSPRegion, detail,
 	)
 }
 
@@ -124,7 +129,7 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 	// DigitalOcean has no native VM autoscaling primitive — clean plan-time error
 	// rather than an invented resource. This mirrors the catalog, whose DO
 	// virtual_machine rows are marked supports_autoscale=false.
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderStackIt {
 		return ScaleGroupPlan{}, ErrAutoscaleUnsupported{
 			Provider:  provider,
 			CSP:       row.CSP,

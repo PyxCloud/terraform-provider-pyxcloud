@@ -90,6 +90,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "google_compute_network"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_vpc"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_network"
 	}
 	return plan, nil
 }
@@ -115,6 +117,12 @@ func deriveZones(provider, cspRegion string, n int) []string {
 	case ProviderGCP:
 		for i := 0; i < n; i++ {
 			zones = append(zones, cspRegion+"-"+letters[i%len(letters)])
+		}
+	case ProviderStackIt:
+		// StackIt availability zones are <region>-<1|2|3> e.g. eu01-1, eu01-2,
+		// eu01-3 (the documented IaaS AZ naming); spread subnets across them.
+		for i := 0; i < n; i++ {
+			zones = append(zones, fmt.Sprintf("%s-%d", cspRegion, (i%3)+1))
 		}
 	case ProviderDigitalOcean:
 		return nil

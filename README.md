@@ -23,7 +23,13 @@ to a deployment **provider** and an abstract **macro-region**:
 - **VM sizing** (mirrors `properties.virtual-machine.type.*` / `os.osName`):
   `architecture`, `cpu`, `ram`, `os_name`.
 - **Providers** (mirrors vibe-frontend `ENABLED_LAUNCH_PROVIDERS`):
-  `aws`, `gcp`, `digitalocean`.
+  `aws`, `gcp`, `digitalocean`; wave-2: `stackit` (EU sovereign cloud, Schwarz
+  Group). StackIt supports network / security-group / virtual-machine /
+  managed-database (PostgreSQL & MariaDB Flex, with the data-safety guard) /
+  object-storage / managed-kubernetes (SKE) / dns-zone / secrets-manager /
+  load-balancer; scale-group, cache, managed-queue, event-streaming, cdn-service,
+  waf-service and serverless-function are not available on StackIt and surface a
+  clean plan-time error (see `examples/stackit/`).
 - **Macro-region**: abstract region such as `EU West`, `US East`, `Asia` —
   resolved to a concrete CSP region at deploy time.
 

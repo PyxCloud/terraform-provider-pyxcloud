@@ -207,6 +207,8 @@ func TranslateLoadBalancer(ctx context.Context, cat RegionCatalog, spec LoadBala
 		plan.ResourceType = "google_compute_forwarding_rule"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_loadbalancer"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_loadbalancer"
 	}
 	return plan, nil
 }

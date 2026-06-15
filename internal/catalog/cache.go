@@ -86,6 +86,18 @@ func TranslateCache(ctx context.Context, cat RegionCatalog, spec CacheSpec) (Cac
 		return CachePlan{}, err
 	}
 	provider := lc(spec.Provider)
+	if provider == ProviderStackIt {
+		// StackIt does offer a managed Redis (stackit_redis_instance), but it is
+		// provisioned by a service `plan_id` (a project/region-specific UUID) that
+		// cannot be authored deterministically in the catalog. Rather than emit a
+		// resource with an unresolvable required field, surface a clean error.
+		return CachePlan{}, ErrComponentUnsupported{
+			Component: TypeCache, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "StackIt Redis (stackit_redis_instance) requires a service plan_id (a " +
+				"project/region-specific UUID) that PyxCloud cannot resolve from the catalog; " +
+				"provision it directly, or run Redis on a stackit_server / stackit_ske_cluster",
+		}
+	}
 
 	mem := spec.MemoryGB
 	if mem <= 0 {

@@ -21,6 +21,9 @@ const (
 	awsRulesPerDirectionMax = 60
 	gcpRulesPerFirewallMax  = 100
 	doRulesPerDirectionMax  = 50
+	// StackIt: each rule is its own stackit_security_group_rule resource. The
+	// per-security-group rule quota is conservative; budget per direction.
+	stackitRulesPerDirectionMax = 50
 )
 
 // Protocol tokens (canonical, provider-neutral).
@@ -192,6 +195,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "google_compute_firewall"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_firewall"
+	case ProviderStackIt:
+		plan.ResourceType = "stackit_security_group"
 	}
 	return plan, nil
 }
@@ -201,15 +206,26 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 // only tcp/udp/icmp protocols — there is no "all" protocol — so an `all` rule on
 // DO must be expressed explicitly per protocol/port instead.
 func enforceProviderCapabilities(provider string, rules []RulePlan) error {
-	if strings.ToLower(provider) != ProviderDigitalOcean {
-		return nil
-	}
-	for _, r := range rules {
-		if r.Protocol == ProtoAll {
-			return fmt.Errorf(
-				"security-group: DigitalOcean firewalls do not support the %q protocol; "+
-					"declare explicit tcp/udp/icmp rules instead (this is a hard plan-time "+
-					"error, never a silent fallback)", ProtoAll)
+	switch strings.ToLower(provider) {
+	case ProviderDigitalOcean:
+		for _, r := range rules {
+			if r.Protocol == ProtoAll {
+				return fmt.Errorf(
+					"security-group: DigitalOcean firewalls do not support the %q protocol; "+
+						"declare explicit tcp/udp/icmp rules instead (this is a hard plan-time "+
+						"error, never a silent fallback)", ProtoAll)
+			}
+		}
+	case ProviderStackIt:
+		// StackIt security_group_rule requires a named protocol (or number) — there
+		// is no "any/all" protocol. Declare explicit tcp/udp/icmp rules instead.
+		for _, r := range rules {
+			if r.Protocol == ProtoAll {
+				return fmt.Errorf(
+					"security-group: StackIt security group rules do not support the %q protocol; "+
+						"declare explicit tcp/udp/icmp rules instead (this is a hard plan-time "+
+						"error, never a silent fallback)", ProtoAll)
+			}
 		}
 	}
 	return nil
@@ -244,6 +260,13 @@ func enforceRuleLimits(provider string, rules []RulePlan) error {
 		}
 		if egress > doRulesPerDirectionMax {
 			return fmt.Errorf("security-group: %d outbound rules exceed the DigitalOcean firewall limit of %d", egress, doRulesPerDirectionMax)
+		}
+	case ProviderStackIt:
+		if ingress > stackitRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d ingress rules exceed the StackIt limit of %d per security group", ingress, stackitRulesPerDirectionMax)
+		}
+		if egress > stackitRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d egress rules exceed the StackIt limit of %d per security group", egress, stackitRulesPerDirectionMax)
 		}
 	}
 	return nil
