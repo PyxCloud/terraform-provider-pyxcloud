@@ -537,6 +537,337 @@ func renderASGGCP(p ScaleGroupPlan) string {
 	return b.String()
 }
 
+// RenderLoadBalancerHCL renders a resolved LoadBalancerPlan into concrete
+// cloud-provider Terraform HCL. Mirrors RenderScaleGroupHCL: translation returns
+// a structured plan, rendering to .tf happens here and drives the per-provider
+// `terraform plan` / real apply round-trip tests (SPEC §6).
+//
+//   - AWS: aws_lb (application LB, internet-facing, multi-subnet) +
+//     aws_lb_target_group + aws_lb_listener per listener (+ lb_cookie stickiness
+//     when requested). A scale-group target is wired by attaching the target
+//     group ARN to the ASG (target_group_arns); a fixed-VM target is wired with
+//     aws_lb_target_group_attachment per instance. ALB listener rules respect the
+//     <= 5 condition-value quota (enforced at translate); descriptions are ASCII.
+//   - GCP: google_compute_health_check (regional) + google_compute_region_backend_service
+//   - google_compute_forwarding_rule per listener. The MIG (scale-group) is the
+//     backend (backend { group = <MIG instance_group> }).
+//   - DigitalOcean: digitalocean_loadbalancer with forwarding_rule per listener,
+//     a healthcheck, and sticky_sessions when requested, targeting droplets by tag.
+func RenderLoadBalancerHCL(plan LoadBalancerPlan) (string, error) {
+	switch plan.Provider {
+	case ProviderAWS:
+		return renderLBAWS(plan), nil
+	case ProviderGCP:
+		return renderLBGCP(plan), nil
+	case ProviderDigitalOcean:
+		return renderLBDO(plan), nil
+	default:
+		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
+	}
+}
+
+// lbAWSProto maps a canonical LB protocol to an AWS ALB listener protocol token.
+func lbAWSProto(proto string) string {
+	switch proto {
+	case LBProtoHTTPS:
+		return "HTTPS"
+	case LBProtoTCP:
+		return "TCP"
+	default:
+		return "HTTP"
+	}
+}
+
+// lbAWSTargetGroupProto maps the listener protocol to an aws_lb_target_group
+// protocol. ALB target groups speak HTTP/HTTPS; a TCP listener fronts an HTTP
+// target group (the instances serve HTTP behind the LB) — the standard ALB shape.
+func lbAWSTargetGroupProto(proto string) string {
+	if proto == LBProtoHTTPS {
+		return "HTTPS"
+	}
+	return "HTTP"
+}
+
+// asgResourceLabel returns the Terraform resource LABEL the scale-group renderer
+// emits for the autoscaling group ("<tfName(group)>_asg"), so the LB can wire the
+// target group ARN onto the ASG (target_group_arns).
+func asgResourceLabel(groupName string) string {
+	return tfName(groupName) + "_asg"
+}
+
+func renderLBAWS(p LoadBalancerPlan) string {
+	lbName := tfName(p.LBName) + "_lb"
+	tgName := tfName(p.LBName) + "_tg"
+	var b strings.Builder
+
+	// Internet egress wiring for an internet-facing ALB. The network component
+	// (pd-TF-REGION-VPC) renders only the VPC + subnets; an internet-facing load
+	// balancer additionally needs an internet gateway and a public route, so the
+	// LB component owns and emits that wiring (analogous to how the SG component
+	// owns its rules). One IGW + one public route table + a route to 0.0.0.0/0,
+	// associated with each subnet the LB occupies.
+	if p.NetworkName != "" {
+		igwName := tfName(p.LBName) + "_igw"
+		rtName := tfName(p.LBName) + "_rt"
+		fmt.Fprintf(&b, "resource \"aws_internet_gateway\" %q {\n", igwName)
+		fmt.Fprintf(&b, "  vpc_id = aws_vpc.%s.id\n", tfName(p.NetworkName))
+		fmt.Fprintf(&b, "  tags = { Name = \"%s-igw\", pyxcloud = \"true\" }\n", tfName(p.LBName))
+		b.WriteString("}\n\n")
+
+		fmt.Fprintf(&b, "resource \"aws_route_table\" %q {\n", rtName)
+		fmt.Fprintf(&b, "  vpc_id = aws_vpc.%s.id\n", tfName(p.NetworkName))
+		b.WriteString("  route {\n")
+		b.WriteString("    cidr_block = \"0.0.0.0/0\"\n")
+		fmt.Fprintf(&b, "    gateway_id = aws_internet_gateway.%s.id\n", igwName)
+		b.WriteString("  }\n")
+		fmt.Fprintf(&b, "  tags = { Name = \"%s-rt\", pyxcloud = \"true\" }\n", tfName(p.LBName))
+		b.WriteString("}\n\n")
+
+		for i, s := range p.SubnetNames {
+			assocName := fmt.Sprintf("%s_rta_%d", tfName(p.LBName), i+1)
+			fmt.Fprintf(&b, "resource \"aws_route_table_association\" %q {\n", assocName)
+			fmt.Fprintf(&b, "  subnet_id      = aws_subnet.%s.id\n", subnetResourceLabel(p.NetworkName, s))
+			fmt.Fprintf(&b, "  route_table_id = aws_route_table.%s.id\n", rtName)
+			b.WriteString("}\n\n")
+		}
+	}
+
+	// Application load balancer: internet-facing, multi-subnet (multi-AZ from the
+	// region), security-group attached.
+	fmt.Fprintf(&b, "resource \"aws_lb\" %q {\n", lbName)
+	fmt.Fprintf(&b, "  name               = %q\n", tfName(p.LBName))
+	b.WriteString("  internal           = false\n")
+	b.WriteString("  load_balancer_type = \"application\"\n")
+	if p.SecurityGroup != "" {
+		fmt.Fprintf(&b, "  security_groups    = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
+	}
+	if len(p.SubnetNames) > 0 {
+		labels := make([]string, 0, len(p.SubnetNames))
+		for _, s := range p.SubnetNames {
+			labels = append(labels, fmt.Sprintf("aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
+		}
+		fmt.Fprintf(&b, "  subnets            = [%s]\n", strings.Join(labels, ", "))
+	}
+	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.LBName)
+	if p.NetworkName != "" {
+		// The ALB must not be created before its internet gateway is attached
+		// (CreateLoadBalancer fails with "VPC has no internet gateway" otherwise);
+		// the ALB does not reference the IGW directly, so order it explicitly.
+		fmt.Fprintf(&b, "  depends_on = [aws_internet_gateway.%s]\n", tfName(p.LBName)+"_igw")
+	}
+	b.WriteString("}\n\n")
+
+	// Target group: the targets the listeners forward to. instance target type so
+	// the ASG / fixed instances register here.
+	hc := p.HealthCheck
+	fmt.Fprintf(&b, "resource \"aws_lb_target_group\" %q {\n", tgName)
+	fmt.Fprintf(&b, "  name        = \"%s-tg\"\n", tfName(p.LBName))
+	fmt.Fprintf(&b, "  port        = %d\n", hc.Port)
+	fmt.Fprintf(&b, "  protocol    = %q\n", lbAWSTargetGroupProto(hc.Protocol))
+	b.WriteString("  target_type = \"instance\"\n")
+	if p.NetworkName != "" {
+		fmt.Fprintf(&b, "  vpc_id      = aws_vpc.%s.id\n", tfName(p.NetworkName))
+	}
+	b.WriteString("  health_check {\n")
+	fmt.Fprintf(&b, "    protocol            = %q\n", lbAWSProto(hc.Protocol))
+	if hc.Protocol == LBProtoHTTP || hc.Protocol == LBProtoHTTPS {
+		fmt.Fprintf(&b, "    path                = %q\n", hc.Path)
+	}
+	fmt.Fprintf(&b, "    interval            = %d\n", hc.IntervalSeconds)
+	fmt.Fprintf(&b, "    healthy_threshold   = %d\n", hc.HealthyThreshold)
+	fmt.Fprintf(&b, "    unhealthy_threshold = %d\n", hc.UnhealthyThreshold)
+	b.WriteString("  }\n")
+	if p.Stickiness {
+		b.WriteString("  stickiness {\n")
+		b.WriteString("    type            = \"lb_cookie\"\n")
+		b.WriteString("    cookie_duration = 86400\n")
+		b.WriteString("    enabled         = true\n")
+		b.WriteString("  }\n")
+	}
+	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.LBName)
+	b.WriteString("}\n\n")
+
+	// One listener per declared listener port. The default action forwards to the
+	// target group.
+	for _, l := range p.Listeners {
+		ln := fmt.Sprintf("%s_listener_%d", tfName(p.LBName), l.Port)
+		fmt.Fprintf(&b, "resource \"aws_lb_listener\" %q {\n", ln)
+		fmt.Fprintf(&b, "  load_balancer_arn = aws_lb.%s.arn\n", lbName)
+		fmt.Fprintf(&b, "  port              = %d\n", l.Port)
+		fmt.Fprintf(&b, "  protocol          = %q\n", lbAWSProto(l.Protocol))
+		b.WriteString("  default_action {\n")
+		b.WriteString("    type             = \"forward\"\n")
+		fmt.Fprintf(&b, "    target_group_arn = aws_lb_target_group.%s.arn\n", tgName)
+		b.WriteString("  }\n")
+		b.WriteString("}\n\n")
+	}
+
+	// Target wiring: a scale-group target gets the target-group ARN attached to
+	// the ASG (target_group_arns); a fixed-VM target gets one attachment per
+	// instance. The sibling component renders the ASG / instances; here we emit
+	// only the wiring resource.
+	switch p.TargetKind {
+	case LBTargetScaleGroup:
+		if p.TargetName != "" {
+			attachName := fmt.Sprintf("%s_attach", tfName(p.LBName))
+			fmt.Fprintf(&b, "resource \"aws_autoscaling_attachment\" %q {\n", attachName)
+			fmt.Fprintf(&b, "  autoscaling_group_name = aws_autoscaling_group.%s.name\n", asgResourceLabel(p.TargetName))
+			fmt.Fprintf(&b, "  lb_target_group_arn    = aws_lb_target_group.%s.arn\n", tgName)
+			b.WriteString("}\n\n")
+		}
+	case LBTargetVM:
+		if p.TargetName != "" {
+			attachName := fmt.Sprintf("%s_attach", tfName(p.LBName))
+			fmt.Fprintf(&b, "resource \"aws_lb_target_group_attachment\" %q {\n", attachName)
+			fmt.Fprintf(&b, "  target_group_arn = aws_lb_target_group.%s.arn\n", tgName)
+			fmt.Fprintf(&b, "  target_id        = aws_instance.%s.id\n", tfName(p.TargetName+"-1"))
+			fmt.Fprintf(&b, "  port             = %d\n", hc.Port)
+			b.WriteString("}\n\n")
+		}
+	}
+
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// lbGCPProto maps a canonical LB protocol to the GCP forwarding-rule /
+// backend-service protocol token.
+func lbGCPProto(proto string) string {
+	switch proto {
+	case LBProtoHTTPS:
+		return "HTTPS"
+	case LBProtoTCP:
+		return "TCP"
+	default:
+		return "HTTP"
+	}
+}
+
+func renderLBGCP(p LoadBalancerPlan) string {
+	hcName := tfName(p.LBName) + "_hc"
+	beName := tfName(p.LBName) + "_be"
+	var b strings.Builder
+	hc := p.HealthCheck
+
+	// Regional health check.
+	fmt.Fprintf(&b, "resource \"google_compute_health_check\" %q {\n", hcName)
+	fmt.Fprintf(&b, "  name = \"%s-hc\"\n", tfName(p.LBName))
+	fmt.Fprintf(&b, "  check_interval_sec  = %d\n", hc.IntervalSeconds)
+	fmt.Fprintf(&b, "  healthy_threshold   = %d\n", hc.HealthyThreshold)
+	fmt.Fprintf(&b, "  unhealthy_threshold = %d\n", hc.UnhealthyThreshold)
+	if hc.Protocol == LBProtoHTTP || hc.Protocol == LBProtoHTTPS {
+		b.WriteString("  http_health_check {\n")
+		fmt.Fprintf(&b, "    port         = %d\n", hc.Port)
+		fmt.Fprintf(&b, "    request_path = %q\n", hc.Path)
+		b.WriteString("  }\n")
+	} else {
+		b.WriteString("  tcp_health_check {\n")
+		fmt.Fprintf(&b, "    port = %d\n", hc.Port)
+		b.WriteString("  }\n")
+	}
+	b.WriteString("}\n\n")
+
+	// Regional backend service: the MIG (scale-group) is the backend. Session
+	// affinity = generated cookie when stickiness is requested.
+	fmt.Fprintf(&b, "resource \"google_compute_region_backend_service\" %q {\n", beName)
+	fmt.Fprintf(&b, "  name                  = \"%s-be\"\n", tfName(p.LBName))
+	fmt.Fprintf(&b, "  region                = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "  protocol              = %q\n", lbGCPProto(p.Listeners[0].Protocol))
+	b.WriteString("  load_balancing_scheme = \"EXTERNAL\"\n")
+	fmt.Fprintf(&b, "  health_checks         = [google_compute_health_check.%s.id]\n", hcName)
+	if p.Stickiness {
+		b.WriteString("  session_affinity      = \"GENERATED_COOKIE\"\n")
+	}
+	if p.TargetKind == LBTargetScaleGroup && p.TargetName != "" {
+		b.WriteString("  backend {\n")
+		fmt.Fprintf(&b, "    group = google_compute_region_instance_group_manager.%s.instance_group\n", tfName(p.TargetName)+"_mig")
+		b.WriteString("    balancing_mode = \"UTILIZATION\"\n")
+		b.WriteString("  }\n")
+	}
+	b.WriteString("}\n\n")
+
+	// One forwarding rule per listener port, fronting the backend service.
+	for _, l := range p.Listeners {
+		fn := fmt.Sprintf("%s_fr_%d", tfName(p.LBName), l.Port)
+		fmt.Fprintf(&b, "resource \"google_compute_forwarding_rule\" %q {\n", fn)
+		fmt.Fprintf(&b, "  name                  = \"%s-fr-%d\"\n", tfName(p.LBName), l.Port)
+		fmt.Fprintf(&b, "  region                = %q\n", p.CSPRegion)
+		b.WriteString("  load_balancing_scheme = \"EXTERNAL\"\n")
+		fmt.Fprintf(&b, "  port_range            = %q\n", fmt.Sprintf("%d", l.Port))
+		fmt.Fprintf(&b, "  backend_service       = google_compute_region_backend_service.%s.id\n", beName)
+		b.WriteString("}\n\n")
+	}
+
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// lbDOProto maps a canonical LB protocol to a DO loadbalancer forwarding-rule
+// entry protocol (http / https / tcp).
+func lbDOProto(proto string) string {
+	switch proto {
+	case LBProtoHTTPS:
+		return "https"
+	case LBProtoTCP:
+		return "tcp"
+	default:
+		return "http"
+	}
+}
+
+func renderLBDO(p LoadBalancerPlan) string {
+	name := tfName(p.LBName)
+	var b strings.Builder
+	hc := p.HealthCheck
+
+	fmt.Fprintf(&b, "resource \"digitalocean_loadbalancer\" %q {\n", name)
+	fmt.Fprintf(&b, "  name   = %q\n", tfName(p.LBName))
+	fmt.Fprintf(&b, "  region = %q\n", p.CSPRegion)
+	if p.NetworkName != "" {
+		fmt.Fprintf(&b, "  vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+	}
+
+	// One forwarding rule per listener. The LB terminates entry_protocol on
+	// entry_port and forwards to the same target_protocol/port on the droplets.
+	for _, l := range p.Listeners {
+		b.WriteString("\n  forwarding_rule {\n")
+		fmt.Fprintf(&b, "    entry_protocol  = %q\n", lbDOProto(l.Protocol))
+		fmt.Fprintf(&b, "    entry_port      = %d\n", l.Port)
+		fmt.Fprintf(&b, "    target_protocol = %q\n", lbDOProto(l.Protocol))
+		fmt.Fprintf(&b, "    target_port     = %d\n", l.Port)
+		b.WriteString("  }\n")
+	}
+
+	// Health check against the droplets.
+	b.WriteString("\n  healthcheck {\n")
+	fmt.Fprintf(&b, "    protocol                 = %q\n", lbDOProto(hc.Protocol))
+	fmt.Fprintf(&b, "    port                     = %d\n", hc.Port)
+	if hc.Protocol == LBProtoHTTP || hc.Protocol == LBProtoHTTPS {
+		fmt.Fprintf(&b, "    path                     = %q\n", hc.Path)
+	}
+	fmt.Fprintf(&b, "    check_interval_seconds   = %d\n", hc.IntervalSeconds)
+	fmt.Fprintf(&b, "    healthy_threshold        = %d\n", hc.HealthyThreshold)
+	fmt.Fprintf(&b, "    unhealthy_threshold      = %d\n", hc.UnhealthyThreshold)
+	b.WriteString("  }\n")
+
+	if p.Stickiness {
+		b.WriteString("\n  sticky_sessions {\n")
+		b.WriteString("    type               = \"cookies\"\n")
+		b.WriteString("    cookie_name        = \"pyxcloud-lb\"\n")
+		b.WriteString("    cookie_ttl_seconds = 86400\n")
+		b.WriteString("  }\n")
+	}
+
+	// DO has no native VM autoscaling primitive, so a scale-group target on DO is
+	// fronted by a droplet tag (the fixed/managed droplets carry the "pyxcloud"
+	// tag, the same tag the virtual-machine renderer applies). A vm target uses
+	// the same tag selection.
+	if p.TargetName != "" {
+		b.WriteString("\n  droplet_tag = \"pyxcloud\"\n")
+	}
+
+	b.WriteString("}\n")
+	return b.String()
+}
+
 // splitCIDRs partitions CIDRs into IPv4 and IPv6 (AWS uses distinct attributes).
 func splitCIDRs(cidrs []string) (v4, v6 []string) {
 	for _, c := range cidrs {

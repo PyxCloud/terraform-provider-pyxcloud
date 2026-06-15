@@ -326,3 +326,89 @@ func TestResourceTranslateScaleGroupDOUnsupported(t *testing.T) {
 		t.Fatal("expected DO unsupported error, got nil")
 	}
 }
+
+// TestResourceTranslateLoadBalancer exercises the LB translation wiring (pd-TF-LB)
+// end-to-end: listeners + health check + stickiness resolved, multi-AZ spread
+// across the network's subnets, the security-group attached, and — crucially —
+// the target defaulting to the sibling scale-group when target_name is omitted.
+func TestResourceTranslateLoadBalancer(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+
+	m := topologyModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Dublin"),
+		Network: &networkModel{
+			CIDR: types.StringValue("10.0.0.0/16"),
+			Subnets: []types.String{
+				types.StringValue("10.0.1.0/24"),
+				types.StringValue("10.0.2.0/24"),
+			},
+		},
+		SecurityGroup: &securityGroupModel{
+			Name:   types.StringValue("production-web"),
+			Expose: []types.Int64{types.Int64Value(80)},
+		},
+		ScaleGroup: &scaleGroupModel{
+			Name: types.StringValue("web"),
+			CPU:  types.Int64Value(2), RAM: types.Int64Value(4),
+			Min: types.Int64Value(2), Max: types.Int64Value(6),
+		},
+		LoadBalancer: &loadBalancerModel{
+			Listeners: []lbListenerModel{
+				{Port: types.Int64Value(443), Protocol: types.StringValue("https")},
+				{Port: types.Int64Value(80), Protocol: types.StringValue("http")},
+			},
+			Stickiness: types.BoolValue(true),
+		},
+	}
+
+	plan, err := r.translateLoadBalancer(context.Background(), m)
+	if err != nil {
+		t.Fatalf("translateLoadBalancer: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected a load-balancer plan, got nil")
+	}
+	if plan.CSPRegion.ValueString() != "eu-west-1" {
+		t.Errorf("csp_region = %q, want eu-west-1", plan.CSPRegion.ValueString())
+	}
+	if plan.ResourceType.ValueString() != "aws_lb" {
+		t.Errorf("resource_type = %q, want aws_lb", plan.ResourceType.ValueString())
+	}
+	// Target defaulted to the sibling scale-group.
+	if plan.TargetKind.ValueString() != "scale-group" || plan.TargetName.ValueString() != "web" {
+		t.Errorf("target = %q/%q, want scale-group/web", plan.TargetKind.ValueString(), plan.TargetName.ValueString())
+	}
+	if len(plan.Listeners) != 2 || plan.Listeners[0].Port.ValueInt64() != 80 || plan.Listeners[1].Port.ValueInt64() != 443 {
+		t.Errorf("listeners not sorted ascending: %+v", plan.Listeners)
+	}
+	if !plan.Stickiness.ValueBool() {
+		t.Error("stickiness should be true")
+	}
+	if len(plan.SubnetNames) != 2 || len(plan.Zones) != 2 {
+		t.Errorf("want 2-way multi-AZ spread, got %d subnets / %d zones", len(plan.SubnetNames), len(plan.Zones))
+	}
+	if plan.SecurityGroup.ValueString() != "production-web" {
+		t.Errorf("security_group = %q, want production-web", plan.SecurityGroup.ValueString())
+	}
+	if plan.HealthCheck == nil || plan.HealthCheck.Port.ValueInt64() != 80 {
+		t.Errorf("health-check should default to first listener port 80, got %+v", plan.HealthCheck)
+	}
+}
+
+// TestResourceTranslateLoadBalancerNil returns no plan when none declared.
+func TestResourceTranslateLoadBalancerNil(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	plan, err := r.translateLoadBalancer(context.Background(), topologyModel{
+		Provider: types.StringValue("aws"), Region: types.StringValue("Dublin"),
+	})
+	if err != nil {
+		t.Fatalf("translateLoadBalancer: %v", err)
+	}
+	if plan != nil {
+		t.Errorf("expected nil plan when no load_balancer declared, got %+v", plan)
+	}
+}

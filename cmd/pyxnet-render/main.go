@@ -40,6 +40,33 @@ type fixture struct {
 	VirtualMachine *vmFixture `json:"virtual_machine,omitempty"`
 	// ScaleGroup is the optional canonical virtual-machine-scale-group.
 	ScaleGroup *sgScaleFixture `json:"scale_group,omitempty"`
+	// LoadBalancer is the optional canonical load-balancer.
+	LoadBalancer *lbFixture `json:"load_balancer,omitempty"`
+}
+
+// lbFixture is the canonical load-balancer description embedded in a fixture.
+type lbFixture struct {
+	Name        string              `json:"name"`
+	Listeners   []lbListenerFixture `json:"listeners"`
+	HealthCheck *lbHealthFixture    `json:"health_check"`
+	Stickiness  bool                `json:"stickiness"`
+	TargetKind  string              `json:"target_kind"`
+	TargetName  string              `json:"target_name"`
+}
+
+type lbListenerFixture struct {
+	Port       int      `json:"port"`
+	Protocol   string   `json:"protocol"`
+	Conditions []string `json:"conditions"`
+}
+
+type lbHealthFixture struct {
+	Protocol           string `json:"protocol"`
+	Port               int    `json:"port"`
+	Path               string `json:"path"`
+	IntervalSeconds    int    `json:"interval_seconds"`
+	HealthyThreshold   int    `json:"healthy_threshold"`
+	UnhealthyThreshold int    `json:"unhealthy_threshold"`
 }
 
 // sgScaleFixture is the canonical virtual-machine-scale-group description.
@@ -120,9 +147,87 @@ func main() {
 		renderVM(cat, f, *provider)
 	case "scale-group", "virtual-machine-scale-group", "asg":
 		renderScaleGroup(cat, f, *provider)
+	case "load-balancer", "lb":
+		renderLoadBalancer(cat, f, *provider)
 	default:
-		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine | scale-group)", *component))
+		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine | scale-group | load-balancer)", *component))
 	}
+}
+
+func renderLoadBalancer(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.LoadBalancer == nil {
+		fatal(fmt.Errorf("fixture has no load_balancer block"))
+	}
+	lb := f.LoadBalancer
+	name := lb.Name
+	if name == "" {
+		name = f.Name
+	}
+	// Spread the LB across all the network's subnets (multi-AZ, internet-facing).
+	subnets := make([]string, 0, len(f.Subnets))
+	for i := range f.Subnets {
+		subnets = append(subnets, fmt.Sprintf("%s-subnet-%d", f.Name, i+1))
+	}
+	secGroup := ""
+	if f.SecurityGroup != nil {
+		secGroup = f.SecurityGroup.Name
+	}
+	// Default the target to the fixture's scale-group, else virtual-machine.
+	targetKind := lb.TargetKind
+	targetName := lb.TargetName
+	if targetName == "" {
+		if f.ScaleGroup != nil {
+			targetName = f.ScaleGroup.Name
+			if targetKind == "" {
+				targetKind = catalog.LBTargetScaleGroup
+			}
+		} else if f.VirtualMachine != nil {
+			targetName = f.VirtualMachine.Name
+			if targetKind == "" {
+				targetKind = catalog.LBTargetVM
+			}
+		}
+	}
+	listeners := make([]catalog.LBListenerSpec, 0, len(lb.Listeners))
+	for _, l := range lb.Listeners {
+		listeners = append(listeners, catalog.LBListenerSpec{
+			Port:       l.Port,
+			Protocol:   l.Protocol,
+			Conditions: l.Conditions,
+		})
+	}
+	var hc catalog.LBHealthCheckSpec
+	if lb.HealthCheck != nil {
+		hc = catalog.LBHealthCheckSpec{
+			Protocol:           lb.HealthCheck.Protocol,
+			Port:               lb.HealthCheck.Port,
+			Path:               lb.HealthCheck.Path,
+			IntervalSeconds:    lb.HealthCheck.IntervalSeconds,
+			HealthyThreshold:   lb.HealthCheck.HealthyThreshold,
+			UnhealthyThreshold: lb.HealthCheck.UnhealthyThreshold,
+		}
+	}
+	plan, err := catalog.TranslateLoadBalancer(context.Background(), cat, catalog.LoadBalancerSpec{
+		Name:          name,
+		Region:        f.Region,
+		Provider:      provider,
+		Listeners:     listeners,
+		HealthCheck:   hc,
+		Stickiness:    lb.Stickiness,
+		TargetKind:    targetKind,
+		TargetName:    targetName,
+		Network:       f.Name,
+		Subnets:       subnets,
+		SecurityGroup: secGroup,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	hcl, err := catalog.RenderLoadBalancerHCL(plan)
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Print(hcl)
 }
 
 func renderScaleGroup(cat catalog.VMCatalog, f fixture, provider string) {
