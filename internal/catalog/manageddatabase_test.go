@@ -221,7 +221,7 @@ func TestManagedDatabaseValidation(t *testing.T) {
 	}{
 		{"missing region", ManagedDatabaseSpec{Provider: "aws", Engine: "postgres", CPU: 2, RAM: 4}},
 		{"missing provider", ManagedDatabaseSpec{Region: "Frankfurt", Engine: "postgres", CPU: 2, RAM: 4}},
-		{"unknown provider", ManagedDatabaseSpec{Region: "Frankfurt", Provider: "oracle", CPU: 2, RAM: 4}},
+		{"unknown provider", ManagedDatabaseSpec{Region: "Frankfurt", Provider: "vultr", CPU: 2, RAM: 4}},
 		{"bad engine", ManagedDatabaseSpec{Region: "Frankfurt", Provider: "aws", Engine: "oracle", CPU: 2, RAM: 4}},
 		{"bad cpu", ManagedDatabaseSpec{Region: "Frankfurt", Provider: "aws", Engine: "postgres", CPU: 0, RAM: 4}},
 		{"bad ram", ManagedDatabaseSpec{Region: "Frankfurt", Provider: "aws", Engine: "postgres", CPU: 2, RAM: 0}},
@@ -500,7 +500,7 @@ func TestRenderManagedDatabaseDO(t *testing.T) {
 // unknown provider (defence in depth for a hand-built plan).
 func TestRenderManagedDatabaseUnsupportedProvider(t *testing.T) {
 	t.Parallel()
-	if _, err := RenderManagedDatabaseHCL(ManagedDatabasePlan{Provider: "oracle"}); err == nil {
+	if _, err := RenderManagedDatabaseHCL(ManagedDatabasePlan{Provider: "vultr"}); err == nil {
 		t.Fatal("expected render error for unsupported provider, got nil")
 	}
 }

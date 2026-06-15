@@ -145,6 +145,8 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 		plan.ResourceType = "digitalocean_app"
 	case ProviderAzure:
 		plan.ResourceType = "azurerm_linux_function_app"
+	case ProviderOracle:
+		plan.ResourceType = "oci_functions_function"
 	}
 	return plan, nil
 }
@@ -181,6 +183,19 @@ func concreteRuntime(provider, runtime, version string) string {
 			return "python:" + version
 		case RuntimeGo:
 			return "go:" + strings.TrimSuffix(version, ".x")
+		}
+	case ProviderOracle:
+		// OCI Functions are container-image based (Fn project): the function is a
+		// container image, not a managed language runtime. We carry the canonical
+		// runtime family + version as an informational token; the deployable image
+		// is supplied out-of-band via a variable (the renderer references it).
+		switch runtime {
+		case RuntimeNode:
+			return "node-" + strings.Split(version, ".")[0]
+		case RuntimePython:
+			return "python-" + version
+		case RuntimeGo:
+			return "go-" + strings.TrimSuffix(version, ".x")
 		}
 	}
 	return runtime + version

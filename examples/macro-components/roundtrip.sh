@@ -30,7 +30,7 @@ K8S_FIXTURE_AWS="k8s-aws.json"   # AWS k8s uses Dublin (the region with VM SKU r
 
 # ── 1. render matrix (plan-shape proof) ──────────────────────────────────────
 echo "=== render matrix (component x provider) ==="
-for provider in aws gcp digitalocean; do
+for provider in aws gcp digitalocean oracle; do
   for comp in cache managed-queue event-streaming dns-zone cdn-service waf-service secrets-manager serverless-function; do
     if "$RENDER_BIN" -fixture "$FIXTURE" -provider "$provider" -component "$comp" >/dev/null 2>/tmp/pyx-err; then
       echo "  OK          $provider/$comp"
@@ -144,3 +144,25 @@ echo ">>> SKIP DO apply: validate-only (real apply needs DIGITALOCEAN_TOKEN)"
 
 echo
 echo "round-trip complete."
+
+# ── Oracle Cloud / OCI (wave-2) ──────────────────────────────────────────────
+# OCI supports every macro type EXCEPT cdn-service (no first-class CDN resource;
+# emits a clean plan-time error in the matrix above). No OCI creds in CI ->
+# init + validate only (explicit), never a real apply.
+echo
+echo "=== OCI round-trip: validate-only (no creds) ==="
+: > oracle/generated.tf
+"$RENDER_BIN" -fixture "$FIXTURE" -provider oracle -component network         >> oracle/generated.tf
+"$RENDER_BIN" -fixture "$FIXTURE" -provider oracle -component security-group  >> oracle/generated.tf
+for comp in cache managed-queue event-streaming dns-zone waf-service secrets-manager serverless-function managed-kubernetes; do
+  "$RENDER_BIN" -fixture "$FIXTURE" -provider oracle -component "$comp" >> oracle/generated.tf
+  echo "" >> oracle/generated.tf
+done
+echo "generated oracle/generated.tf"
+( cd oracle && terraform init -input=false >/dev/null && terraform validate -no-color )
+if [[ -n "${OCI_CLI_TENANCY:-}" || -f "${OCI_CONFIG_FILE:-$HOME/.oci/config}" ]] && [[ -n "${PYX_OCI_APPLY:-}" ]]; then
+  echo ">>> OCI creds present + PYX_OCI_APPLY set: real plan + apply + destroy"
+  ( cd oracle && terraform plan -input=false -no-color && terraform apply -auto-approve -no-color && terraform destroy -auto-approve -no-color )
+else
+  echo ">>> SKIP OCI apply/destroy: no OCI creds or PYX_OCI_APPLY unset (validate only)"
+fi

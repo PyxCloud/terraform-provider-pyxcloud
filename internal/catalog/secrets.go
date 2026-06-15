@@ -107,6 +107,8 @@ func TranslateSecrets(ctx context.Context, cat RegionCatalog, spec SecretsSpec) 
 		plan.ResourceType = "google_secret_manager_secret"
 	case ProviderAzure:
 		plan.ResourceType = "azurerm_key_vault"
+	case ProviderOracle:
+		plan.ResourceType = "oci_vault_secret"
 	}
 	return plan, nil
 }

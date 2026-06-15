@@ -29,6 +29,9 @@ const (
 	// cspLinode is the wave-2 Linode (Akamai) catalog token. Linode rows are
 	// folded into the embedded catalog from linode_catalog.csv (see embedded.go).
 	cspLinode = "linode"
+	// cspOracle is the catalog csp token for Oracle Cloud Infrastructure (wave-2).
+	// The provider-facing name is "oracle"; the catalog token is "oci".
+	cspOracle = "oci"
 )
 
 // Provider-facing names (Terraform `provider` attribute / ENABLED_LAUNCH_PROVIDERS).
@@ -39,6 +42,10 @@ const (
 	// ProviderLinode is the wave-2 Linode (Akamai) provider — the `linode/linode`
 	// Terraform provider. Its catalog token is the same string ("linode").
 	ProviderLinode = "linode"
+	// ProviderOracle is the wave-2 Oracle Cloud Infrastructure provider. It
+	// descends to the oracle/oci Terraform provider (oci_* resources). The
+	// provider-facing name is "oracle"; the catalog csp token is "oci".
+	ProviderOracle = "oracle"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -51,6 +58,7 @@ var providerToCSP = map[string]string{
 	ProviderAzure:        cspAzure,
 	ProviderLinode:       cspLinode,
 	ProviderUbicloud:     cspUbicloud,
+	ProviderOracle:       cspOracle,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

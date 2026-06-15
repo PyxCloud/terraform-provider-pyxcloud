@@ -27,6 +27,8 @@ func RenderHCL(plan NetworkPlan) (string, error) {
 		return renderLinodeNetwork(plan), nil
 	case ProviderUbicloud:
 		return renderNetworkUbicloud(plan), nil
+	case ProviderOracle:
+		return renderOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -126,6 +128,8 @@ func RenderSGHCL(plan SecurityGroupPlan) (string, error) {
 		return renderSGLinode(plan), nil
 	case ProviderUbicloud:
 		return renderSGUbicloud(plan), nil
+	case ProviderOracle:
+		return renderSGOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -290,6 +294,8 @@ func RenderVMHCL(plan VMPlan) (string, error) {
 		return renderVMLinode(plan), nil
 	case ProviderUbicloud:
 		return renderVMUbicloud(plan), nil
+	case ProviderOracle:
+		return renderVMOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -412,6 +418,8 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 			"Ubicloud has no managed VM autoscaling primitive in Terraform; place this tier on a "+
 				"provider with an autoscaling group (aws / gcp), or model fixed-count virtual-machine "+
 				"resources on ubicloud instead.")
+	case ProviderOracle:
+		return renderASGOCI(plan), nil
 	case ProviderDigitalOcean:
 		return "", fmt.Errorf(
 			"render: virtual-machine-scale-group is unsupported on digitalocean " +
@@ -600,6 +608,8 @@ func RenderLoadBalancerHCL(plan LoadBalancerPlan) (string, error) {
 			"load-balancer",
 			"The Ubicloud Terraform provider exposes no load-balancer resource; front this tier with a "+
 				"load-balancer on aws / gcp / digitalocean, or terminate traffic at the application.")
+	case ProviderOracle:
+		return renderLBOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -941,6 +951,8 @@ func RenderManagedDatabaseHCL(plan ManagedDatabasePlan) (string, error) {
 		return renderMDBLinode(plan), nil
 	case ProviderUbicloud:
 		return renderMDBUbicloud(plan)
+	case ProviderOracle:
+		return renderMDBOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -1135,6 +1147,8 @@ func RenderObjectStorageHCL(plan ObjectStoragePlan) (string, error) {
 			"Ubicloud offers an S3-compatible object API but the Terraform provider exposes no bucket "+
 				"resource; provision object-storage on aws (aws_s3_bucket) / gcp / digitalocean, or "+
 				"manage the Ubicloud bucket out-of-band via its S3-compatible API.")
+	case ProviderOracle:
+		return renderObjectStorageOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}

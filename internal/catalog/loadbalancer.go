@@ -211,6 +211,8 @@ func TranslateLoadBalancer(ctx context.Context, cat RegionCatalog, spec LoadBala
 		plan.ResourceType = "azurerm_lb"
 	case ProviderLinode:
 		plan.ResourceType = "linode_nodebalancer"
+	case ProviderOracle:
+		plan.ResourceType = "oci_load_balancer_load_balancer"
 	}
 	return plan, nil
 }

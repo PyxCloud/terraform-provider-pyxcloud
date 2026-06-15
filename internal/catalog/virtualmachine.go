@@ -248,6 +248,8 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		plan.ResourceType = "linode_instance"
 	case ProviderUbicloud:
 		plan.ResourceType = "ubicloud_vm"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_instance"
 	}
 	return plan, nil
 }

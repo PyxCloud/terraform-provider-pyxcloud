@@ -198,7 +198,7 @@ func TestObjectStorageValidation(t *testing.T) {
 	}{
 		{"missing region", ObjectStorageSpec{Provider: "aws"}},
 		{"missing provider", ObjectStorageSpec{Region: "Frankfurt"}},
-		{"unknown provider", ObjectStorageSpec{Region: "Frankfurt", Provider: "oracle"}},
+		{"unknown provider", ObjectStorageSpec{Region: "Frankfurt", Provider: "vultr"}},
 	}
 	for _, c := range cases {
 		if _, err := TranslateObjectStorage(context.Background(), cat, c.spec); err == nil {
@@ -364,7 +364,7 @@ func TestRenderObjectStorageDOPublicOptIn(t *testing.T) {
 // unknown provider (defence in depth for a hand-built plan).
 func TestRenderObjectStorageUnsupportedProvider(t *testing.T) {
 	t.Parallel()
-	if _, err := RenderObjectStorageHCL(ObjectStoragePlan{Provider: "oracle"}); err == nil {
+	if _, err := RenderObjectStorageHCL(ObjectStoragePlan{Provider: "vultr"}); err == nil {
 		t.Fatal("expected render error for unsupported provider, got nil")
 	}
 }

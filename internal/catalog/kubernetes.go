@@ -127,6 +127,8 @@ func TranslateKubernetes(ctx context.Context, cat VMCatalog, spec K8sSpec) (K8sP
 		plan.ResourceType = "azurerm_kubernetes_cluster"
 	case ProviderLinode:
 		plan.ResourceType = "linode_lke_cluster"
+	case ProviderOracle:
+		plan.ResourceType = "oci_containerengine_cluster"
 	}
 	return plan, nil
 }

@@ -201,6 +201,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "linode_firewall"
 	case ProviderUbicloud:
 		plan.ResourceType = "ubicloud_firewall"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_network_security_group"
 	}
 	return plan, nil
 }

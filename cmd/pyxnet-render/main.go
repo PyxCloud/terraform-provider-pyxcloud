@@ -235,12 +235,12 @@ type ruleFixture struct {
 
 func main() {
 	fixturePath := flag.String("fixture", "", "path to canonical fixture JSON")
-	provider := flag.String("provider", "", "target provider: aws | gcp | digitalocean")
+	provider := flag.String("provider", "", "target provider: aws | gcp | digitalocean | oracle")
 	component := flag.String("component", "network", "component to render: network | security-group | virtual-machine | scale-group | load-balancer | managed-database | object-storage | cache | managed-queue | event-streaming | dns-zone | cdn-service | waf-service | managed-kubernetes | secrets-manager | serverless-function")
 	flag.Parse()
 
 	if *fixturePath == "" || *provider == "" {
-		fmt.Fprintln(os.Stderr, "usage: pyxnet-render -fixture f.json -provider aws|gcp|digitalocean [-component network|security-group]")
+		fmt.Fprintln(os.Stderr, "usage: pyxnet-render -fixture f.json -provider aws|gcp|digitalocean|oracle [-component network|security-group]")
 		os.Exit(2)
 	}
 

@@ -213,7 +213,7 @@ func TestScaleGroupValidation(t *testing.T) {
 	}{
 		{"missing region", ScaleGroupSpec{Provider: "aws", CPU: 2, RAM: 4, Min: 1, Max: 2}},
 		{"missing provider", ScaleGroupSpec{Region: "Dublin", CPU: 2, RAM: 4, Min: 1, Max: 2}},
-		{"unknown provider", ScaleGroupSpec{Region: "Dublin", Provider: "oracle", CPU: 2, RAM: 4, Min: 1, Max: 2}},
+		{"unknown provider", ScaleGroupSpec{Region: "Dublin", Provider: "vultr", CPU: 2, RAM: 4, Min: 1, Max: 2}},
 		{"bad architecture", ScaleGroupSpec{Region: "Dublin", Provider: "aws", Architecture: "riscv", CPU: 2, RAM: 4, Min: 1, Max: 2}},
 		{"bad os", ScaleGroupSpec{Region: "Dublin", Provider: "aws", OS: "windows", CPU: 2, RAM: 4, Min: 1, Max: 2}},
 		{"cpu < 1", ScaleGroupSpec{Region: "Dublin", Provider: "aws", CPU: 0, RAM: 4, Min: 1, Max: 2}},

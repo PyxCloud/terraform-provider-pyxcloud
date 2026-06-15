@@ -146,6 +146,14 @@ func TranslateCache(ctx context.Context, cat RegionCatalog, spec CacheSpec) (Cac
 		if plan.Version == "" {
 			plan.Version = "6" // Azure Cache for Redis major line
 		}
+	case ProviderOracle:
+		// OCI Cache with Redis: oci_redis_redis_cluster. It is sized directly by
+		// node_memory_in_gbs (no node-class token), so NodeClass is intentionally
+		// empty and the renderer uses MemoryGB.
+		plan.ResourceType = "oci_redis_redis_cluster"
+		if plan.Version == "" {
+			plan.Version = "7.0"
+		}
 	}
 	return plan, nil
 }

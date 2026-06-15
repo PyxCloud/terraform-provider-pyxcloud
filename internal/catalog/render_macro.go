@@ -35,6 +35,8 @@ func RenderCacheHCL(plan CachePlan) (string, error) {
 			"cache",
 			"The Ubicloud Terraform provider exposes no managed cache/Redis resource; use managed "+
 				"Redis on aws / gcp / digitalocean.")
+	case ProviderOracle:
+		return renderCacheOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for cache", plan.Provider)
 	}
@@ -145,6 +147,8 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 				"managed-queue",
 				"The Ubicloud Terraform provider exposes no managed queue resource; use SQS (aws) or "+
 					"Pub/Sub (gcp).")
+		case ProviderOracle:
+			return renderQueueOCI(plan), nil
 		}
 	case KindStream:
 		switch plan.Provider {
@@ -159,6 +163,8 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 				"event-streaming",
 				"The Ubicloud Terraform provider exposes no event-streaming resource; use Kinesis (aws) "+
 					"or Pub/Sub (gcp).")
+		case ProviderOracle:
+			return renderStreamOCI(plan), nil
 		}
 	}
 	return "", fmt.Errorf("render: unsupported provider %q for messaging kind %q", plan.Provider, plan.Kind)
@@ -295,6 +301,8 @@ func RenderDNSZoneHCL(plan DNSZonePlan) (string, error) {
 			"dns-zone",
 			"The Ubicloud Terraform provider exposes no DNS-zone resource; manage DNS on Route53 (aws), "+
 				"Cloud DNS (gcp), or DigitalOcean domains.")
+	case ProviderOracle:
+		return renderDNSOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for dns-zone", plan.Provider)
 	}
@@ -466,6 +474,8 @@ func RenderWAFHCL(plan WAFPlan) (string, error) {
 			"waf-service",
 			"The Ubicloud Terraform provider exposes no WAF resource; use AWS WAFv2 or a GCP Cloud "+
 				"Armor security policy.")
+	case ProviderOracle:
+		return renderWAFOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for waf-service", plan.Provider)
 	}
@@ -563,6 +573,8 @@ func RenderKubernetesHCL(plan K8sPlan) (string, error) {
 			"managed-kubernetes",
 			"The Ubicloud Terraform provider exposes no managed-Kubernetes resource; use EKS (aws), "+
 				"GKE (gcp), or DOKS (digitalocean).")
+	case ProviderOracle:
+		return renderK8sOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for managed-kubernetes", plan.Provider)
 	}
@@ -695,6 +707,8 @@ func RenderSecretsHCL(plan SecretsPlan) (string, error) {
 			"secrets-manager",
 			"The Ubicloud Terraform provider exposes no secrets-manager resource; use AWS Secrets "+
 				"Manager or GCP Secret Manager.")
+	case ProviderOracle:
+		return renderSecretsOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for secrets-manager", plan.Provider)
 	}
@@ -772,6 +786,8 @@ func RenderServerlessHCL(plan ServerlessPlan) (string, error) {
 			"serverless-function",
 			"The Ubicloud Terraform provider exposes no serverless-function resource; use Lambda (aws), "+
 				"Cloud Functions (gcp), or DigitalOcean Functions.")
+	case ProviderOracle:
+		return renderServerlessOCI(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for serverless-function", plan.Provider)
 	}

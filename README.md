@@ -23,7 +23,7 @@ to a deployment **provider** and an abstract **macro-region**:
 - **VM sizing** (mirrors `properties.virtual-machine.type.*` / `os.osName`):
   `architecture`, `cpu`, `ram`, `os_name`.
 - **Providers** (mirrors vibe-frontend `ENABLED_LAUNCH_PROVIDERS`):
-  `aws`, `gcp`, `digitalocean`.
+  `aws`, `gcp`, `digitalocean`, `oracle` (wave-2 Oracle Cloud / OCI).
 - **Macro-region**: abstract region such as `EU West`, `US East`, `Asia` —
   resolved to a concrete CSP region at deploy time.
 

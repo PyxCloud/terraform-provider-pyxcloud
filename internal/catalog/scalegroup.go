@@ -214,6 +214,8 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		plan.ResourceType = "google_compute_region_instance_group_manager"
 	case ProviderAzure:
 		plan.ResourceType = "azurerm_linux_virtual_machine_scale_set"
+	case ProviderOracle:
+		plan.ResourceType = "oci_core_instance_pool"
 	}
 	return plan, nil
 }
