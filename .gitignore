@@ -3,6 +3,7 @@
 *.test
 *.out
 /terraform-provider-pyxcloud
+/pyxnet-render
 
 # Terraform
 .terraform/

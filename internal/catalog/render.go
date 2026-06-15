@@ -365,6 +365,178 @@ func renderVMDO(p VMPlan) string {
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
+// RenderScaleGroupHCL renders a resolved ScaleGroupPlan into concrete
+// cloud-provider Terraform HCL. Mirrors RenderVMHCL: translation returns a
+// structured plan, rendering to .tf happens here and drives the per-provider
+// round-trip tests (SPEC 6).
+//
+//   - AWS: aws_launch_template + aws_autoscaling_group across the region's
+//     subnets (vpc_zone_identifier), health_check_type from the plan,
+//     min/max/desired_capacity, and a rolling instance_refresh — the proven
+//     production ASG pattern (multi-AZ, health-check-based, rolling refresh).
+//   - GCP: google_compute_instance_template +
+//     google_compute_region_instance_group_manager +
+//     google_compute_region_autoscaler (min/max replicas, health check).
+//
+// DigitalOcean never reaches here: TranslateScaleGroup rejects it with
+// ErrAutoscaleUnsupported (no native VM ASG primitive).
+func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
+	switch plan.Provider {
+	case ProviderAWS:
+		return renderASGAWS(plan), nil
+	case ProviderGCP:
+		return renderASGGCP(plan), nil
+	case ProviderDigitalOcean:
+		return "", fmt.Errorf(
+			"render: virtual-machine-scale-group is unsupported on digitalocean " +
+				"(no native VM autoscaling primitive; use managed-kubernetes)")
+	default:
+		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
+	}
+}
+
+// awsHealthCheckType maps the canonical health kind to the AWS ASG
+// health_check_type ("EC2" or "ELB").
+func awsHealthCheckType(health string) string {
+	if health == HealthELB {
+		return "ELB"
+	}
+	return "EC2"
+}
+
+func renderASGAWS(p ScaleGroupPlan) string {
+	ltName := tfName(p.GroupName) + "_lt"
+	asgName := tfName(p.GroupName) + "_asg"
+	var b strings.Builder
+
+	// Launch template: instance type + image come from the catalog (reused VM SKU
+	// resolution), security-group wired from the sibling component.
+	fmt.Fprintf(&b, "resource \"aws_launch_template\" %q {\n", ltName)
+	fmt.Fprintf(&b, "  name_prefix   = \"%s-\"\n", tfName(p.GroupName))
+	fmt.Fprintf(&b, "  image_id      = %q\n", p.Image)
+	fmt.Fprintf(&b, "  instance_type = %q\n", p.InstanceType)
+	if p.SecurityGroup != "" {
+		fmt.Fprintf(&b, "  vpc_security_group_ids = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
+	}
+	b.WriteString("  tag_specifications {\n")
+	b.WriteString("    resource_type = \"instance\"\n")
+	fmt.Fprintf(&b, "    tags = { Name = %q, pyxcloud = \"true\" }\n", p.GroupName)
+	b.WriteString("  }\n")
+	b.WriteString("}\n\n")
+
+	// Autoscaling group: multi-AZ across the region's subnets, min/max/desired,
+	// health-check-based, with a rolling instance refresh.
+	fmt.Fprintf(&b, "resource \"aws_autoscaling_group\" %q {\n", asgName)
+	fmt.Fprintf(&b, "  name                = %q\n", p.GroupName)
+	fmt.Fprintf(&b, "  min_size            = %d\n", p.Min)
+	fmt.Fprintf(&b, "  max_size            = %d\n", p.Max)
+	fmt.Fprintf(&b, "  desired_capacity    = %d\n", p.Desired)
+	fmt.Fprintf(&b, "  health_check_type   = %q\n", awsHealthCheckType(p.Health))
+	b.WriteString("  health_check_grace_period = 300\n")
+	if len(p.SubnetNames) > 0 {
+		labels := make([]string, 0, len(p.SubnetNames))
+		for _, s := range p.SubnetNames {
+			labels = append(labels, fmt.Sprintf("aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
+		}
+		fmt.Fprintf(&b, "  vpc_zone_identifier = [%s]\n", strings.Join(labels, ", "))
+	}
+	b.WriteString("  launch_template {\n")
+	fmt.Fprintf(&b, "    id      = aws_launch_template.%s.id\n", ltName)
+	b.WriteString("    version = \"$Latest\"\n")
+	b.WriteString("  }\n")
+	// Rolling instance refresh — the production ASG pattern.
+	b.WriteString("  instance_refresh {\n")
+	b.WriteString("    strategy = \"Rolling\"\n")
+	b.WriteString("    preferences {\n")
+	b.WriteString("      min_healthy_percentage = 90\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
+	b.WriteString("  tag {\n")
+	b.WriteString("    key                 = \"pyxcloud\"\n")
+	b.WriteString("    value               = \"true\"\n")
+	b.WriteString("    propagate_at_launch = true\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func renderASGGCP(p ScaleGroupPlan) string {
+	tmplName := tfName(p.GroupName) + "_tmpl"
+	mgrName := tfName(p.GroupName) + "_mig"
+	asName := tfName(p.GroupName) + "_as"
+	hcName := tfName(p.GroupName) + "_hc"
+	var b strings.Builder
+
+	// Instance template: machine type + image from the catalog.
+	fmt.Fprintf(&b, "resource \"google_compute_instance_template\" %q {\n", tmplName)
+	fmt.Fprintf(&b, "  name_prefix  = \"%s-\"\n", tfName(p.GroupName))
+	fmt.Fprintf(&b, "  machine_type = %q\n", p.InstanceType)
+	b.WriteString("  disk {\n")
+	fmt.Fprintf(&b, "    source_image = %q\n", p.Image)
+	b.WriteString("    auto_delete  = true\n")
+	b.WriteString("    boot         = true\n")
+	b.WriteString("  }\n")
+	b.WriteString("  network_interface {\n")
+	if p.NetworkName != "" {
+		fmt.Fprintf(&b, "    network    = google_compute_network.%s.id\n", tfName(p.NetworkName))
+	}
+	if len(p.SubnetNames) > 0 {
+		fmt.Fprintf(&b, "    subnetwork = google_compute_subnetwork.%s.id\n", subnetResourceLabel(p.NetworkName, p.SubnetNames[0]))
+	}
+	b.WriteString("  }\n")
+	fmt.Fprintf(&b, "  labels = { pyxcloud = \"true\" }\n")
+	b.WriteString("  lifecycle {\n")
+	b.WriteString("    create_before_destroy = true\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n\n")
+
+	// Health check (used for autohealing when health = elb / lb).
+	fmt.Fprintf(&b, "resource \"google_compute_health_check\" %q {\n", hcName)
+	fmt.Fprintf(&b, "  name = \"%s-hc\"\n", tfName(p.GroupName))
+	b.WriteString("  tcp_health_check {\n")
+	b.WriteString("    port = 80\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n\n")
+
+	// Regional instance group manager: regional = multi-zone spread.
+	fmt.Fprintf(&b, "resource \"google_compute_region_instance_group_manager\" %q {\n", mgrName)
+	fmt.Fprintf(&b, "  name                      = %q\n", p.GroupName)
+	fmt.Fprintf(&b, "  region                    = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "  base_instance_name        = %q\n", tfName(p.GroupName))
+	b.WriteString("  version {\n")
+	fmt.Fprintf(&b, "    instance_template = google_compute_instance_template.%s.id\n", tmplName)
+	b.WriteString("  }\n")
+	if p.Health == HealthELB {
+		b.WriteString("  auto_healing_policies {\n")
+		fmt.Fprintf(&b, "    health_check      = google_compute_health_check.%s.id\n", hcName)
+		b.WriteString("    initial_delay_sec = 300\n")
+		b.WriteString("  }\n")
+	}
+	// Rolling update — the GCP analogue of the AWS instance refresh.
+	b.WriteString("  update_policy {\n")
+	b.WriteString("    type                  = \"PROACTIVE\"\n")
+	b.WriteString("    minimal_action        = \"REPLACE\"\n")
+	b.WriteString("    max_surge_fixed       = 3\n")
+	b.WriteString("    max_unavailable_fixed = 0\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n\n")
+
+	// Regional autoscaler: min/max replicas.
+	fmt.Fprintf(&b, "resource \"google_compute_region_autoscaler\" %q {\n", asName)
+	fmt.Fprintf(&b, "  name   = \"%s-as\"\n", tfName(p.GroupName))
+	fmt.Fprintf(&b, "  region = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "  target = google_compute_region_instance_group_manager.%s.id\n", mgrName)
+	b.WriteString("  autoscaling_policy {\n")
+	fmt.Fprintf(&b, "    min_replicas = %d\n", p.Min)
+	fmt.Fprintf(&b, "    max_replicas = %d\n", p.Max)
+	b.WriteString("    cpu_utilization {\n")
+	b.WriteString("      target = 0.6\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
 // splitCIDRs partitions CIDRs into IPv4 and IPv6 (AWS uses distinct attributes).
 func splitCIDRs(cidrs []string) (v4, v6 []string) {
 	for _, c := range cidrs {
