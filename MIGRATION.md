@@ -65,9 +65,11 @@ Pluggable substrate — exactly the two options in the directive:
   **only** to an enclave whose attestation measurement matches the expected, signed value. Runner
   orchestrates the lifecycle but the logic runs sealed.
 
-Default: **`confidential-container`** (strongest opacity; the secret is gated behind a measured,
-attested boot, not just host goodwill). `local-tee` is the lower-friction option where a real TEE
-or sealed sandbox is available.
+**Default: `auto` (DECIDED).** The runtime detects the runner's capability and picks the
+strongest available — a remote-attested confidential container if launchable, else a hardware TEE
+(SEV‑SNP/TDX/SGX) if present, else a local **memory-sealed WASM sandbox** as the portable
+fallback. Both named substrates stay explicitly selectable; `auto` is the default so a migration
+runs anywhere at the best opacity the host can offer (the floor is sealed-WASM, never plaintext).
 
 ## 3. Key handling & attestation (why the runner can't extract the secret)
 
@@ -123,10 +125,13 @@ Parallelizable pieces (own-clone subagents, like wave-2):
 4. **End-to-end opacity tests:** assert the provider/runner never hold plaintext logic or creds;
    assert key release fails on a bad/forged attestation; assert zeroization.
 
-## 7. Open decisions (resolve before build)
-- **Default substrate** (`confidential-container` recommended) and which cloud CC backend to target
-  first (Nitro vs GCP Confidential Space vs Azure CC).
-- **Attestation root**: PyxCloud-operated verifier vs. cloud-native attestation service.
-- **Where the data actually flows**: enclave-on-runner pulls source→pushes target (data transits
-  the runner's enclave, encrypted), vs. a PyxCloud-hosted confidential broker (no data on the
-  runner at all, but PyxCloud egress cost). Trade-off: runner-egress + max opacity vs. simpler.
+## 7. Decisions (resolved 2026-06-15)
+- **Substrate = `auto`** (DECIDED): detect strongest available — confidential-container → hardware
+  TEE → sealed-WASM fallback; both named substrates remain selectable. (§2.3)
+- **Data path = runner-side enclave** (DECIDED): data transits the runner's sealed enclave
+  (encrypted), source→target. Max opacity + customer-side data sovereignty; runner pays egress. NO
+  PyxCloud-hosted broker. (per the directive "far eseguire dal runner")
+- **Still to settle during build (non-blocking):** which confidential-container backend to wire
+  first (Nitro vs GCP Confidential Space vs Azure CC), and the **attestation root** (PyxCloud-
+  operated verifier vs cloud-native attestation service). Build the abstraction so these are
+  swappable; wire one real backend + stub the others with explicit TODOs.
