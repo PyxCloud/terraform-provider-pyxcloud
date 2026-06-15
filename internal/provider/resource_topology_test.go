@@ -140,3 +140,90 @@ func TestResourceTranslateSecurityGroupNil(t *testing.T) {
 		t.Errorf("expected nil plan when no security_group declared, got %+v", plan)
 	}
 }
+
+// TestResourceTranslateVM exercises the VM translation wiring end-to-end through
+// the embedded catalog (pd-TF-EC2-VM): instance type from the virtual_machine
+// catalog, image from the OS catalog, placement wired to the sibling subnet/SG.
+func TestResourceTranslateVM(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+
+	m := topologyModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Dublin"),
+		Network: &networkModel{
+			CIDR:    types.StringValue("10.0.0.0/16"),
+			Subnets: []types.String{types.StringValue("10.0.1.0/24")},
+		},
+		SecurityGroup: &securityGroupModel{
+			Name:   types.StringValue("production-web"),
+			Expose: []types.Int64{types.Int64Value(80)},
+		},
+		VirtualMachine: &virtualMachineModel{
+			Architecture: types.StringValue("x86_64"),
+			CPU:          types.Int64Value(2),
+			RAM:          types.Int64Value(4),
+			OS:           types.StringValue("ubuntu"),
+			Count:        types.Int64Value(2),
+		},
+	}
+
+	plan, err := r.translateVM(context.Background(), m)
+	if err != nil {
+		t.Fatalf("translateVM: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected a VM plan, got nil")
+	}
+	if plan.CSPRegion.ValueString() != "eu-west-1" {
+		t.Errorf("csp_region = %q, want eu-west-1", plan.CSPRegion.ValueString())
+	}
+	if plan.InstanceType.ValueString() != "t3.medium" {
+		t.Errorf("instance_type = %q, want t3.medium", plan.InstanceType.ValueString())
+	}
+	if plan.ResourceType.ValueString() != "aws_instance" {
+		t.Errorf("resource_type = %q, want aws_instance", plan.ResourceType.ValueString())
+	}
+	if plan.SubnetName.ValueString() != "production-subnet-1" {
+		t.Errorf("subnet_name = %q, want production-subnet-1", plan.SubnetName.ValueString())
+	}
+	if plan.SecurityGroup.ValueString() != "production-web" {
+		t.Errorf("security_group = %q, want production-web", plan.SecurityGroup.ValueString())
+	}
+	if len(plan.Instances) != 2 {
+		t.Fatalf("want 2 instances for count=2, got %d", len(plan.Instances))
+	}
+}
+
+// TestResourceTranslateVMNil returns no plan when none declared.
+func TestResourceTranslateVMNil(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	plan, err := r.translateVM(context.Background(), topologyModel{
+		Provider: types.StringValue("aws"), Region: types.StringValue("Dublin"),
+	})
+	if err != nil {
+		t.Fatalf("translateVM: %v", err)
+	}
+	if plan != nil {
+		t.Errorf("expected nil plan when no virtual_machine declared, got %+v", plan)
+	}
+}
+
+// TestResourceTranslateVMSKUNoMatch surfaces a hard plan-time error.
+func TestResourceTranslateVMSKUNoMatch(t *testing.T) {
+	t.Parallel()
+	r := &topologyResource{catalog: catalog.MustEmbedded()}
+	_, err := r.translateVM(context.Background(), topologyModel{
+		Name:     types.StringValue("x"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Dublin"),
+		VirtualMachine: &virtualMachineModel{
+			CPU: types.Int64Value(999), RAM: types.Int64Value(9999),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected hard SKU no-match error, got nil")
+	}
+}

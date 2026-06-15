@@ -36,6 +36,23 @@ type fixture struct {
 	Subnets []string `json:"subnets"`
 	// SecurityGroup is the optional canonical security-group for this place.
 	SecurityGroup *sgFixture `json:"security_group,omitempty"`
+	// VirtualMachine is the optional canonical virtual-machine for this place.
+	VirtualMachine *vmFixture `json:"virtual_machine,omitempty"`
+}
+
+// vmFixture is the canonical virtual-machine description embedded in a fixture.
+type vmFixture struct {
+	Name         string `json:"name"`
+	Architecture string `json:"architecture"`
+	CPU          int    `json:"cpu"`
+	RAM          int    `json:"ram"`
+	OS           string `json:"os"`
+	OSVersion    string `json:"os_version"`
+	Count        int    `json:"count"`
+	// Subnet / SecurityGroup are the canonical names of the sibling components
+	// this VM wires into; default to the first subnet and the fixture's SG.
+	Subnet        string `json:"subnet"`
+	SecurityGroup string `json:"security_group"`
 }
 
 // sgFixture is the canonical security-group description embedded in a fixture.
@@ -81,9 +98,54 @@ func main() {
 		renderNetwork(cat, f, *provider)
 	case "security-group", "sg":
 		renderSecurityGroup(cat, f, *provider)
+	case "virtual-machine", "vm":
+		renderVM(cat, f, *provider)
 	default:
-		fatal(fmt.Errorf("unknown component %q (network | security-group)", *component))
+		fatal(fmt.Errorf("unknown component %q (network | security-group | virtual-machine)", *component))
 	}
+}
+
+func renderVM(cat catalog.VMCatalog, f fixture, provider string) {
+	if f.VirtualMachine == nil {
+		fatal(fmt.Errorf("fixture has no virtual_machine block"))
+	}
+	vm := f.VirtualMachine
+	name := vm.Name
+	if name == "" {
+		name = f.Name
+	}
+	// Default the subnet to the first network subnet (production-subnet-1) and
+	// the SG to the fixture's security-group, so a VM in a VPC+SG wires up.
+	subnet := vm.Subnet
+	if subnet == "" && len(f.Subnets) > 0 {
+		subnet = fmt.Sprintf("%s-subnet-1", f.Name)
+	}
+	sg := vm.SecurityGroup
+	if sg == "" && f.SecurityGroup != nil {
+		sg = f.SecurityGroup.Name
+	}
+	plan, err := catalog.TranslateVM(context.Background(), cat, catalog.VMSpec{
+		Name:          name,
+		Region:        f.Region,
+		Provider:      provider,
+		Architecture:  vm.Architecture,
+		CPU:           vm.CPU,
+		RAM:           vm.RAM,
+		OS:            vm.OS,
+		OSVersion:     vm.OSVersion,
+		Count:         vm.Count,
+		Network:       f.Name,
+		Subnet:        subnet,
+		SecurityGroup: sg,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	hcl, err := catalog.RenderVMHCL(plan)
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Print(hcl)
 }
 
 func renderNetwork(cat catalog.RegionCatalog, f fixture, provider string) {

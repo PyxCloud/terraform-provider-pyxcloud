@@ -258,6 +258,113 @@ func doProto(proto string) string {
 	return proto
 }
 
+// RenderVMHCL renders a resolved VMPlan into concrete cloud-provider Terraform
+// HCL (aws_instance, google_compute_instance, or digitalocean_droplet). Mirrors
+// RenderHCL / RenderSGHCL: translation returns a structured plan, rendering to
+// .tf happens here and drives the per-provider round-trip tests (SPEC 6).
+// `count` becomes N concrete instances, wired to the subnet + security-group of
+// the sibling components.
+func RenderVMHCL(plan VMPlan) (string, error) {
+	switch plan.Provider {
+	case ProviderAWS:
+		return renderVMAWS(plan), nil
+	case ProviderGCP:
+		return renderVMGCP(plan), nil
+	case ProviderDigitalOcean:
+		return renderVMDO(plan), nil
+	default:
+		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
+	}
+}
+
+// subnetResourceLabel maps a canonical subnet name to the Terraform resource
+// LABEL the network component emits for that subnet, so the VM references the
+// real resource (not the human subnet name). The network renderer names AWS
+// subnets / GCP subnetworks "<tfName(network)>_<n>" where the subnet plan name
+// is "<network>-subnet-<n>"; we recover <n> from the plan name's suffix. When
+// the suffix is missing (a custom subnet name), we fall back to tfName(subnet).
+func subnetResourceLabel(networkName, subnetName string) string {
+	const sep = "-subnet-"
+	if networkName != "" {
+		if idx := strings.LastIndex(subnetName, sep); idx >= 0 {
+			if suffix := subnetName[idx+len(sep):]; suffix != "" {
+				return tfName(networkName) + "_" + suffix
+			}
+		}
+	}
+	return tfName(subnetName)
+}
+
+func renderVMAWS(p VMPlan) string {
+	var b strings.Builder
+	subnetLabel := subnetResourceLabel(p.NetworkName, p.SubnetName)
+	for _, inst := range p.Instances {
+		rn := tfName(inst.Name)
+		fmt.Fprintf(&b, "resource \"aws_instance\" %q {\n", rn)
+		fmt.Fprintf(&b, "  ami           = %q\n", p.Image)
+		fmt.Fprintf(&b, "  instance_type = %q\n", p.InstanceType)
+		if p.SubnetName != "" {
+			fmt.Fprintf(&b, "  subnet_id     = aws_subnet.%s.id\n", subnetLabel)
+		}
+		if p.SecurityGroup != "" {
+			fmt.Fprintf(&b, "  vpc_security_group_ids = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
+		}
+		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", inst.Name)
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderVMGCP(p VMPlan) string {
+	var b strings.Builder
+	// GCP instances are zonal; derive a deterministic zone from the csp_region
+	// (region + "-a"), matching the network component's zone derivation.
+	zone := p.CSPRegion + "-a"
+	for _, inst := range p.Instances {
+		rn := tfName(inst.Name)
+		fmt.Fprintf(&b, "resource \"google_compute_instance\" %q {\n", rn)
+		fmt.Fprintf(&b, "  name         = %q\n", tfName(inst.Name))
+		fmt.Fprintf(&b, "  machine_type = %q\n", p.InstanceType)
+		fmt.Fprintf(&b, "  zone         = %q\n", zone)
+		b.WriteString("  boot_disk {\n")
+		b.WriteString("    initialize_params {\n")
+		fmt.Fprintf(&b, "      image = %q\n", p.Image)
+		b.WriteString("    }\n")
+		b.WriteString("  }\n")
+		b.WriteString("  network_interface {\n")
+		if p.NetworkName != "" {
+			fmt.Fprintf(&b, "    network    = google_compute_network.%s.id\n", tfName(p.NetworkName))
+		}
+		if p.SubnetName != "" {
+			fmt.Fprintf(&b, "    subnetwork = google_compute_subnetwork.%s.id\n", subnetResourceLabel(p.NetworkName, p.SubnetName))
+		}
+		b.WriteString("  }\n")
+		fmt.Fprintf(&b, "  labels = { pyxcloud = \"true\" }\n")
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderVMDO(p VMPlan) string {
+	var b strings.Builder
+	for _, inst := range p.Instances {
+		rn := tfName(inst.Name)
+		fmt.Fprintf(&b, "resource \"digitalocean_droplet\" %q {\n", rn)
+		fmt.Fprintf(&b, "  name   = %q\n", tfName(inst.Name))
+		fmt.Fprintf(&b, "  image  = %q\n", p.Image)
+		fmt.Fprintf(&b, "  region = %q\n", p.CSPRegion)
+		fmt.Fprintf(&b, "  size   = %q\n", p.InstanceType)
+		if p.NetworkName != "" {
+			fmt.Fprintf(&b, "  vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+		}
+		fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
+		b.WriteString("}\n\n")
+	}
+	// DO firewalls attach to droplets by droplet_ids; if a security-group is
+	// declared, the firewall (rendered separately) references these droplets.
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
 // splitCIDRs partitions CIDRs into IPv4 and IPv6 (AWS uses distinct attributes).
 func splitCIDRs(cidrs []string) (v4, v6 []string) {
 	for _, c := range cidrs {

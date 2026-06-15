@@ -18,7 +18,7 @@ import (
 // topologyResource manages a PyxCloud canonical topology.
 type topologyResource struct {
 	client  client.Client
-	catalog catalog.RegionCatalog
+	catalog catalog.VMCatalog
 }
 
 var (
@@ -121,17 +121,59 @@ type securityGroupPlanModel struct {
 	Rules        []rulePlanModel `tfsdk:"rules"`
 }
 
+// virtualMachineModel maps the abstract `virtual_machine` block of a place: the
+// canonical sizing (architecture, cpu, ram, os) + count, placed in the place's
+// network and attached to its security-group (pd-TF-EC2-VM).
+type virtualMachineModel struct {
+	Name         types.String `tfsdk:"name"`
+	Architecture types.String `tfsdk:"architecture"`
+	CPU          types.Int64  `tfsdk:"cpu"`
+	RAM          types.Int64  `tfsdk:"ram"`
+	OS           types.String `tfsdk:"os"`
+	OSVersion    types.String `tfsdk:"os_version"`
+	Count        types.Int64  `tfsdk:"count"`
+}
+
+// vmInstancePlanModel is one concrete instance in the resolved VM plan.
+type vmInstancePlanModel struct {
+	Name types.String `tfsdk:"name"`
+}
+
+// virtualMachinePlanModel is the computed, catalog-resolved concrete VM plan
+// (the abstract→concrete instance-type + image translation in state).
+type virtualMachinePlanModel struct {
+	Provider      types.String          `tfsdk:"provider"`
+	CSP           types.String          `tfsdk:"csp"`
+	RegionName    types.String          `tfsdk:"region_name"`
+	CSPRegion     types.String          `tfsdk:"csp_region"`
+	VMName        types.String          `tfsdk:"vm_name"`
+	InstanceType  types.String          `tfsdk:"instance_type"`
+	Architecture  types.String          `tfsdk:"architecture"`
+	CPU           types.Int64           `tfsdk:"cpu"`
+	RAM           types.Int64           `tfsdk:"ram"`
+	OSName        types.String          `tfsdk:"os_name"`
+	OSVersion     types.String          `tfsdk:"os_version"`
+	Image         types.String          `tfsdk:"image"`
+	NetworkName   types.String          `tfsdk:"network_name"`
+	SubnetName    types.String          `tfsdk:"subnet_name"`
+	SecurityGroup types.String          `tfsdk:"security_group"`
+	ResourceType  types.String          `tfsdk:"resource_type"`
+	Instances     []vmInstancePlanModel `tfsdk:"instances"`
+}
+
 // topologyModel maps the pyxcloud_topology resource state.
 type topologyModel struct {
-	ID          types.String      `tfsdk:"id"`
-	Name        types.String      `tfsdk:"name"`
-	Provider    types.String      `tfsdk:"provider"`
-	Region      types.String      `tfsdk:"region"`
-	Components        []componentModel        `tfsdk:"components"`
-	Network           *networkModel           `tfsdk:"network"`
-	NetworkPlan       *networkPlanModel       `tfsdk:"network_plan"`
-	SecurityGroup     *securityGroupModel     `tfsdk:"security_group"`
-	SecurityGroupPlan *securityGroupPlanModel `tfsdk:"security_group_plan"`
+	ID                 types.String             `tfsdk:"id"`
+	Name               types.String             `tfsdk:"name"`
+	Provider           types.String             `tfsdk:"provider"`
+	Region             types.String             `tfsdk:"region"`
+	Components         []componentModel         `tfsdk:"components"`
+	Network            *networkModel            `tfsdk:"network"`
+	NetworkPlan        *networkPlanModel        `tfsdk:"network_plan"`
+	SecurityGroup      *securityGroupModel      `tfsdk:"security_group"`
+	SecurityGroupPlan  *securityGroupPlanModel  `tfsdk:"security_group_plan"`
+	VirtualMachine     *virtualMachineModel     `tfsdk:"virtual_machine"`
+	VirtualMachinePlan *virtualMachinePlanModel `tfsdk:"virtual_machine_plan"`
 }
 
 func (r *topologyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -349,6 +391,79 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					},
 				},
 			},
+			"virtual_machine": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Abstract virtual-machine for the place (pd-TF-EC2-VM): " +
+					"canonical sizing (`architecture`, `cpu`, `ram`, `os`) + `count`, placed " +
+					"in the place's `network` and attached to its `security_group`. Resolved " +
+					"to `aws_instance` / `google_compute_instance` / `digitalocean_droplet` " +
+					"for the topology's provider at plan time — the instance type and image " +
+					"come from the `virtual_machine` / OS catalog (never invented).",
+				Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "VM/component name; defaults to the topology name.",
+					},
+					"architecture": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "CPU architecture: `x86_64` (default) or `arm64`.",
+					},
+					"cpu": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Abstract vCPU count, e.g. `2`. Resolved to a concrete instance type.",
+					},
+					"ram": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Abstract RAM in GiB, e.g. `4`. Resolved to a concrete instance type.",
+					},
+					"os": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Operating system: `ubuntu` (default) or `debian`.",
+					},
+					"os_version": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "OS version; defaults to the catalog default " +
+							"(ubuntu `24.04` / debian `12`).",
+					},
+					"count": schema.Int64Attribute{
+						Optional:            true,
+						MarkdownDescription: "Number of instances to create (defaults to 1).",
+					},
+				},
+			},
+			"virtual_machine_plan": schema.SingleNestedAttribute{
+				Computed: true,
+				MarkdownDescription: "Computed concrete virtual-machine plan: the " +
+					"catalog-resolved translation of the abstract `virtual_machine` for the " +
+					"topology's provider (instance type from the `virtual_machine` catalog, " +
+					"image from the OS catalog).",
+				Attributes: map[string]schema.Attribute{
+					"provider":       schema.StringAttribute{Computed: true},
+					"csp":            schema.StringAttribute{Computed: true},
+					"region_name":    schema.StringAttribute{Computed: true},
+					"csp_region":     schema.StringAttribute{Computed: true},
+					"vm_name":        schema.StringAttribute{Computed: true},
+					"instance_type":  schema.StringAttribute{Computed: true},
+					"architecture":   schema.StringAttribute{Computed: true},
+					"cpu":            schema.Int64Attribute{Computed: true},
+					"ram":            schema.Int64Attribute{Computed: true},
+					"os_name":        schema.StringAttribute{Computed: true},
+					"os_version":     schema.StringAttribute{Computed: true},
+					"image":          schema.StringAttribute{Computed: true},
+					"network_name":   schema.StringAttribute{Computed: true},
+					"subnet_name":    schema.StringAttribute{Computed: true},
+					"security_group": schema.StringAttribute{Computed: true},
+					"resource_type":  schema.StringAttribute{Computed: true},
+					"instances": schema.ListNestedAttribute{
+						Computed: true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"name": schema.StringAttribute{Computed: true},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -402,6 +517,15 @@ func (r *topologyResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 			)
 		}
 	}
+	if plan.VirtualMachine != nil {
+		if _, err := r.translateVM(ctx, plan); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("virtual_machine"),
+				"Virtual-machine not resolvable / invalid against the PyxCloud catalog",
+				err.Error(),
+			)
+		}
+	}
 }
 
 func (r *topologyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -421,6 +545,11 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Security-group translation failed", err.Error())
 		return
 	}
+	vmPlan, err := r.translateVM(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Virtual-machine translation failed", err.Error())
+		return
+	}
 
 	created, err := r.client.CreateTopology(ctx, modelToTopology(plan))
 	if err != nil {
@@ -433,6 +562,8 @@ func (r *topologyResource) Create(ctx context.Context, req resource.CreateReques
 	state.NetworkPlan = netPlan
 	state.SecurityGroup = plan.SecurityGroup
 	state.SecurityGroupPlan = sgPlan
+	state.VirtualMachine = plan.VirtualMachine
+	state.VirtualMachinePlan = vmPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 
@@ -554,6 +685,77 @@ func (r *topologyResource) translateSecurityGroup(ctx context.Context, m topolog
 	return out, nil
 }
 
+// translateVM resolves the abstract virtual_machine block into a concrete plan
+// via the catalog (instance type from `virtual_machine`, image from the OS
+// catalog). Returns (nil, nil) when the topology declares no virtual_machine.
+func (r *topologyResource) translateVM(ctx context.Context, m topologyModel) (*virtualMachinePlanModel, error) {
+	if m.VirtualMachine == nil {
+		return nil, nil
+	}
+	vm := m.VirtualMachine
+
+	name := vm.Name.ValueString()
+	if name == "" {
+		name = m.Name.ValueString()
+	}
+	network, subnet, sg := "", "", ""
+	if m.Network != nil {
+		network = m.Name.ValueString()
+		// Default placement: the first network subnet (production-subnet-1).
+		if len(m.Network.Subnets) > 0 {
+			subnet = fmt.Sprintf("%s-subnet-1", m.Name.ValueString())
+		}
+	}
+	if m.SecurityGroup != nil {
+		sg = m.SecurityGroup.Name.ValueString()
+		if sg == "" {
+			sg = m.Name.ValueString()
+		}
+	}
+
+	spec := catalog.VMSpec{
+		Name:          name,
+		Region:        m.Region.ValueString(),
+		Provider:      m.Provider.ValueString(),
+		Architecture:  vm.Architecture.ValueString(),
+		CPU:           int(vm.CPU.ValueInt64()),
+		RAM:           int(vm.RAM.ValueInt64()),
+		OS:            vm.OS.ValueString(),
+		OSVersion:     vm.OSVersion.ValueString(),
+		Count:         int(vm.Count.ValueInt64()),
+		Network:       network,
+		Subnet:        subnet,
+		SecurityGroup: sg,
+	}
+	cp, err := catalog.TranslateVM(ctx, r.catalog, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &virtualMachinePlanModel{
+		Provider:      types.StringValue(cp.Provider),
+		CSP:           types.StringValue(cp.CSP),
+		RegionName:    types.StringValue(cp.RegionName),
+		CSPRegion:     types.StringValue(cp.CSPRegion),
+		VMName:        types.StringValue(cp.VMName),
+		InstanceType:  types.StringValue(cp.InstanceType),
+		Architecture:  types.StringValue(cp.Architecture),
+		CPU:           types.Int64Value(int64(cp.CPU)),
+		RAM:           types.Int64Value(int64(cp.RAM)),
+		OSName:        types.StringValue(cp.OSName),
+		OSVersion:     types.StringValue(cp.OSVersion),
+		Image:         types.StringValue(cp.Image),
+		NetworkName:   types.StringValue(cp.NetworkName),
+		SubnetName:    types.StringValue(cp.SubnetName),
+		SecurityGroup: types.StringValue(cp.SecurityGroup),
+		ResourceType:  types.StringValue(cp.ResourceType),
+	}
+	for _, inst := range cp.Instances {
+		out.Instances = append(out.Instances, vmInstancePlanModel{Name: types.StringValue(inst.Name)})
+	}
+	return out, nil
+}
+
 func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state topologyModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -592,6 +794,15 @@ func (r *topologyResource) Read(ctx context.Context, req resource.ReadRequest, r
 		}
 		refreshed.SecurityGroupPlan = sgPlan
 	}
+	refreshed.VirtualMachine = state.VirtualMachine
+	if refreshed.VirtualMachine != nil {
+		vmPlan, terr := r.translateVM(ctx, refreshed)
+		if terr != nil {
+			resp.Diagnostics.AddError("Virtual-machine translation failed", terr.Error())
+			return
+		}
+		refreshed.VirtualMachinePlan = vmPlan
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, refreshed)...)
 }
 
@@ -621,6 +832,11 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Security-group translation failed", err.Error())
 		return
 	}
+	vmPlan, err := r.translateVM(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Virtual-machine translation failed", err.Error())
+		return
+	}
 
 	updated, err := r.client.UpdateTopology(ctx, desired)
 	if err != nil {
@@ -633,6 +849,8 @@ func (r *topologyResource) Update(ctx context.Context, req resource.UpdateReques
 	newState.NetworkPlan = netPlan
 	newState.SecurityGroup = plan.SecurityGroup
 	newState.SecurityGroupPlan = sgPlan
+	newState.VirtualMachine = plan.VirtualMachine
+	newState.VirtualMachinePlan = vmPlan
 	resp.Diagnostics.Append(resp.State.Set(ctx, newState)...)
 }
 

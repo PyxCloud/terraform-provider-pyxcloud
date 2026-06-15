@@ -25,13 +25,17 @@ import (
 type BackendCatalog struct {
 	endpoint string
 	token    string
-	fallback RegionCatalog
+	fallback *EmbeddedCatalog
 }
 
-var _ RegionCatalog = (*BackendCatalog)(nil)
+var (
+	_ RegionCatalog = (*BackendCatalog)(nil)
+	_ VMCatalog     = (*BackendCatalog)(nil)
+)
 
-// NewBackend returns a RegionCatalog that will use the live BE once the
-// transport is implemented; for now it delegates to the embedded snapshot.
+// NewBackend returns a VMCatalog (and thus RegionCatalog) that will use the live
+// BE once the transport is implemented; for now it delegates to the embedded
+// snapshot.
 func NewBackend(endpoint, token string) (*BackendCatalog, error) {
 	emb, err := NewEmbedded()
 	if err != nil {
@@ -49,4 +53,22 @@ func (b *BackendCatalog) ResolveRegion(ctx context.Context, regionName, provider
 		return RegionRow{}, fmt.Errorf("backend catalog: no transport and no fallback configured")
 	}
 	return b.fallback.ResolveRegion(ctx, regionName, provider)
+}
+
+// ResolveSKU implements VMCatalog, delegating to the embedded snapshot until the
+// live BE transport exists (GET {endpoint}/api/catalog/virtual-machines).
+func (b *BackendCatalog) ResolveSKU(ctx context.Context, csp, cspRegion, arch string, cpu, ram int) (VMRow, error) {
+	if b.fallback == nil {
+		return VMRow{}, fmt.Errorf("backend catalog: no transport and no fallback configured")
+	}
+	return b.fallback.ResolveSKU(ctx, csp, cspRegion, arch, cpu, ram)
+}
+
+// ResolveImage implements VMCatalog, delegating to the embedded snapshot until
+// the live BE transport exists.
+func (b *BackendCatalog) ResolveImage(ctx context.Context, csp, cspRegion, os, version, arch string) (OSImageRow, error) {
+	if b.fallback == nil {
+		return OSImageRow{}, fmt.Errorf("backend catalog: no transport and no fallback configured")
+	}
+	return b.fallback.ResolveImage(ctx, csp, cspRegion, os, version, arch)
 }

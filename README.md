@@ -169,11 +169,80 @@ Run [`examples/security-group/roundtrip.sh`](examples/security-group) to plan al
 three and apply→verify→destroy where creds exist. The DO harness uses a separate
 fixture (`sg-do.json`) since DO has no `all` protocol.
 
+### Virtual-machine (`pd-TF-EC2-VM`)
+
+A topology can declare an **abstract virtual-machine** placed in its `network`
+(region+VPC) and attached to its `security_group`. The user sizes it in
+PyxCloud's canonical vocabulary — `architecture`, `cpu`, `ram`, `os` — and the
+provider **resolves it down** to a concrete provider instance type and image
+from the catalog. Same catalog-driven, structured-plan → render pattern as the
+network and security-group.
+
+```hcl
+resource "pyxcloud_topology" "app" {
+  name     = "production"
+  provider = "aws"        # aws | gcp | digitalocean
+  region   = "Dublin"
+
+  network        = { cidr = "10.0.0.0/16", subnets = ["10.0.1.0/24"] }
+  security_group = { expose = [80, 443] }
+
+  virtual_machine = {
+    architecture = "x86_64"   # x86_64 | arm64
+    cpu          = 2          # abstract vCPU
+    ram          = 4          # abstract GiB
+    os           = "ubuntu"   # ubuntu | debian (os_version optional; defaults ubuntu 24.04 / debian 12)
+    count        = 2          # -> N instances
+  }
+}
+
+output "vm_plan" { value = pyxcloud_topology.app.virtual_machine_plan }
+```
+
+**Catalog-driven SKU resolution (the crux).** `{provider, csp_region,
+architecture, cpu, ram}` resolves to a concrete instance `name` from the
+**`virtual_machine`** catalog (`vm_catalog.csv`, a snapshot of the live table for
+the wave-1 test regions). It is an **exact** cpu/ram match; among ties the
+general-purpose / burstable family wins (deterministic, not a hard-coded map).
+A no-match is a **hard plan-time error** that lists the nearest available sizes —
+never a silent fallback to a different size. Example resolutions:
+
+| canonical sizing | AWS (eu-west-1) | GCP (europe-west3) | DO (fra1) |
+|---|---|---|---|
+| x86_64, 2 vCPU, 4 GiB | `t3.medium` | `e2-medium` | `s-2vcpu-4gb` |
+| arm64, 2 vCPU, 4 GiB | `t4g.medium` | _(no arm in snapshot)_ | _(x86 only)_ |
+| x86_64, 2 vCPU, 1 GiB | `t3.micro` | `e2-micro` | `s-1vcpu-1gb` |
+
+**OS → image mapping** comes from the `virtual_machine_operating_system` catalog
+(`vm_os_catalog.csv`): AWS rows carry the real per-region **AMI id**, DO rows the
+real **image slug** (`ubuntu-24-04-x64`, `debian-12-x64`). GCP ubuntu has no
+usable id in the catalog (the live `csp_os_name` is empty / a pinned URL), so GCP
+uses the stable **image-family** form (`ubuntu-os-cloud/ubuntu-2404-lts-amd64`,
+`debian-cloud/debian-12`) per SPEC §5.3. An unsupported os/version is a hard
+plan-time error.
+
+Per-provider targets emitted (`count` → N instances, wired to the sibling
+subnet + security-group):
+
+- **AWS** — `aws_instance` (`instance_type` + `ami` from catalog; `subnet_id`,
+  `vpc_security_group_ids` reference the network/SG resources).
+- **GCP** — `google_compute_instance` (`machine_type` + boot-disk `image`; zonal,
+  zone derived as `<csp_region>-a`; `network` + `subnetwork` references).
+- **DigitalOcean** — `digitalocean_droplet` (`size` + `image` + `region`,
+  `vpc_uuid` references the VPC).
+
+Run [`examples/virtual-machine/roundtrip.sh`](examples/virtual-machine) to plan
+all three and apply→verify→destroy where creds exist. AWS uses `vm-aws.json`
+(Dublin → `eu-west-1`, where the snapshot has instance types); gcp/do use
+`vm.json` (Frankfurt → `europe-west3` / `fra1`).
+
 ### Round-trip testing (SPEC §6)
 
 ```sh
 go build -o pyxnet-render ./cmd/pyxnet-render
-examples/region-vpc/roundtrip.sh   # plan all 3; apply+verify+destroy where creds exist
+examples/region-vpc/roundtrip.sh        # network: plan all 3; apply+verify+destroy where creds exist
+examples/security-group/roundtrip.sh    # security-group
+examples/virtual-machine/roundtrip.sh   # virtual-machine
 ```
 
 The harness generates the concrete `.tf` from the canonical fixture
