@@ -72,12 +72,18 @@ func TranslateSecrets(ctx context.Context, cat RegionCatalog, spec SecretsSpec) 
 		return SecretsPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+		provName := "DigitalOcean"
+		envNote := "DO App Platform env vars are not a secrets manager"
+		if provider == ProviderLinode {
+			provName = "Linode"
+			envNote = "Linode has no first-party secrets manager"
+		}
 		return SecretsPlan{}, ErrComponentUnsupported{
 			Component: TypeSecretsManager, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean has no managed secrets-manager primitive; use AWS Secrets Manager " +
+			Alternative: provName + " has no managed secrets-manager primitive; use AWS Secrets Manager " +
 				"or GCP Secret Manager, or run self-hosted HashiCorp Vault on a virtual-machine " +
-				"(DO App Platform env vars are not a secrets manager)",
+				"(" + envNote + ")",
 		}
 	}
 	forceDestroy := false

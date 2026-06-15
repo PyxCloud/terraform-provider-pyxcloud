@@ -66,10 +66,14 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		return DNSZonePlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if spec.Private && provider == ProviderDigitalOcean {
+	if spec.Private && (provider == ProviderDigitalOcean || provider == ProviderLinode) {
+		provName := "DigitalOcean DNS (digitalocean_domain)"
+		if provider == ProviderLinode {
+			provName = "Linode DNS (linode_domain)"
+		}
 		return DNSZonePlan{}, ErrComponentUnsupported{
 			Component: TypeDNSZone, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean DNS (digitalocean_domain) is public-only; for a PRIVATE zone " +
+			Alternative: provName + " is public-only; for a PRIVATE zone " +
 				"use AWS Route53 private hosted zones or GCP Cloud DNS private zones",
 		}
 	}
@@ -90,6 +94,8 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		plan.ResourceType = "google_dns_managed_zone"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_domain"
+	case ProviderLinode:
+		plan.ResourceType = "linode_domain"
 	}
 	return plan, nil
 }
@@ -159,6 +165,13 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 		return CDNPlan{}, err
 	}
 	provider := lc(spec.Provider)
+	if provider == ProviderLinode {
+		return CDNPlan{}, ErrComponentUnsupported{
+			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Linode has no managed CDN primitive; use AWS CloudFront or GCP Cloud CDN, " +
+				"or front the app with a third-party CDN (e.g. Cloudflare/Akamai) over the public endpoint",
+		}
+	}
 	if provider == ProviderDigitalOcean && originKind != CDNOriginObjectStorage {
 		return CDNPlan{}, ErrComponentUnsupported{
 			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
@@ -253,10 +266,14 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 		return WAFPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+		provName := "DigitalOcean"
+		if provider == ProviderLinode {
+			provName = "Linode"
+		}
 		return WAFPlan{}, ErrComponentUnsupported{
 			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean has no managed WAF primitive; use AWS WAFv2 or GCP Cloud Armor, " +
+			Alternative: provName + " has no managed WAF primitive; use AWS WAFv2 or GCP Cloud Armor, " +
 				"or front the app with a self-managed WAF (ModSecurity/Coraza) on a virtual-machine",
 		}
 	}

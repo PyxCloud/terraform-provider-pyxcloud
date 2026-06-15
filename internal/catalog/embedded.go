@@ -45,6 +45,19 @@ var vmOSCatalogCSV string
 //go:embed mdb_catalog.csv
 var mdbCatalogCSV string
 
+// linodeCatalogCSV is the wave-2 Linode (Akamai) catalog snapshot. Unlike the
+// wave-1 per-table CSVs, it is a single multiplexed file: a leading `kind` column
+// (region | vm | os | mdb) selects the row shape, and every row carries csp=linode
+// implicitly. It is folded into the SAME region / virtual_machine / OS / managed_
+// database maps the wave-1 snapshots populate, so Linode resolution reuses the
+// identical ResolveRegion / ResolveSKU / ResolveImage / ResolveDBClass paths — no
+// second resolution engine. See linode_catalog.csv for the provenance note (the
+// live Linode ETL `linode_vm.csv` is not present in this repo, so the rows are
+// authored from the public Linode catalog and the gap is documented there).
+//
+//go:embed linode_catalog.csv
+var linodeCatalogCSV string
+
 // EmbeddedCatalog resolves regions, virtual_machine SKUs, and OS images against
 // the embedded snapshots.
 type EmbeddedCatalog struct {
@@ -122,7 +135,94 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 		k := mdbRegionEngineKey(r.CSP, r.CSPRegion, r.Engine)
 		c.mdbByRegionEng[k] = append(c.mdbByRegionEng[k], r)
 	}
+
+	// Wave-2: fold the multiplexed Linode snapshot into the SAME maps so Linode
+	// resolution reuses the identical wave-1 resolution paths (no second engine).
+	if err := c.foldLinodeCatalog(linodeCatalogCSV); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// foldLinodeCatalog parses the multiplexed Linode snapshot and folds its region /
+// vm / os / mdb rows into the embedded catalog's existing maps. Each row's csp is
+// forced to "linode"; a leading `kind` column selects the row shape. A malformed
+// row is a hard error (a build-time invariant via MustEmbedded), never a silent skip.
+func (c *EmbeddedCatalog) foldLinodeCatalog(data string) error {
+	r := csv.NewReader(strings.NewReader(data))
+	// 9 columns: kind + up to 8 payload columns (the widest row, vm, uses all 8).
+	r.FieldsPerRecord = 9
+	records, err := r.ReadAll()
+	if err != nil {
+		return fmt.Errorf("parse linode catalog: %w", err)
+	}
+	for i, rec := range records {
+		if i == 0 {
+			continue // header
+		}
+		kind := strings.ToLower(strings.TrimSpace(rec[0]))
+		switch kind {
+		case "region":
+			// region,macro_region,country,region_name,csp_region,csp_region_description,,,
+			row := RegionRow{
+				MacroRegion:          rec[1],
+				Country:              rec[2],
+				RegionName:           rec[3],
+				CSPRegion:            rec[4],
+				CSPRegionDescription: rec[5],
+				CSP:                  cspLinode,
+			}
+			c.rows = append(c.rows, row)
+			k := key(cspLinode, row.RegionName)
+			if _, exists := c.byCSPRegion[k]; !exists {
+				c.byCSPRegion[k] = row
+			}
+		case "vm":
+			// vm,name,family,csp_region,architecture,cpu,ram,gpu,supports_autoscale
+			row := VMRow{
+				Name:              rec[1],
+				Family:            rec[2],
+				CSP:               cspLinode,
+				CSPRegion:         rec[3],
+				Architecture:      rec[4],
+				CPU:               atoiOrZero(rec[5]),
+				RAM:               atoiOrZero(rec[6]),
+				GPU:               rec[7],
+				SupportsAutoscale: strings.EqualFold(strings.TrimSpace(rec[8]), "true"),
+			}
+			c.vmRows = append(c.vmRows, row)
+			vk := vmRegionArchKey(row.CSP, row.CSPRegion, row.Architecture)
+			c.vmByRegionArch[vk] = append(c.vmByRegionArch[vk], row)
+		case "os":
+			// os,csp_region,os_name,os_version,architecture,image,,,
+			row := OSImageRow{
+				CSP:          cspLinode,
+				CSPRegion:    rec[1],
+				OSName:       rec[2],
+				OSVersion:    rec[3],
+				Architecture: rec[4],
+				Image:        rec[5],
+			}
+			c.osByKey[osKey(row.CSP, row.CSPRegion, row.OSName, row.OSVersion, row.Architecture)] = row
+		case "mdb":
+			// mdb,name,family,csp_region,engine,cpu,ram,,
+			row := MDBRow{
+				Name:      rec[1],
+				Family:    rec[2],
+				CSP:       cspLinode,
+				CSPRegion: rec[3],
+				Engine:    rec[4],
+				CPU:       atoiOrZero(rec[5]),
+				RAM:       atoiOrZero(rec[6]),
+			}
+			c.mdbRows = append(c.mdbRows, row)
+			mk := mdbRegionEngineKey(row.CSP, row.CSPRegion, row.Engine)
+			c.mdbByRegionEng[mk] = append(c.mdbByRegionEng[mk], row)
+		default:
+			return fmt.Errorf("linode catalog row %d: unknown kind %q (region | vm | os | mdb)", i+1, kind)
+		}
+	}
+	return nil
 }
 
 func mdbRegionEngineKey(csp, cspRegion, engine string) string {
@@ -318,7 +418,7 @@ func (c *EmbeddedCatalog) ResolveRegion(_ context.Context, regionName, provider 
 	csp, ok := ProviderToCSP(provider)
 	if !ok {
 		return RegionRow{}, fmt.Errorf(
-			"unknown provider %q: wave-1 launch providers are aws, gcp, digitalocean", provider)
+			"unknown provider %q: supported providers are aws, gcp, digitalocean, linode", provider)
 	}
 	row, ok := c.byCSPRegion[key(csp, regionName)]
 	if !ok {

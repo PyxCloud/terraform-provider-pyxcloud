@@ -92,6 +92,16 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 	}
 	provider := lc(spec.Provider)
 
+	// Linode has no managed FaaS / serverless-function primitive in the linode
+	// provider. Clean plan-time error rather than an invented resource.
+	if provider == ProviderLinode {
+		return ServerlessPlan{}, ErrComponentUnsupported{
+			Component: TypeServerlessFunction, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "Linode has no managed serverless/FaaS primitive; use AWS Lambda or GCP Cloud " +
+				"Functions, or run the workload as a container on LKE (managed-kubernetes)",
+		}
+	}
+
 	runtime := lc(spec.Runtime)
 	if runtime == "" {
 		runtime = RuntimeNode

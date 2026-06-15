@@ -1,0 +1,58 @@
+{
+  "name": "production",
+  "region": "Frankfurt",
+  "cidr": "10.0.0.0/16",
+  "subnets": ["10.0.1.0/24", "10.0.2.0/24"],
+  "security_group": {
+    "name": "production-web",
+    "description": "PyxCloud web tier - Linode firewall, default-drop, 80/443 only",
+    "expose": [80, 443]
+  },
+  "virtual_machine": {
+    "name": "web",
+    "architecture": "x86_64",
+    "cpu": 2,
+    "ram": 4,
+    "os": "ubuntu",
+    "count": 2,
+    "subnet": "production-subnet-1",
+    "security_group": "production-web"
+  },
+  "load_balancer": {
+    "name": "web-lb",
+    "listeners": [{ "port": 80, "protocol": "http" }],
+    "health_check": { "protocol": "http", "port": 80, "path": "/healthz" },
+    "stickiness": true,
+    "target_kind": "vm",
+    "target_name": "web"
+  },
+  "managed_database": {
+    "name": "app-db",
+    "engine": "postgres",
+    "version": "16",
+    "cpu": 2,
+    "ram": 4,
+    "storage_gb": 50,
+    "ha": true,
+    "encrypted": true
+  },
+  "object_storage": {
+    "name": "app-assets",
+    "versioning": true,
+    "public": false
+  },
+  "dns_zone": {
+    "name": "app-zone",
+    "domain": "example.com"
+  },
+  "kubernetes": {
+    "name": "app-k8s",
+    "version": "1.30",
+    "architecture": "x86_64",
+    "node_cpu": 2,
+    "node_ram": 4,
+    "min_nodes": 1,
+    "max_nodes": 3,
+    "desired_nodes": 2
+  }
+}

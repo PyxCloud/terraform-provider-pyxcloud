@@ -21,6 +21,8 @@ func RenderHCL(plan NetworkPlan) (string, error) {
 		return renderGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderDO(plan), nil
+	case ProviderLinode:
+		return renderLinodeNetwork(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -114,6 +116,8 @@ func RenderSGHCL(plan SecurityGroupPlan) (string, error) {
 		return renderSGGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderSGDO(plan), nil
+	case ProviderLinode:
+		return renderSGLinode(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -272,6 +276,8 @@ func RenderVMHCL(plan VMPlan) (string, error) {
 		return renderVMGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderVMDO(plan), nil
+	case ProviderLinode:
+		return renderVMLinode(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -390,6 +396,10 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 		return "", fmt.Errorf(
 			"render: virtual-machine-scale-group is unsupported on digitalocean " +
 				"(no native VM autoscaling primitive; use managed-kubernetes)")
+	case ProviderLinode:
+		return "", fmt.Errorf(
+			"render: virtual-machine-scale-group is unsupported on linode " +
+				"(no native VM autoscaling primitive; use managed-kubernetes / LKE node-pool autoscaling)")
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -561,6 +571,8 @@ func RenderLoadBalancerHCL(plan LoadBalancerPlan) (string, error) {
 		return renderLBGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderLBDO(plan), nil
+	case ProviderLinode:
+		return renderLBLinode(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -896,6 +908,8 @@ func RenderManagedDatabaseHCL(plan ManagedDatabasePlan) (string, error) {
 		return renderMDBGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderMDBDO(plan), nil
+	case ProviderLinode:
+		return renderMDBLinode(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -1080,6 +1094,8 @@ func RenderObjectStorageHCL(plan ObjectStoragePlan) (string, error) {
 		return renderObjectStorageGCP(plan), nil
 	case ProviderDigitalOcean:
 		return renderObjectStorageDO(plan), nil
+	case ProviderLinode:
+		return renderObjectStorageLinode(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}

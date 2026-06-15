@@ -106,10 +106,14 @@ func TranslateQueue(ctx context.Context, cat RegionCatalog, spec QueueSpec) (Mes
 		return MessagingPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+		provName := "DigitalOcean"
+		if provider == ProviderLinode {
+			provName = "Linode"
+		}
 		return MessagingPlan{}, ErrComponentUnsupported{
 			Component: TypeManagedQueue, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean has no managed message-queue/broker primitive; use a queue on " +
+			Alternative: provName + " has no managed message-queue/broker primitive; use a queue on " +
 				"AWS (SQS) or GCP (Pub/Sub topic+subscription), or run a self-managed broker on a " +
 				"virtual-machine",
 		}
@@ -154,10 +158,14 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 		return MessagingPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean {
+	if provider == ProviderDigitalOcean || provider == ProviderLinode {
+		provName := "DigitalOcean"
+		if provider == ProviderLinode {
+			provName = "Linode"
+		}
 		return MessagingPlan{}, ErrComponentUnsupported{
 			Component: TypeEventStreaming, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean has no managed event-streaming primitive; use AWS Kinesis or " +
+			Alternative: provName + " has no managed event-streaming primitive; use AWS Kinesis or " +
 				"GCP Pub/Sub, or run a self-managed broker (Kafka/Redpanda) on a virtual-machine",
 		}
 	}

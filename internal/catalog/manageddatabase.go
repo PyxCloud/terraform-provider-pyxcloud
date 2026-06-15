@@ -251,6 +251,8 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		plan.ResourceType = "google_sql_database_instance"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_database_cluster"
+	case ProviderLinode:
+		plan.ResourceType = "linode_database_postgresql_v2"
 	}
 	return plan, nil
 }
