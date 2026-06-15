@@ -104,6 +104,15 @@ func TranslateDNSZone(ctx context.Context, cat RegionCatalog, spec DNSZoneSpec) 
 		plan.ResourceType = "linode_domain"
 	case ProviderOracle:
 		plan.ResourceType = "oci_dns_zone"
+	case ProviderIBM:
+		// IBM has two distinct DNS primitives: a PRIVATE zone in DNS Services
+		// (ibm_dns_zone, scoped to a VPC) and a PUBLIC zone in Cloud Internet
+		// Services (ibm_cis_domain). Map by the private flag.
+		if plan.Private {
+			plan.ResourceType = "ibm_dns_zone"
+		} else {
+			plan.ResourceType = "ibm_cis_domain"
+		}
 	}
 	return plan, nil
 }
@@ -200,6 +209,20 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 			Alternative: "DigitalOcean CDN (digitalocean_cdn) can only front a Spaces (object-storage) " +
 				"origin, not an arbitrary load-balancer origin; use AWS CloudFront or GCP Cloud CDN " +
 				"for a dynamic/LB origin, or put a Spaces bucket in front",
+		}
+	}
+	if provider == ProviderIBM {
+		// IBM Cloud has no origin-scoped CDN distribution resource (CloudFront/Cloud
+		// CDN analogue). IBM Cloud Internet Services (CIS) caching is DOMAIN-scoped
+		// (ibm_cis_cache_settings on an ibm_cis_domain), not an origin-fronting
+		// distribution, so a clean object-storage/LB-origin CDN cannot be expressed
+		// — surface a clean plan-time error rather than invent a resource.
+		return CDNPlan{}, ErrComponentUnsupported{
+			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "IBM Cloud has no origin-fronting CDN distribution primitive; CIS caching is " +
+				"domain-scoped (ibm_cis_cache_settings on an ibm_cis_domain), configured per public " +
+				"domain rather than per origin. Front the public domain with a CIS domain + cache " +
+				"settings, or use AWS CloudFront / GCP Cloud CDN for an origin-scoped distribution",
 		}
 	}
 	plan := CDNPlan{
@@ -316,6 +339,13 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 				"(oci_waf_web_app_firewall) attaches to a load balancer — use the default (regional) scope",
 		}
 	}
+	if provider == ProviderIBM && scope == WAFScopeCloudFront {
+		return WAFPlan{}, ErrComponentUnsupported{
+			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "the cloudfront WAF scope is AWS-specific; on IBM Cloud use the default " +
+				"(regional) CIS WAF managed rule group attached to a CIS domain",
+		}
+	}
 	plan := WAFPlan{
 		Provider:      provider,
 		CSP:           row.CSP,
@@ -334,6 +364,9 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 		plan.ResourceType = "azurerm_cdn_frontdoor_firewall_policy"
 	case ProviderOracle:
 		plan.ResourceType = "oci_waf_web_app_firewall"
+	case ProviderIBM:
+		// IBM Cloud Internet Services managed WAF rule group on a CIS domain.
+		plan.ResourceType = "ibm_cis_waf_group"
 	}
 	return plan, nil
 }

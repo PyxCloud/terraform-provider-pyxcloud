@@ -37,6 +37,8 @@ func RenderCacheHCL(plan CachePlan) (string, error) {
 				"Redis on aws / gcp / digitalocean.")
 	case ProviderOracle:
 		return renderCacheOCI(plan), nil
+	case ProviderIBM:
+		return renderCacheIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for cache", plan.Provider)
 	}
@@ -165,6 +167,8 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 					"or Pub/Sub (gcp).")
 		case ProviderOracle:
 			return renderStreamOCI(plan), nil
+		case ProviderIBM:
+			return renderStreamIBM(plan), nil
 		}
 	}
 	return "", fmt.Errorf("render: unsupported provider %q for messaging kind %q", plan.Provider, plan.Kind)
@@ -303,6 +307,8 @@ func RenderDNSZoneHCL(plan DNSZonePlan) (string, error) {
 				"Cloud DNS (gcp), or DigitalOcean domains.")
 	case ProviderOracle:
 		return renderDNSOCI(plan), nil
+	case ProviderIBM:
+		return renderDNSIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for dns-zone", plan.Provider)
 	}
@@ -476,6 +482,8 @@ func RenderWAFHCL(plan WAFPlan) (string, error) {
 				"Armor security policy.")
 	case ProviderOracle:
 		return renderWAFOCI(plan), nil
+	case ProviderIBM:
+		return renderWAFIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for waf-service", plan.Provider)
 	}
@@ -575,6 +583,8 @@ func RenderKubernetesHCL(plan K8sPlan) (string, error) {
 				"GKE (gcp), or DOKS (digitalocean).")
 	case ProviderOracle:
 		return renderK8sOCI(plan), nil
+	case ProviderIBM:
+		return renderK8sIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for managed-kubernetes", plan.Provider)
 	}
@@ -709,6 +719,8 @@ func RenderSecretsHCL(plan SecretsPlan) (string, error) {
 				"Manager or GCP Secret Manager.")
 	case ProviderOracle:
 		return renderSecretsOCI(plan), nil
+	case ProviderIBM:
+		return renderSecretsIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for secrets-manager", plan.Provider)
 	}
@@ -788,6 +800,8 @@ func RenderServerlessHCL(plan ServerlessPlan) (string, error) {
 				"Cloud Functions (gcp), or DigitalOcean Functions.")
 	case ProviderOracle:
 		return renderServerlessOCI(plan), nil
+	case ProviderIBM:
+		return renderServerlessIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for serverless-function", plan.Provider)
 	}

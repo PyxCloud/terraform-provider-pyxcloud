@@ -109,6 +109,9 @@ func TranslateSecrets(ctx context.Context, cat RegionCatalog, spec SecretsSpec) 
 		plan.ResourceType = "azurerm_key_vault"
 	case ProviderOracle:
 		plan.ResourceType = "oci_vault_secret"
+	case ProviderIBM:
+		// IBM Cloud Secrets Manager arbitrary secret (in a Secrets Manager instance).
+		plan.ResourceType = "ibm_sm_arbitrary_secret"
 	}
 	return plan, nil
 }

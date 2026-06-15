@@ -272,6 +272,8 @@ func TranslateManagedDatabase(ctx context.Context, cat MDBCatalog, spec ManagedD
 		} else {
 			plan.ResourceType = "oci_psql_db_system"
 		}
+	case ProviderIBM:
+		plan.ResourceType = "ibm_database"
 	}
 	return plan, nil
 }

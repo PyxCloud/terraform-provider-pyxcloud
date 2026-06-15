@@ -29,6 +29,8 @@ func RenderHCL(plan NetworkPlan) (string, error) {
 		return renderNetworkUbicloud(plan), nil
 	case ProviderOracle:
 		return renderOCI(plan), nil
+	case ProviderIBM:
+		return renderNetworkIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -130,6 +132,8 @@ func RenderSGHCL(plan SecurityGroupPlan) (string, error) {
 		return renderSGUbicloud(plan), nil
 	case ProviderOracle:
 		return renderSGOCI(plan), nil
+	case ProviderIBM:
+		return renderSGIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -296,6 +300,8 @@ func RenderVMHCL(plan VMPlan) (string, error) {
 		return renderVMUbicloud(plan), nil
 	case ProviderOracle:
 		return renderVMOCI(plan), nil
+	case ProviderIBM:
+		return renderVMIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -420,6 +426,8 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 				"resources on ubicloud instead.")
 	case ProviderOracle:
 		return renderASGOCI(plan), nil
+	case ProviderIBM:
+		return renderASGIBM(plan), nil
 	case ProviderDigitalOcean:
 		return "", fmt.Errorf(
 			"render: virtual-machine-scale-group is unsupported on digitalocean " +
@@ -610,6 +618,8 @@ func RenderLoadBalancerHCL(plan LoadBalancerPlan) (string, error) {
 				"load-balancer on aws / gcp / digitalocean, or terminate traffic at the application.")
 	case ProviderOracle:
 		return renderLBOCI(plan), nil
+	case ProviderIBM:
+		return renderLBIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -953,6 +963,8 @@ func RenderManagedDatabaseHCL(plan ManagedDatabasePlan) (string, error) {
 		return renderMDBUbicloud(plan)
 	case ProviderOracle:
 		return renderMDBOCI(plan), nil
+	case ProviderIBM:
+		return renderMDBIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -1149,6 +1161,8 @@ func RenderObjectStorageHCL(plan ObjectStoragePlan) (string, error) {
 				"manage the Ubicloud bucket out-of-band via its S3-compatible API.")
 	case ProviderOracle:
 		return renderObjectStorageOCI(plan), nil
+	case ProviderIBM:
+		return renderObjectStorageIBM(plan), nil
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}

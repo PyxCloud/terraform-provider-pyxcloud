@@ -154,6 +154,13 @@ func TranslateCache(ctx context.Context, cat RegionCatalog, spec CacheSpec) (Cac
 		if plan.Version == "" {
 			plan.Version = "7.0"
 		}
+	case ProviderIBM:
+		// IBM Cloud Databases for Redis (provisioned via ibm_database). Sized by the
+		// requested memory; the version is the ICD redis major line.
+		plan.ResourceType = "ibm_database"
+		if plan.Version == "" {
+			plan.Version = "7"
+		}
 	}
 	return plan, nil
 }
@@ -191,6 +198,20 @@ func cacheNodeClass(provider string, memGB int) string {
 			return "db-s-2vcpu-4gb"
 		default:
 			return "db-s-4vcpu-8gb"
+		}
+	case ProviderIBM:
+		// IBM Cloud Databases for Redis is sized by a per-member memory allocation
+		// (MB). The "class" token here is the memory tier the render maps to the
+		// ibm_database group.memory.allocation_mb. We express it as a "<N>gb" token.
+		switch {
+		case memGB <= 1:
+			return "1gb"
+		case memGB <= 4:
+			return "4gb"
+		case memGB <= 8:
+			return "8gb"
+		default:
+			return "16gb"
 		}
 	}
 	return ""

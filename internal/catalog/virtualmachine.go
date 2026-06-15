@@ -250,6 +250,8 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		plan.ResourceType = "ubicloud_vm"
 	case ProviderOracle:
 		plan.ResourceType = "oci_core_instance"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_instance"
 	}
 	return plan, nil
 }
@@ -323,6 +325,9 @@ var preferredFamilies = map[string]int{
 	"n2":       2, // GCP general-purpose
 	"c5":       3, // AWS compute-optimised
 	"standard": 0, // Ubicloud standard dedicated-CPU line (wave-2)
+	"bx2":      0, // IBM balanced (general-purpose default)
+	"cx2":      3, // IBM compute-optimised
+	"mx2":      2, // IBM memory-optimised
 }
 
 func familyRank(r VMRow) int {

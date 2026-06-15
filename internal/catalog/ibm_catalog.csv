@@ -1,0 +1,11 @@
+macro_region,country,region_name,csp_region,csp_region_description,csp
+United States,South,Dallas,us-south,US South Dallas,ibm
+United States,East Coast North,Washington DC,us-east,US East Washington DC,ibm
+Europe,Germany,Frankfurt,eu-de,Europe Frankfurt,ibm
+Europe,United Kingdom,London,eu-gb,Europe London,ibm
+Europe,Spain,Madrid,eu-es,Europe Madrid,ibm
+Asia Pacific,Japan,Tokyo,jp-tok,Asia Pacific Tokyo,ibm
+Asia Pacific,Japan,Osaka,jp-osa,Asia Pacific Osaka,ibm
+Asia Pacific,Australia,Sydney,au-syd,Asia Pacific Sydney,ibm
+North America (ex US),Canada,Toronto,ca-tor,Canada Toronto,ibm
+South America,Brazil,São Paulo,br-sao,South America São Paulo,ibm

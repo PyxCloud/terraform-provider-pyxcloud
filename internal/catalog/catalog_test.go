@@ -82,10 +82,10 @@ func TestEmbeddedResolveRegionMissing(t *testing.T) {
 		t.Fatal("expected error for unknown region Atlantis")
 	}
 
-	// Unknown provider: a wave-2 provider that is NOT yet enabled. (Azure became
-	// enabled in pd-TF-W2-AZURE, so "oracle" is the new not-yet-supported sentinel.)
-	if _, err := cat.ResolveRegion(ctx, "Dublin", "oracle"); err == nil {
-		t.Fatal("expected error for not-yet-enabled provider oracle")
+	// Unknown provider: a provider that is genuinely NOT supported by any wave.
+	// ("vultr" is the consistent not-supported sentinel after the wave-2 union.)
+	if _, err := cat.ResolveRegion(ctx, "Dublin", "vultr"); err == nil {
+		t.Fatal("expected error for unsupported provider vultr")
 	}
 }
 
@@ -100,7 +100,7 @@ func TestEmbeddedSnapshotWellFormed(t *testing.T) {
 			t.Errorf("malformed row: %+v", r)
 		}
 		switch r.CSP {
-		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci":
+		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci", "ibm":
 		default:
 			t.Errorf("unexpected csp %q in catalog snapshot (row %+v)", r.CSP, r)
 		}

@@ -129,6 +129,8 @@ func TranslateKubernetes(ctx context.Context, cat VMCatalog, spec K8sSpec) (K8sP
 		plan.ResourceType = "linode_lke_cluster"
 	case ProviderOracle:
 		plan.ResourceType = "oci_containerengine_cluster"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_container_vpc_cluster"
 	}
 	return plan, nil
 }

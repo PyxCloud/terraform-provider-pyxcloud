@@ -24,6 +24,10 @@ const (
 	// Azure NSGs default to 1000 rules per NSG (across both directions); we budget
 	// conservatively below the hard cap to leave room for Azure's default rules.
 	azureRulesPerNSGMax = 900
+	// IBM VPC security groups support a generous rule budget; the default IBM VPC
+	// quota allows many rules per security group. We budget conservatively per
+	// direction to mirror the AWS-style guard (a breach is a hard plan-time error).
+	ibmRulesPerDirectionMax = 100
 )
 
 // Protocol tokens (canonical, provider-neutral).
@@ -203,6 +207,8 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		plan.ResourceType = "ubicloud_firewall"
 	case ProviderOracle:
 		plan.ResourceType = "oci_core_network_security_group"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_security_group"
 	}
 	return plan, nil
 }
@@ -273,6 +279,13 @@ func enforceRuleLimits(provider string, rules []RulePlan) error {
 		}
 		if egress > linodeRulesPerDirectionMax {
 			return fmt.Errorf("security-group: %d outbound rules exceed the Linode firewall limit of %d per direction", egress, linodeRulesPerDirectionMax)
+		}
+	case ProviderIBM:
+		if ingress > ibmRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d inbound rules exceed the IBM VPC security-group limit of %d", ingress, ibmRulesPerDirectionMax)
+		}
+		if egress > ibmRulesPerDirectionMax {
+			return fmt.Errorf("security-group: %d outbound rules exceed the IBM VPC security-group limit of %d", egress, ibmRulesPerDirectionMax)
 		}
 	}
 	return nil

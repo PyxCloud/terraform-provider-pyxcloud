@@ -216,6 +216,8 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		plan.ResourceType = "azurerm_linux_virtual_machine_scale_set"
 	case ProviderOracle:
 		plan.ResourceType = "oci_core_instance_pool"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_instance_group"
 	}
 	return plan, nil
 }

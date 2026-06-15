@@ -32,6 +32,7 @@ const (
 	// cspOracle is the catalog csp token for Oracle Cloud Infrastructure (wave-2).
 	// The provider-facing name is "oracle"; the catalog token is "oci".
 	cspOracle = "oci"
+	cspIBM    = "ibm" // wave-2: IBM Cloud (IBM-Cloud/ibm provider)
 )
 
 // Provider-facing names (Terraform `provider` attribute / ENABLED_LAUNCH_PROVIDERS).
@@ -46,6 +47,10 @@ const (
 	// descends to the oracle/oci Terraform provider (oci_* resources). The
 	// provider-facing name is "oracle"; the catalog csp token is "oci".
 	ProviderOracle = "oracle"
+	// ProviderIBM is the wave-2 IBM Cloud provider. The provider-facing name and
+	// the catalog csp token are both "ibm" (unlike DigitalOcean, where the
+	// provider speaks "digitalocean" but the catalog csp token is "do").
+	ProviderIBM = "ibm"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -59,6 +64,7 @@ var providerToCSP = map[string]string{
 	ProviderLinode:       cspLinode,
 	ProviderUbicloud:     cspUbicloud,
 	ProviderOracle:       cspOracle,
+	ProviderIBM:          cspIBM,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

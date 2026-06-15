@@ -98,6 +98,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "ubicloud_private_subnet"
 	case ProviderOracle:
 		plan.ResourceType = "oci_core_vcn"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_is_vpc"
 	}
 	return plan, nil
 }
@@ -109,6 +111,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 //     naming convention; spreads subnets multi-AZ.
 //   - GCP: <region>-<a|b|c|...> e.g. europe-west1-a — GCP zone naming.
 //   - DigitalOcean: VPCs are region-scoped with no sub-zones, so no zones.
+//   - IBM: <region>-<1|2|3|...> e.g. eu-de-1 — IBM Cloud VPC zone naming (a
+//     region has up to 3 numbered zones; the universal IBM VPC convention).
 func deriveZones(provider, cspRegion string, n int) []string {
 	if n <= 0 {
 		return nil
@@ -126,7 +130,12 @@ func deriveZones(provider, cspRegion string, n int) []string {
 		}
 	case ProviderDigitalOcean, ProviderLinode:
 		// DigitalOcean and Linode VPCs are region-scoped with no sub-zones.
-		return nil
+	case ProviderIBM:
+		// IBM VPC zones are numbered 1..3 within a region (cycle within the 3
+		// available zones if more subnets than zones are requested).
+		for i := 0; i < n; i++ {
+			zones = append(zones, fmt.Sprintf("%s-%d", cspRegion, (i%3)+1))
+		}
 	case ProviderOracle:
 		// OCI availability domains carry an opaque, tenancy-specific prefix
 		// (e.g. "Uocm:PHX-AD-1"), so they cannot be derived from the region name

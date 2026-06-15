@@ -118,6 +118,19 @@ func TranslateQueue(ctx context.Context, cat RegionCatalog, spec QueueSpec) (Mes
 				"virtual-machine",
 		}
 	}
+	if provider == ProviderIBM {
+		// IBM Cloud has no managed point-to-point work-queue primitive (MQ on Cloud
+		// is an exotic, dedicated-queue-manager product, not the cross-provider
+		// queue this component models). Event Streams (Kafka) is a STREAM, not a
+		// work queue, so it maps to event-streaming, not managed-queue.
+		return MessagingPlan{}, ErrComponentUnsupported{
+			Component: TypeManagedQueue, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
+			Alternative: "IBM Cloud has no managed work-queue primitive comparable to SQS/Pub-Sub " +
+				"(MQ on Cloud is a dedicated queue-manager product, not a simple managed queue); use a " +
+				"queue on AWS (SQS) or GCP (Pub/Sub), use an `event-streaming` component for IBM Event " +
+				"Streams (Kafka), or run a self-managed broker on a virtual-machine",
+		}
+	}
 	plan := MessagingPlan{
 		Kind:                     KindQueue,
 		Provider:                 provider,
@@ -173,6 +186,8 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 				"GCP Pub/Sub, or run a self-managed broker (Kafka/Redpanda) on a virtual-machine",
 		}
 	}
+	// IBM Event Streams (managed Kafka) IS a clean event-streaming primitive,
+	// provisioned as an ibm_resource_instance (service=messagehub). Supported.
 	plan := MessagingPlan{
 		Kind:           KindStream,
 		Provider:       provider,
@@ -192,6 +207,8 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 		plan.ResourceType = "azurerm_eventhub"
 	case ProviderOracle:
 		plan.ResourceType = "oci_streaming_stream"
+	case ProviderIBM:
+		plan.ResourceType = "ibm_resource_instance"
 	}
 	return plan, nil
 }
