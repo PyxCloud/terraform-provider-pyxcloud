@@ -235,12 +235,12 @@ type ruleFixture struct {
 
 func main() {
 	fixturePath := flag.String("fixture", "", "path to canonical fixture JSON")
-	provider := flag.String("provider", "", "target provider: aws | gcp | digitalocean | oracle")
+	provider := flag.String("provider", "", "target provider: aws | gcp | digitalocean | azure | linode | ubicloud | oracle | ibm | alicloud | ovh (wave-2)")
 	component := flag.String("component", "network", "component to render: network | security-group | virtual-machine | scale-group | load-balancer | managed-database | object-storage | cache | managed-queue | event-streaming | dns-zone | cdn-service | waf-service | managed-kubernetes | secrets-manager | serverless-function")
 	flag.Parse()
 
 	if *fixturePath == "" || *provider == "" {
-		fmt.Fprintln(os.Stderr, "usage: pyxnet-render -fixture f.json -provider aws|gcp|digitalocean|oracle [-component network|security-group]")
+		fmt.Fprintln(os.Stderr, "usage: pyxnet-render -fixture f.json -provider aws|gcp|digitalocean|azure|linode|ubicloud|oracle|ibm|alicloud|ovh [-component network|security-group]")
 		os.Exit(2)
 	}
 
@@ -251,6 +251,16 @@ func main() {
 	var f fixture
 	if err := json.Unmarshal(raw, &f); err != nil {
 		fatal(fmt.Errorf("parse fixture: %w", err))
+	}
+
+	// Wave-2 OVHcloud is a standalone catalog-driven path (its own region/flavor
+	// catalog + dedicated renderers in render_ovh.go); route it before the wave-1
+	// switch. Most components are cleanly UNSUPPORTED on ovh/ovh (clean plan-time
+	// error, never invented) — only network / managed-database / managed-kubernetes
+	// / object-storage are emitted.
+	if catalog.ProviderOVH == *provider {
+		renderOVH(f, *component)
+		return
 	}
 
 	cat := catalog.MustEmbedded()
@@ -774,6 +784,66 @@ func renderSecurityGroup(cat catalog.RegionCatalog, f fixture, provider string) 
 		fatal(err)
 	}
 	hcl, err := catalog.RenderSGHCL(plan)
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Print(hcl)
+}
+
+// renderOVH builds the component-typed spec from the fixture and dispatches to the
+// OVHcloud renderer (render_ovh.go). Unsupported components surface the clean
+// ErrComponentUnsupported (naming the verified alternative) via fatal().
+func renderOVH(f fixture, component string) {
+	cat := catalog.MustOVHCatalog()
+	var spec interface{}
+	switch component {
+	case "network", "vpc":
+		spec = catalog.NetworkSpec{Name: f.Name, Region: f.Region, Provider: catalog.ProviderOVH, CIDR: f.CIDR, Subnets: f.Subnets}
+	case "managed-database", "mdb", "database", "db":
+		component = "managed-database"
+		if f.ManagedDatabase == nil {
+			fatal(fmt.Errorf("fixture has no managed_database block"))
+		}
+		db := f.ManagedDatabase
+		name := db.Name
+		if name == "" {
+			name = f.Name
+		}
+		spec = catalog.ManagedDatabaseSpec{
+			Name: name, Region: f.Region, Provider: catalog.ProviderOVH,
+			Engine: db.Engine, Version: db.Version, CPU: db.CPU, RAM: db.RAM,
+			StorageGB: db.StorageGB, HA: db.HA, DeletionProtection: db.DeletionProtection,
+			Network: f.Name,
+		}
+	case "managed-kubernetes", "kubernetes", "k8s", "container-service":
+		component = "managed-kubernetes"
+		if f.Kubernetes == nil {
+			fatal(fmt.Errorf("fixture has no kubernetes block"))
+		}
+		k := f.Kubernetes
+		name := k.Name
+		if name == "" {
+			name = f.Name
+		}
+		spec = catalog.K8sSpec{
+			Name: name, Region: f.Region, Provider: catalog.ProviderOVH, Version: k.Version,
+			NodeCPU: k.NodeCPU, NodeRAM: k.NodeRAM,
+			MinNodes: k.MinNodes, MaxNodes: k.MaxNodes, DesiredNodes: k.DesiredNodes,
+			Network: f.Name,
+		}
+	case "object-storage", "blob-storage", "storage", "s3":
+		component = "object-storage"
+		if f.ObjectStorage == nil {
+			fatal(fmt.Errorf("fixture has no object_storage block"))
+		}
+		o := f.ObjectStorage
+		name := o.Name
+		if name == "" {
+			name = f.Name
+		}
+		spec = catalog.ObjectStorageSpec{Name: name, Region: f.Region, Provider: catalog.ProviderOVH, Versioning: o.Versioning, Public: o.Public, ForceDestroy: o.ForceDestroy}
+	}
+	hcl, err := catalog.RenderOVHComponent(context.Background(), cat, component, spec)
 	if err != nil {
 		fatal(err)
 	}

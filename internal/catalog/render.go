@@ -33,6 +33,8 @@ func RenderHCL(plan NetworkPlan) (string, error) {
 		return renderNetworkIBM(plan), nil
 	case ProviderAlibaba:
 		return renderAlibaba(plan), nil
+	case ProviderOVH:
+		return renderNetworkOVH(plan)
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -977,6 +979,8 @@ func RenderManagedDatabaseHCL(plan ManagedDatabasePlan) (string, error) {
 		return renderMDBIBM(plan), nil
 	case ProviderAlibaba:
 		return renderMDBAlibaba(plan), nil
+	case ProviderOVH:
+		return renderManagedDatabaseOVH(plan)
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
@@ -1177,6 +1181,8 @@ func RenderObjectStorageHCL(plan ObjectStoragePlan) (string, error) {
 		return renderObjectStorageIBM(plan), nil
 	case ProviderAlibaba:
 		return renderObjectStorageAlibaba(plan), nil
+	case ProviderOVH:
+		return renderObjectStorageOVH(plan)
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}

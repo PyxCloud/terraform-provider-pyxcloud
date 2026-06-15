@@ -102,6 +102,8 @@ func TranslateNetwork(ctx context.Context, cat RegionCatalog, spec NetworkSpec) 
 		plan.ResourceType = "ibm_is_vpc"
 	case ProviderAlibaba:
 		plan.ResourceType = "alicloud_vpc"
+	case ProviderOVH:
+		plan.ResourceType = "ovh_cloud_project_network_private"
 	}
 	return plan, nil
 }

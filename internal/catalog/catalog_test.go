@@ -100,7 +100,7 @@ func TestEmbeddedSnapshotWellFormed(t *testing.T) {
 			t.Errorf("malformed row: %+v", r)
 		}
 		switch r.CSP {
-		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci", "ibm", "alicloud":
+		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci", "ibm", "alicloud", "ovh":
 		default:
 			t.Errorf("unexpected csp %q in catalog snapshot (row %+v)", r.CSP, r)
 		}

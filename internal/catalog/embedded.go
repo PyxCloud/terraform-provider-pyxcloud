@@ -240,6 +240,12 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	if err := c.loadOracleCatalog(oracleCatalogCSV); err != nil {
 		return nil, err
 	}
+	// Wave-2 OVHcloud rows. The OVH PR shipped its own OVHCatalog + renderers;
+	// fold its region/flavor snapshot into the SAME indexes so OVH resolves and
+	// renders through the common Translate*/Render*HCL path like the other seven.
+	if err := c.loadOVHCatalog(); err != nil {
+		return nil, err
+	}
 	// Build-time invariant: the Alibaba provenance/gap record must be present
 	// (it documents that the alicloud rows mirrored into the loader CSVs are
 	// authored from the public catalog, not yet a live ETL). An empty embed is a
@@ -596,7 +602,7 @@ func (c *EmbeddedCatalog) ResolveRegion(_ context.Context, regionName, provider 
 	csp, ok := ProviderToCSP(provider)
 	if !ok {
 		return RegionRow{}, fmt.Errorf(
-			"unknown provider %q: supported providers are aws, gcp, digitalocean, azure, linode, ubicloud, oracle, ibm, alicloud", provider)
+			"unknown provider %q: supported providers are aws, gcp, digitalocean, azure, linode, ubicloud, oracle, ibm, alicloud, ovh", provider)
 	}
 	row, ok := c.byCSPRegion[key(csp, regionName)]
 	if !ok {

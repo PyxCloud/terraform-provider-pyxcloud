@@ -599,6 +599,8 @@ func RenderKubernetesHCL(plan K8sPlan) (string, error) {
 		return renderK8sIBM(plan), nil
 	case ProviderAlibaba:
 		return renderK8sAlibaba(plan), nil
+	case ProviderOVH:
+		return renderKubernetesOVH(plan)
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for managed-kubernetes", plan.Provider)
 	}
