@@ -3,7 +3,10 @@ module github.com/PyxCloud/terraform-provider-pyxcloud
 go 1.25.0
 
 require (
+	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/hashicorp/terraform-plugin-framework v1.13.0
+	github.com/hf/nsm v0.0.0-20220930140112-cd181bd646b9
+	github.com/veraison/go-cose v1.3.0
 	golang.org/x/crypto v0.48.0
 )
 
@@ -24,6 +27,7 @@ require (
 	github.com/oklog/run v1.0.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
