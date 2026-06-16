@@ -46,10 +46,15 @@ type Result struct {
 // Engine runs a migration through the opaque client + confidential runtime.
 type Engine struct {
 	client *Client
+	// selectRuntime picks the confidential runtime for a run. Defaults to
+	// runtime.Select; overridable in tests to inject a fake runtime.
+	selectRuntime func(runtime.Substrate, runtime.Opener, runtime.CCBackend) (runtime.ConfidentialRuntime, runtime.Capability, error)
 }
 
 // NewEngine builds an engine over the opaque client.
-func NewEngine(client *Client) *Engine { return &Engine{client: client} }
+func NewEngine(client *Client) *Engine {
+	return &Engine{client: client, selectRuntime: runtime.Select}
+}
 
 // opener adapts the package-private HPKE open into the runtime.Opener the runtime
 // uses INSIDE its sealed boundary. This is the ONLY place the parent package's
@@ -69,7 +74,7 @@ func (e *Engine) Run(ctx context.Context, in PlanInput, opt Options) (Result, er
 	defer eph.Zeroize() // zeroize on every exit path (§3.4)
 
 	// 2. Select the confidential runtime (auto picks strongest available).
-	rt, cape, err := runtime.Select(opt.ConfidentialRuntime, opener, opt.CCBackend)
+	rt, cape, err := e.selectRuntime(opt.ConfidentialRuntime, opener, opt.CCBackend)
 	if err != nil {
 		return Result{}, err
 	}
@@ -79,7 +84,19 @@ func (e *Engine) Run(ctx context.Context, in PlanInput, opt Options) (Result, er
 		RuntimeDetail:  cape.Detail,
 	}
 
-	// 3. Attest: boot the runtime, produce measurement + nonce.
+	// 3. Bind the run's ephemeral public key into the attestation BEFORE attesting,
+	//    so a confidential runtime (the real Nitro path) embeds it in the signed
+	//    attestation document's public_key field and the backend verifier can bind
+	//    the released key to THIS enclave + run (§3 steps 2-4). The
+	//    ConfidentialRuntime interface deliberately does not carry the key, so this
+	//    is an optional capability discovered by assertion. It must be the SAME key
+	//    forwarded in the plan request below.
+	ephPub := eph.PublicKey()
+	if binder, ok := rt.(interface{ BindPublicKey([]byte) }); ok {
+		binder.BindPublicKey(ephPub[:])
+	}
+
+	// Attest: boot the runtime, produce measurement + nonce (+ bound pubkey).
 	ev, err := rt.Attest(ctx)
 	if err != nil {
 		res.FinalPhase = runtime.PhaseFailed
@@ -90,7 +107,7 @@ func (e *Engine) Run(ctx context.Context, in PlanInput, opt Options) (Result, er
 	// 4. Request the sealed opaque plan from the backend. The provider forwards the
 	//    ephemeral public key + attestation; it receives ciphertext only.
 	in.DryRun = opt.DryRun
-	pr, err := e.client.RequestPlan(ctx, in, eph.PublicKey(), ev)
+	pr, err := e.client.RequestPlan(ctx, in, ephPub, ev)
 	if err != nil {
 		res.FinalPhase = runtime.PhaseFailed
 		return res, err
