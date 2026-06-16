@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -95,14 +97,15 @@ func TestDetectAllReportsEverySubstrate(t *testing.T) {
 	}
 }
 
-// TestStubbedRuntimesProduceEvidenceButStubDocument proves the cloud backends are
-// wired at the interface level (they produce evidence) but their attestation
-// document is an explicit stub the backend would reject in production.
+// TestStubbedRuntimesProduceEvidenceButStubDocument proves the STILL-STUBBED
+// backends are wired at the interface level (they produce evidence) but their
+// attestation document is an explicit stub the backend would reject in production.
+// Phase 2: Nitro is no longer here — it produces a real document (or degrades
+// cleanly); only SEV-SNP/TDX (hardware-TEE) and GCP/Azure remain stubs.
 func TestStubbedRuntimesProduceEvidenceButStubDocument(t *testing.T) {
 	t.Parallel()
 	for _, rt := range []ConfidentialRuntime{
 		NewHardwareTEE(noopOpener),
-		NewConfidentialContainer(noopOpener, CCBackendNitro),
 		NewConfidentialContainer(noopOpener, CCBackendGCP),
 		NewConfidentialContainer(noopOpener, CCBackendAzure),
 	} {
@@ -116,10 +119,75 @@ func TestStubbedRuntimesProduceEvidenceButStubDocument(t *testing.T) {
 		if ev.Format == "" {
 			t.Errorf("%s: expected an attestation format", ev.Substrate)
 		}
-		// The cloud document is an explicit stub (not a real signed quote).
+		// The still-stubbed document is an explicit stub (not a real signed quote).
 		if !contains(ev.Document, "STUB:") {
 			t.Errorf("%s: expected STUB document marker, got %q", ev.Substrate, string(ev.Document))
 		}
+	}
+}
+
+// TestNitroDegradesCleanlyWithoutNSM proves guarantee (3): off a Nitro enclave the
+// real Nitro path returns a DOCUMENTED error (not a silent fake). On the CI/test
+// host /dev/nsm is absent, so the default generator must fail explicitly and emit
+// no evidence.
+func TestNitroDegradesCleanlyWithoutNSM(t *testing.T) {
+	t.Parallel()
+	cc := NewConfidentialContainer(noopOpener, CCBackendNitro)
+	ev, err := cc.Attest(context.Background())
+	if err == nil {
+		t.Fatalf("expected a documented degradation error without NSM, got evidence %+v", ev)
+	}
+	if len(ev.Document) != 0 {
+		t.Fatalf("expected NO document on degradation, got %q", string(ev.Document))
+	}
+	if !strings.Contains(err.Error(), "NSM") {
+		t.Errorf("expected an NSM-related degradation message, got %v", err)
+	}
+}
+
+// TestNitroProducesRealEvidenceWhenNSMPresent proves the Nitro path emits genuine
+// evidence (real COSE_Sign1 document + PCR0 measurement + bound nonce/pubkey) when
+// the NSM generator is available. We inject a synthetic generator (CI has no NSM
+// device) that returns a signed document built by the same code path a real NSM
+// would, then assert the evidence shape matches what the backend verifier consumes.
+func TestNitroProducesRealEvidenceWhenNSMPresent(t *testing.T) {
+	t.Parallel()
+	v := newNitroTestVector(t)
+
+	cc := NewConfidentialContainer(noopOpener, CCBackendNitro)
+	cc.BindPublicKey(v.publicKey)
+	// Inject a generator that binds the engine's nonce + pubkey into a real doc.
+	cc.attestNitro = func(nonce, pubKey []byte) ([]byte, error) {
+		return v.signDocument(t, nonce, pubKey), nil
+	}
+
+	ev, err := cc.Attest(context.Background())
+	if err != nil {
+		t.Fatalf("attest: %v", err)
+	}
+	if ev.Format != NitroFormat {
+		t.Errorf("format = %q, want %q", ev.Format, NitroFormat)
+	}
+	if contains(ev.Document, "STUB:") {
+		t.Error("Nitro evidence must NOT be a stub document")
+	}
+	// Measurement must be the genuine PCR0 lifted from the signed document.
+	if !bytes.Equal(ev.Measurement, v.pcr0) {
+		t.Errorf("measurement is not PCR0 from the document")
+	}
+	// The backend verifier (mirrored here) must accept it and recover the bound
+	// nonce + public key.
+	doc, err := VerifyNitroDocument(ev.Document, NitroVerifyOptions{
+		Roots:             v.roots,
+		ExpectedNonce:     ev.Nonce,
+		ExpectedPublicKey: v.publicKey,
+		Now:               v.now,
+	})
+	if err != nil {
+		t.Fatalf("backend-side verify of real evidence failed: %v", err)
+	}
+	if !bytes.Equal(doc.Measurement(), v.pcr0) {
+		t.Error("verified document PCR0 mismatch")
 	}
 }
 

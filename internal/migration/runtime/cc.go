@@ -6,14 +6,16 @@ package runtime
 // backend; the backend releases the bundle key ONLY to an enclave whose
 // measurement matches the expected signed value.
 //
-// The ABSTRACTION is real and swappable (one backend wired nominally, the rest
-// STUBBED with TODO(attestation-backend)). Per §7 the first backend to wire is
-// left to build-time; we wire AWS Nitro as the nominal path and stub GCP/Azure.
+// PHASE 2: the AWS Nitro path now produces a GENUINE attestation document — a
+// COSE_Sign1-wrapped, CBOR-encoded NSM document (PCRs + the enclave public key +
+// the backend's nonce) via the /dev/nsm ioctl (see nitro.go / nitro_nsm_*.go). It
+// is gated behind capability detection and degrades CLEANLY (documented error, not
+// a silent fake) off a Nitro enclave. The GCP/Azure backends remain explicit STUBs.
 //
 // Functional today: backend selection + launchability detection + the sealed
-// execution harness (generic interpreter under the seal).
-// Stubbed today: launching the actual enclave + producing a genuine
-// Nitro/GCP/Azure attestation document.
+// execution harness (generic interpreter under the seal); REAL Nitro attestation.
+// Stubbed today: launching the actual enclave + producing a genuine GCP/Azure
+// attestation document.
 
 import (
 	"context"
@@ -44,8 +46,16 @@ func ccMeasurement() []byte {
 type ConfidentialContainer struct {
 	open    Opener
 	backend CCBackend
+	// ephemeralPubKey, when set, is the run's ephemeral X25519 public key. The Nitro
+	// path binds it into the attestation document's public_key field so the backend
+	// can bind the released key to THIS run (§3 steps 2-4). Set via BindPublicKey.
+	ephemeralPubKey []byte
 	// launchable is overridable in tests; defaults to probing the host.
 	launchable func() (bool, string)
+	// attestNitro is overridable in tests; defaults to the real NSM generator. It
+	// returns the COSE_Sign1 document binding nonce + pubKey, or a documented error
+	// when NSM is unavailable.
+	attestNitro func(nonce, pubKey []byte) ([]byte, error)
 }
 
 var _ ConfidentialRuntime = (*ConfidentialContainer)(nil)
@@ -56,7 +66,20 @@ func NewConfidentialContainer(open Opener, backend CCBackend) *ConfidentialConta
 	if backend == "" {
 		backend = CCBackendNitro
 	}
-	return &ConfidentialContainer{open: open, backend: backend, launchable: detectCCLaunchable}
+	return &ConfidentialContainer{
+		open:        open,
+		backend:     backend,
+		launchable:  detectCCLaunchable,
+		attestNitro: generateNitroAttestation,
+	}
+}
+
+// BindPublicKey records the run's ephemeral public key so the Nitro attestation
+// document binds it (public_key field). The engine calls this before Attest with
+// the same key it sends in the plan request, so the BE verifier can confirm the
+// released key is bound to this enclave + run.
+func (r *ConfidentialContainer) BindPublicKey(pub []byte) {
+	r.ephemeralPubKey = pub
 }
 
 // detectCCLaunchable probes whether a confidential container can be launched here.
@@ -85,37 +108,76 @@ func (r *ConfidentialContainer) Detect() Capability {
 	}
 }
 
-// Attest would launch the enclave and fetch its signed attestation document, then
-// remote-attest to the backend. The interface + evidence shape are real; the
-// document generation is STUBBED per backend.
+// Attest boots the runtime and produces attestation evidence to forward with the
+// plan request (§3.2). The AWS Nitro path is REAL: it asks the NSM for a genuine
+// COSE_Sign1/CBOR attestation document binding the fresh `nonce` and the run's
+// ephemeral public key, then extracts PCR0 as the measurement the backend pins.
+// GCP/Azure remain explicit STUBs. When the Nitro NSM device is unavailable the
+// call degrades CLEANLY with a documented error (NOT a silent fake) so auto
+// detection can fall back.
 func (r *ConfidentialContainer) Attest(_ context.Context) (Evidence, error) {
 	nonce := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return Evidence{}, fmt.Errorf("cc attest: nonce: %w", err)
 	}
-	var format string
 	switch r.backend {
 	case CCBackendNitro:
-		// TODO(attestation-backend): call the Nitro Security Module (NSM) to obtain
-		// a real COSE_Sign1 attestation document with `nonce` in the user_data /
-		// nonce field; set Document to the signed doc for the backend verifier.
-		format = "nitro-attestation-doc"
+		return r.attestNitroEvidence(nonce)
 	case CCBackendGCP:
 		// TODO(attestation-backend): fetch a GCP Confidential Space attestation
 		// token (OIDC) from the launcher metadata server and bind the nonce.
-		format = "gcp-confidential-space-token"
+		return Evidence{
+			Substrate:   SubstrateConfidentialContainer,
+			Measurement: ccMeasurement(),
+			Nonce:       nonce,
+			Format:      "gcp-confidential-space-token",
+			Document:    []byte("STUB:" + string(r.backend) + ":not-a-real-attestation-document"),
+		}, nil
 	case CCBackendAzure:
 		// TODO(attestation-backend): obtain an Azure CC / MAA attestation token.
-		format = "azure-maa-token"
+		return Evidence{
+			Substrate:   SubstrateConfidentialContainer,
+			Measurement: ccMeasurement(),
+			Nonce:       nonce,
+			Format:      "azure-maa-token",
+			Document:    []byte("STUB:" + string(r.backend) + ":not-a-real-attestation-document"),
+		}, nil
 	default:
 		return Evidence{}, fmt.Errorf("cc attest: unknown backend %q", r.backend)
 	}
+}
+
+// attestNitroEvidence produces REAL Nitro evidence: it obtains the genuine
+// COSE_Sign1 attestation document from the NSM (binding nonce + ephemeral pubkey),
+// parses it to lift PCR0 as the measurement, and returns the signed document for
+// the backend verifier. On a non-enclave host the NSM call degrades cleanly and
+// the error is surfaced (no fake document).
+func (r *ConfidentialContainer) attestNitroEvidence(nonce []byte) (Evidence, error) {
+	gen := r.attestNitro
+	if gen == nil {
+		gen = generateNitroAttestation
+	}
+	doc, err := gen(nonce, r.ephemeralPubKey)
+	if err != nil {
+		// Documented clean degradation — NOT a silent fake. auto falls back.
+		return Evidence{}, fmt.Errorf("cc attest (nitro): %w", err)
+	}
+	// Lift PCR0 from the signed document so Evidence.Measurement is the genuine
+	// enclave-image measurement the backend pins (rather than a synthetic constant).
+	parsed, err := ParseNitroDocument(doc)
+	if err != nil {
+		return Evidence{}, fmt.Errorf("cc attest (nitro): NSM returned an unparseable document: %w", err)
+	}
+	measurement := parsed.Measurement()
+	if len(measurement) == 0 {
+		return Evidence{}, fmt.Errorf("cc attest (nitro): attestation document carries no PCR%d measurement", nitroMeasurementPCR)
+	}
 	return Evidence{
 		Substrate:   SubstrateConfidentialContainer,
-		Measurement: ccMeasurement(),
+		Measurement: measurement,
 		Nonce:       nonce,
-		Format:      format,
-		Document:    []byte("STUB:" + string(r.backend) + ":not-a-real-attestation-document"),
+		Format:      NitroFormat,
+		Document:    doc, // genuine COSE_Sign1/CBOR document for the BE verifier
 	}, nil
 }
 
