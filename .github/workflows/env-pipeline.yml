@@ -1,0 +1,111 @@
+name: Environment Pipeline (pyxcloud provider)
+
+# Runs the PyxCloud-provider-based environment pipeline in a real environment — the
+# terraform-native replacement for our hand-written per-provider terraform scripts.
+#
+# Flow: build the provider locally -> point terraform at it via a CLI dev_override ->
+# `terraform plan` (default, safe) or `apply`/`destroy` (explicit dispatch inputs).
+# The pyxcloud_environment resource translates the canonical topology to concrete
+# AWS terraform and runs an INNER terraform with the ambient AWS_* env credentials —
+# the same way the existing scripts authenticate. Cloudflare creds are passed through
+# for the DNS/edge components (once those land in coverage).
+#
+# SAFE BY DEFAULT: push / manual run = plan only. A real apply (provisions infra) needs
+# action=apply, matching the goal "finish all implementation, THEN prove in env".
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "plan | apply | destroy"
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+        required: true
+      example:
+        description: "examples/<dir> to run"
+        type: string
+        default: environment
+        required: true
+  pull_request:
+    paths:
+      - "internal/**"
+      - "examples/environment/**"
+      - ".github/workflows/env-pipeline.yml"
+
+concurrency:
+  group: env-pipeline-${{ github.event.inputs.example || 'environment' }}
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    env:
+      EXAMPLE: ${{ github.event.inputs.example || 'environment' }}
+      ACTION: ${{ github.event.inputs.action || 'plan' }}
+      # Backend + machine auth (provider authenticates as its own OAuth2.1 client; no user login).
+      PYXCLOUD_ENDPOINT: ${{ vars.PYXCLOUD_ENDPOINT || 'https://beta-api.pyxcloud.io' }}
+      PYXCLOUD_CLIENT_ID: ${{ secrets.PYXCLOUD_CLIENT_ID }}
+      PYXCLOUD_CLIENT_SECRET: ${{ secrets.PYXCLOUD_CLIENT_SECRET }}
+      PYXCLOUD_TOKEN_URL: ${{ vars.PYXCLOUD_TOKEN_URL || 'https://beta-auth.pyxcloud.io/realms/passobuild/protocol/openid-connect/token' }}
+      # Ambient cloud creds for the INNER terraform run (Mode A).
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Build the pyxcloud provider
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.pyxcloud-provider"
+          go build -o "$HOME/.pyxcloud-provider/terraform-provider-pyxcloud" .
+          echo "Built provider:"; ls -l "$HOME/.pyxcloud-provider"
+
+      - name: Point terraform at the local provider (dev_override)
+        run: |
+          set -euo pipefail
+          cat > "$HOME/.terraformrc" <<EOF
+          provider_installation {
+            dev_overrides {
+              "registry.terraform.io/PyxCloud/pyxcloud" = "$HOME/.pyxcloud-provider"
+            }
+            direct {}
+          }
+          EOF
+          echo "TF_CLI_CONFIG_FILE=$HOME/.terraformrc" >> "$GITHUB_ENV"
+
+      - name: Validate credentials for non-plan actions
+        if: ${{ github.event.inputs.action == 'apply' || github.event.inputs.action == 'destroy' }}
+        run: |
+          set -euo pipefail
+          : "${PYXCLOUD_CLIENT_ID:?set the PYXCLOUD_CLIENT_ID secret}"
+          : "${PYXCLOUD_CLIENT_SECRET:?set the PYXCLOUD_CLIENT_SECRET secret}"
+          : "${AWS_ACCESS_KEY_ID:?set the AWS_ACCESS_KEY_ID secret}"
+          : "${AWS_SECRET_ACCESS_KEY:?set the AWS_SECRET_ACCESS_KEY secret}"
+          echo "Credentials present."
+
+      - name: Pipeline (${{ github.event.inputs.action || 'plan' }})
+        working-directory: examples/${{ github.event.inputs.example || 'environment' }}
+        run: |
+          set -euo pipefail
+          # dev_overrides makes `terraform init` for the pyxcloud provider unnecessary
+          # (and it warns rather than installing it), so we skip init for the OUTER run;
+          # the INNER terraform (aws_*) is init'd by the provider inside the work dir.
+          case "$ACTION" in
+            plan)    terraform plan -input=false ;;
+            apply)   terraform apply -input=false -auto-approve ;;
+            destroy) terraform destroy -input=false -auto-approve ;;
+            *) echo "unknown action: $ACTION"; exit 1 ;;
+          esac

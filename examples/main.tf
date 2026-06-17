@@ -15,7 +15,7 @@ provider "pyxcloud" {
 # deployment provider and abstract macro-region.
 resource "pyxcloud_topology" "web" {
   name     = "web-stack"
-  provider = "aws"
+  cloud    = "aws"
   region   = "Frankfurt" # abstract pyx region_name; resolved to a csp_region via the catalog
 
   # Abstract network for the place (pd-TF-REGION-VPC): provider-neutral VPC CIDR
