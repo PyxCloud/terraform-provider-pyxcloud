@@ -243,3 +243,19 @@ func TestAssembleHCLBlockStorageAndPrefixList(t *testing.T) {
 		}
 	}
 }
+
+func TestAssembleHCLSynthetics(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "login-canary", Type: "synthetics", Synthetics: &AssembleSynthetics{ScheduleExpr: "rate(1 minute)"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL synthetics: %v", err)
+	}
+	if !strings.Contains(strings.Join(docs, "\n"), "aws_synthetics_canary") {
+		t.Errorf("synthetics env missing canary:\n%s", strings.Join(docs, "\n"))
+	}
+}

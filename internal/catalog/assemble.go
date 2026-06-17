@@ -64,6 +64,17 @@ type AssembleComponent struct {
 	Email         *AssembleEmail
 	BlockStorage  *AssembleBlockStorage
 	PrefixList    *AssemblePrefixList
+	Synthetics    *AssembleSynthetics
+}
+
+// AssembleSynthetics is the config for a `synthetics` / `uptime-check` component.
+type AssembleSynthetics struct {
+	TargetURL      string
+	Runtime        string
+	Handler        string
+	ScheduleExpr   string
+	ArtifactBucket string
+	ExecRoleARN    string
 }
 
 // AssembleBlockStorage is the config for a `block-storage` component (attaches to a VM).
@@ -629,6 +640,25 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, plHCL)
+		case "synthetics", "uptime-check":
+			synSpec := SyntheticsSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.Synthetics != nil {
+				synSpec.TargetURL = c.Synthetics.TargetURL
+				synSpec.Runtime = c.Synthetics.Runtime
+				synSpec.Handler = c.Synthetics.Handler
+				synSpec.ScheduleExpr = c.Synthetics.ScheduleExpr
+				synSpec.ArtifactBucket = c.Synthetics.ArtifactBucket
+				synSpec.ExecRoleARN = c.Synthetics.ExecRoleARN
+			}
+			synPlan, err := TranslateSynthetics(ctx, cat, synSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			synHCL, err := RenderSyntheticsHCL(synPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, synHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

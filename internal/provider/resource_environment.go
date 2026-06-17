@@ -74,6 +74,16 @@ type envComponentModel struct {
 	Email         *envEmailModel         `tfsdk:"email"`
 	BlockStorage  *envBlockStorageModel  `tfsdk:"block_storage"`
 	PrefixList    *envPrefixListModel    `tfsdk:"prefix_list"`
+	Synthetics    *envSyntheticsModel    `tfsdk:"synthetics"`
+}
+
+type envSyntheticsModel struct {
+	TargetURL      types.String `tfsdk:"target_url"`
+	Runtime        types.String `tfsdk:"runtime"`
+	Handler        types.String `tfsdk:"handler"`
+	ScheduleExpr   types.String `tfsdk:"schedule_expr"`
+	ArtifactBucket types.String `tfsdk:"artifact_bucket"`
+	ExecRoleARN    types.String `tfsdk:"exec_role_arn"`
 }
 
 type envBlockStorageModel struct {
@@ -522,6 +532,18 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								},
 							},
 						},
+						"synthetics": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `synthetics` / `uptime-check` components.",
+							Attributes: map[string]schema.Attribute{
+								"target_url":      schema.StringAttribute{Optional: true},
+								"runtime":         schema.StringAttribute{Optional: true},
+								"handler":         schema.StringAttribute{Optional: true},
+								"schedule_expr":   schema.StringAttribute{Optional: true},
+								"artifact_bucket": schema.StringAttribute{Optional: true},
+								"exec_role_arn":   schema.StringAttribute{Optional: true},
+							},
+						},
 					},
 				},
 			},
@@ -693,6 +715,9 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 					pl.Entries = append(pl.Entries, catalog.PrefixEntry{CIDR: e.CIDR.ValueString(), Description: e.Description.ValueString()})
 				}
 				comp.PrefixList = pl
+			}
+			if cm.Synthetics != nil {
+				comp.Synthetics = &catalog.AssembleSynthetics{TargetURL: cm.Synthetics.TargetURL.ValueString(), Runtime: cm.Synthetics.Runtime.ValueString(), Handler: cm.Synthetics.Handler.ValueString(), ScheduleExpr: cm.Synthetics.ScheduleExpr.ValueString(), ArtifactBucket: cm.Synthetics.ArtifactBucket.ValueString(), ExecRoleARN: cm.Synthetics.ExecRoleARN.ValueString()}
 			}
 		}
 		in.Components = append(in.Components, comp)
