@@ -92,17 +92,20 @@ func (p *pyxCloudProvider) Configure(ctx context.Context, req provider.Configure
 		token = cfg.Token.ValueString()
 	}
 
-	// MVP: the stub client requires no token, but warn so the config is realistic
-	// for when the live HTTP client lands.
+	// Live HTTP client when authenticated; the in-memory stub otherwise (so unit
+	// tests and offline demos keep working without a token). The live client backs
+	// topology CRUD + Compare against the backend /api/* surface (TfProviderResource).
+	var c client.Client
 	if token == "" {
 		resp.Diagnostics.AddWarning(
 			"No PyxCloud token configured",
-			"Set `token` or the "+envToken+" environment variable. The MVP stub "+
-				"client does not require it, but the live API will.",
+			"Set `token` or the "+envToken+" environment variable to use the live "+
+				"PyxCloud API. Falling back to the in-memory stub client (no persistence).",
 		)
+		c = client.NewStub(client.Config{Endpoint: endpoint, Token: token})
+	} else {
+		c = client.NewHTTP(client.Config{Endpoint: endpoint, Token: token})
 	}
-
-	c := client.NewStub(client.Config{Endpoint: endpoint, Token: token})
 
 	// Region catalog used by the network translation (pd-TF-REGION-VPC). The
 	// backend catalog currently delegates to the embedded `region` snapshot
