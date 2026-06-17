@@ -65,6 +65,13 @@ type envComponentModel struct {
 	Queue         *envQueueModel         `tfsdk:"queue"`
 	Stream        *envStreamModel        `tfsdk:"stream"`
 	Serverless    *envServerlessModel    `tfsdk:"serverless"`
+	KMS           *envKMSModel           `tfsdk:"kms"`
+}
+
+type envKMSModel struct {
+	Description        types.String `tfsdk:"description"`
+	RotationDays       types.Int64  `tfsdk:"rotation_days"`
+	DeletionWindowDays types.Int64  `tfsdk:"deletion_window_days"`
 }
 
 type envQueueModel struct {
@@ -349,6 +356,15 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"source_artifact": schema.StringAttribute{Optional: true},
 							},
 						},
+						"kms": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `kms` / `encryption-key` components.",
+							Attributes: map[string]schema.Attribute{
+								"description":          schema.StringAttribute{Optional: true},
+								"rotation_days":        schema.Int64Attribute{Optional: true},
+								"deletion_window_days": schema.Int64Attribute{Optional: true},
+							},
+						},
 					},
 				},
 			},
@@ -482,6 +498,12 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				Runtime: cm.Serverless.Runtime.ValueString(), RuntimeVersion: cm.Serverless.RuntimeVersion.ValueString(),
 				Handler: cm.Serverless.Handler.ValueString(), MemoryMB: int(cm.Serverless.MemoryMB.ValueInt64()),
 				TimeoutSeconds: int(cm.Serverless.TimeoutSeconds.ValueInt64()), SourceArtifact: cm.Serverless.SourceArtifact.ValueString(),
+			}
+			if cm.KMS != nil {
+				comp.KMS = &catalog.AssembleKMS{
+					Description: cm.KMS.Description.ValueString(), RotationDays: int(cm.KMS.RotationDays.ValueInt64()),
+					DeletionWindowDays: int(cm.KMS.DeletionWindowDays.ValueInt64()),
+				}
 			}
 		}
 		in.Components = append(in.Components, comp)

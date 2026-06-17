@@ -55,6 +55,14 @@ type AssembleComponent struct {
 	Queue         *AssembleQueue
 	Stream        *AssembleStream
 	Serverless    *AssembleServerless
+	KMS           *AssembleKMS
+}
+
+// AssembleKMS is the config for a `kms` / `encryption-key` component.
+type AssembleKMS struct {
+	Description        string
+	RotationDays       int
+	DeletionWindowDays int
 }
 
 // AssembleMonitoring is the canonical monitoring config for a `monitoring` component.
@@ -374,6 +382,22 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, slHCL)
+		case "kms", "encryption-key":
+			kmsSpec := KMSSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.KMS != nil {
+				kmsSpec.Description = c.KMS.Description
+				kmsSpec.RotationDays = c.KMS.RotationDays
+				kmsSpec.DeletionWindowDays = c.KMS.DeletionWindowDays
+			}
+			kmsPlan, err := TranslateKMS(ctx, cat, kmsSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			kmsHCL, err := RenderKMSHCL(kmsPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, kmsHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

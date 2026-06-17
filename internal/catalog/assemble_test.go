@@ -121,3 +121,23 @@ func TestAssembleHCLMessagingAndServerless(t *testing.T) {
 		}
 	}
 }
+
+func TestAssembleHCLKMS(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "data-key", Type: "kms", KMS: &AssembleKMS{Description: "data encryption", RotationDays: 365}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL kms: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, "aws_kms_key") || !strings.Contains(all, "aws_kms_alias") {
+		t.Errorf("kms env missing key/alias:\n%s", all)
+	}
+	if !strings.Contains(all, "enable_key_rotation     = true") {
+		t.Errorf("kms rotation not enabled:\n%s", all)
+	}
+}
