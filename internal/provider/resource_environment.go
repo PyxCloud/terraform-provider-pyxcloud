@@ -36,13 +36,21 @@ func NewEnvironmentResource() resource.Resource {
 
 // environmentModel maps the pyxcloud_environment resource.
 type environmentModel struct {
-	ID         types.String     `tfsdk:"id"`
-	Name       types.String     `tfsdk:"name"`
-	Provider   types.String     `tfsdk:"provider"`
-	Region     types.String     `tfsdk:"region"`
-	Components []componentModel `tfsdk:"components"`
-	WorkDir    types.String     `tfsdk:"work_dir"`
-	Outputs    types.Map        `tfsdk:"outputs"`
+	ID             types.String     `tfsdk:"id"`
+	Name           types.String     `tfsdk:"name"`
+	Provider       types.String     `tfsdk:"provider"`
+	Region         types.String     `tfsdk:"region"`
+	Components     []componentModel `tfsdk:"components"`
+	AccountBinding types.String     `tfsdk:"account_binding"`
+	WorkDir        types.String     `tfsdk:"work_dir"`
+	Outputs        types.Map        `tfsdk:"outputs"`
+}
+
+// modeB reports whether the resource selects the managed-account path (Mode B):
+// account_binding is set, so PyxCloud drives the deploy server-side with the
+// stored binding's credentials. Empty → Mode A (local env-credential apply).
+func (m environmentModel) modeB() bool {
+	return !m.AccountBinding.IsNull() && !m.AccountBinding.IsUnknown() && m.AccountBinding.ValueString() != ""
 }
 
 func (r *environmentResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -73,6 +81,14 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"region": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "Abstract pyx region_name (e.g. `Dublin`); the backend resolves it to a concrete cspRegion.",
+			},
+			"account_binding": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "Selects the credential source. **Omit** for Mode A (default): the apply runs " +
+					"locally with your ambient provider env credentials (AWS_*, GOOGLE_*, DIGITALOCEAN_TOKEN). " +
+					"**Set** to a PyxCloud account-binding id for Mode B: a **managed account** where PyxCloud drives " +
+					"the deploy server-side with the binding's stored credentials (no creds on the runner). Mode B " +
+					"requires the server-side managed-deploy gate (DEPLOY-GATE.md §B) and is enabled once that lands.",
 			},
 			"components": schema.ListNestedAttribute{
 				Required:            true,
@@ -165,9 +181,19 @@ func (r *environmentResource) resolveWorkDir(m *environmentModel) (string, error
 	return filepath.Join(cwd, ".pyxcloud", "environments", m.Name.ValueString()), nil
 }
 
+// errModeBNotEnabled is returned when the managed-account path is selected before
+// the server-side managed-deploy gate is available.
+var errModeBNotEnabled = fmt.Errorf("managed-account deploy (Mode B, account_binding set) is not yet enabled: " +
+	"it runs server-side with the binding's stored credentials and requires the non-interactive deploy gate " +
+	"(DEPLOY-GATE.md §B, pending). For now omit account_binding to use Mode A (apply locally with your ambient " +
+	"provider env credentials)")
+
 // translateAndApply asks the backend to translate the topology, then runs the
-// resulting terraform in workDir with the ambient env credentials.
+// resulting terraform in workDir with the ambient env credentials (Mode A).
 func (r *environmentResource) translateAndApply(ctx context.Context, m *environmentModel) (map[string]string, string, error) {
+	if m.modeB() {
+		return nil, "", errModeBNotEnabled
+	}
 	tr, err := r.client.Translate(ctx, r.topologyFromModel(*m))
 	if err != nil {
 		return nil, "", fmt.Errorf("backend translate: %w", err)
