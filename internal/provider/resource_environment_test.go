@@ -16,7 +16,7 @@ func TestEnvironmentSchemaHasDualModeSelector(t *testing.T) {
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("environment schema diagnostics: %+v", resp.Diagnostics)
 	}
-	for _, attr := range []string{"id", "name", "provider", "region", "components", "account_binding", "work_dir", "outputs"} {
+	for _, attr := range []string{"id", "name", "provider", "region", "network", "security_group", "virtual_machine", "iam", "account_binding", "work_dir", "outputs"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("expected '%s' attribute on pyxcloud_environment", attr)
 		}

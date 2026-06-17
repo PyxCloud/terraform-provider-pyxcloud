@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
+	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -17,11 +17,12 @@ import (
 
 // environmentResource is Mode A of DEPLOY-GATE.md: `terraform apply` of a
 // pyxcloud_environment turns a canonical topology into a REAL environment by
-// (1) asking the backend to translate it to concrete provider terraform
-// (/api/translate) and (2) running that terraform locally with the ambient
-// provider env credentials. No accountBinding, no backend-side creds.
+// translating it to concrete provider terraform LOCALLY (catalog.AssembleHCL) and
+// running it with the ambient provider env credentials (no accountBinding, no
+// backend round-trip, no token). The terraform-native replacement for the
+// per-provider scripts.
 type environmentResource struct {
-	client client.Client
+	cat catalog.Catalog
 }
 
 var (
@@ -34,24 +35,71 @@ func NewEnvironmentResource() resource.Resource {
 	return &environmentResource{}
 }
 
-// environmentModel maps the pyxcloud_environment resource.
+// ---- model -----------------------------------------------------------------
+
+type envNetworkModel struct {
+	CIDR    types.String   `tfsdk:"cidr"`
+	Subnets []types.String `tfsdk:"subnets"`
+}
+
+type envRuleModel struct {
+	Direction types.String   `tfsdk:"direction"`
+	Protocol  types.String   `tfsdk:"protocol"`
+	FromPort  types.Int64    `tfsdk:"from_port"`
+	ToPort    types.Int64    `tfsdk:"to_port"`
+	CIDRs     []types.String `tfsdk:"cidrs"`
+	SourceSG  types.String   `tfsdk:"source_sg"`
+}
+
+type envSGModel struct {
+	Description types.String   `tfsdk:"description"`
+	Expose      []types.Int64  `tfsdk:"expose"`
+	Rules       []envRuleModel `tfsdk:"rules"`
+}
+
+type envVMModel struct {
+	Architecture    types.String `tfsdk:"architecture"`
+	CPU             types.Int64  `tfsdk:"cpu"`
+	RAM             types.Int64  `tfsdk:"ram"`
+	OS              types.String `tfsdk:"os"`
+	OSVersion       types.String `tfsdk:"os_version"`
+	Count           types.Int64  `tfsdk:"count"`
+	UserData        types.String `tfsdk:"user_data"`
+	InstanceProfile types.String `tfsdk:"instance_profile"`
+}
+
+type envIAMPolicyModel struct {
+	Name     types.String `tfsdk:"name"`
+	Document types.String `tfsdk:"document"`
+}
+
+type envIAMModel struct {
+	Name              types.String        `tfsdk:"name"`
+	AssumeService     types.String        `tfsdk:"assume_service"`
+	InstanceProfile   types.Bool          `tfsdk:"instance_profile"`
+	InlinePolicies    []envIAMPolicyModel `tfsdk:"inline_policies"`
+	ManagedPolicyARNs []types.String      `tfsdk:"managed_policy_arns"`
+}
+
 type environmentModel struct {
 	ID             types.String     `tfsdk:"id"`
 	Name           types.String     `tfsdk:"name"`
 	Provider       types.String     `tfsdk:"provider"`
 	Region         types.String     `tfsdk:"region"`
-	Components     []componentModel `tfsdk:"components"`
+	Network        *envNetworkModel `tfsdk:"network"`
+	SecurityGroup  *envSGModel      `tfsdk:"security_group"`
+	VirtualMachine *envVMModel      `tfsdk:"virtual_machine"`
+	IAM            []envIAMModel    `tfsdk:"iam"`
 	AccountBinding types.String     `tfsdk:"account_binding"`
 	WorkDir        types.String     `tfsdk:"work_dir"`
 	Outputs        types.Map        `tfsdk:"outputs"`
 }
 
-// modeB reports whether the resource selects the managed-account path (Mode B):
-// account_binding is set, so PyxCloud drives the deploy server-side with the
-// stored binding's credentials. Empty → Mode A (local env-credential apply).
 func (m environmentModel) modeB() bool {
 	return !m.AccountBinding.IsNull() && !m.AccountBinding.IsUnknown() && m.AccountBinding.ValueString() != ""
 }
+
+// ---- framework plumbing -----------------------------------------------------
 
 func (r *environmentResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_environment"
@@ -59,74 +107,75 @@ func (r *environmentResource) Metadata(_ context.Context, req resource.MetadataR
 
 func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Provisions a real environment from a canonical topology by translating it " +
-			"to concrete provider terraform (backend `/api/translate`) and applying it locally with your " +
-			"ambient provider env credentials (AWS_*, GOOGLE_*, DIGITALOCEAN_TOKEN). The terraform-native " +
-			"replacement for hand-written per-provider terraform — no accountBinding, no backend-held creds.",
+		MarkdownDescription: "Provisions a REAL environment from a canonical topology by translating it to " +
+			"concrete provider terraform locally (catalog.AssembleHCL) and applying it with your ambient provider " +
+			"env credentials (AWS_*, GOOGLE_*, DIGITALOCEAN_TOKEN). The terraform-native replacement for hand-written " +
+			"per-provider terraform — no accountBinding, no backend-held creds, no token.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "Environment id (the name).",
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
-			},
-			"name": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Environment name, unique per work_dir.",
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
-			},
-			"provider": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Cloud provider to deploy to: `aws` | `gcp` | `digitalocean`.",
-			},
-			"region": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Abstract pyx region_name (e.g. `Dublin`); the backend resolves it to a concrete cspRegion.",
-			},
-			"account_binding": schema.StringAttribute{
+			"id":       schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"name":     schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"provider": schema.StringAttribute{Required: true, MarkdownDescription: "aws | gcp | digitalocean."},
+			"region":   schema.StringAttribute{Required: true, MarkdownDescription: "Abstract pyx region_name (e.g. Dublin)."},
+			"network": schema.SingleNestedAttribute{
 				Optional: true,
-				MarkdownDescription: "Selects the credential source. **Omit** for Mode A (default): the apply runs " +
-					"locally with your ambient provider env credentials (AWS_*, GOOGLE_*, DIGITALOCEAN_TOKEN). " +
-					"**Set** to a PyxCloud account-binding id for Mode B: a **managed account** where PyxCloud drives " +
-					"the deploy server-side with the binding's stored credentials (no creds on the runner). Mode B " +
-					"requires the server-side managed-deploy gate (DEPLOY-GATE.md §B) and is enabled once that lands.",
+				Attributes: map[string]schema.Attribute{
+					"cidr":    schema.StringAttribute{Required: true},
+					"subnets": schema.ListAttribute{Required: true, ElementType: types.StringType},
+				},
 			},
-			"components": schema.ListNestedAttribute{
-				Required:            true,
-				MarkdownDescription: "Canonical components that make up the environment.",
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{Required: true, MarkdownDescription: "Component name."},
-						"type": schema.StringAttribute{Required: true, MarkdownDescription: "Canonical component type, e.g. `virtual-machine`, `managed-database`, `load-balancer`, `object-storage`."},
-						"count": schema.Int64Attribute{
-							Optional:            true,
-							Computed:            true,
-							MarkdownDescription: "Instance count (defaults to 1).",
-						},
-						"vm": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Sizing for virtual-machine components.",
-							Attributes: map[string]schema.Attribute{
-								"architecture": schema.StringAttribute{Optional: true, MarkdownDescription: "CPU architecture, e.g. `x86_64`, `arm64`."},
-								"cpu":          schema.StringAttribute{Optional: true, MarkdownDescription: "vCPU count, e.g. `2`."},
-								"ram":          schema.StringAttribute{Optional: true, MarkdownDescription: "RAM in GiB, e.g. `4`."},
-								"os_name":      schema.StringAttribute{Optional: true, MarkdownDescription: "OS, e.g. `ubuntu`."},
-							},
-						},
+			"security_group": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"description": schema.StringAttribute{Optional: true},
+					"expose":      schema.ListAttribute{Optional: true, ElementType: types.Int64Type, MarkdownDescription: "TCP ports opened ingress from anywhere."},
+					"rules": schema.ListNestedAttribute{
+						Optional: true,
+						NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+							"direction": schema.StringAttribute{Required: true, MarkdownDescription: "ingress | egress"},
+							"protocol":  schema.StringAttribute{Required: true, MarkdownDescription: "tcp | udp | icmp | all"},
+							"from_port": schema.Int64Attribute{Optional: true},
+							"to_port":   schema.Int64Attribute{Optional: true},
+							"cidrs":     schema.ListAttribute{Optional: true, ElementType: types.StringType},
+							"source_sg": schema.StringAttribute{Optional: true},
+						}},
 					},
 				},
 			},
-			"work_dir": schema.StringAttribute{
+			"virtual_machine": schema.SingleNestedAttribute{
 				Optional: true,
-				Computed: true,
-				MarkdownDescription: "Directory where the translated terraform runs and its state lives. " +
-					"Must be stable for the resource lifecycle; defaults to `${cwd}/.pyxcloud/environments/<name>`.",
-				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+				Attributes: map[string]schema.Attribute{
+					"architecture":     schema.StringAttribute{Optional: true},
+					"cpu":              schema.Int64Attribute{Required: true},
+					"ram":              schema.Int64Attribute{Required: true},
+					"os":               schema.StringAttribute{Optional: true},
+					"os_version":       schema.StringAttribute{Optional: true},
+					"count":            schema.Int64Attribute{Optional: true},
+					"user_data":        schema.StringAttribute{Optional: true, MarkdownDescription: "cloud-init/bootstrap script."},
+					"instance_profile": schema.StringAttribute{Optional: true, MarkdownDescription: "IAM instance-profile name (from an iam block)."},
+				},
 			},
-			"outputs": schema.MapAttribute{
-				Computed:            true,
-				ElementType:         types.StringType,
-				MarkdownDescription: "Terraform outputs from the applied environment.",
+			"iam": schema.ListNestedAttribute{
+				Optional: true,
+				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+					"name":             schema.StringAttribute{Required: true},
+					"assume_service":   schema.StringAttribute{Optional: true, MarkdownDescription: "Trust principal (default ec2.amazonaws.com)."},
+					"instance_profile": schema.BoolAttribute{Optional: true, MarkdownDescription: "Emit an instance-profile wrapping the role."},
+					"inline_policies": schema.ListNestedAttribute{
+						Optional: true,
+						NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+							"name":     schema.StringAttribute{Required: true},
+							"document": schema.StringAttribute{Required: true, MarkdownDescription: "IAM policy JSON (verbatim)."},
+						}},
+					},
+					"managed_policy_arns": schema.ListAttribute{Optional: true, ElementType: types.StringType},
+				}},
 			},
+			"account_binding": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Set to select Mode B (managed account, server-side deploy). Omit for Mode A (local env-credential apply).",
+			},
+			"work_dir": schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"outputs":  schema.MapAttribute{Computed: true, ElementType: types.StringType},
 		},
 	}
 }
@@ -137,38 +186,141 @@ func (r *environmentResource) Configure(_ context.Context, req resource.Configur
 	}
 	pd, ok := req.ProviderData.(*providerData)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected provider data",
-			fmt.Sprintf("expected *providerData, got %T", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("expected *providerData, got %T", req.ProviderData))
 		return
 	}
-	r.client = pd.client
+	r.cat = pd.catalog
 }
 
-// topologyFromModel builds the canonical client.Topology from the resource model.
-func (r *environmentResource) topologyFromModel(m environmentModel) client.Topology {
-	topo := client.Topology{
-		Name:     m.Name.ValueString(),
-		Provider: m.Provider.ValueString(),
-		Region:   m.Region.ValueString(),
+// ---- topology assembly ------------------------------------------------------
+
+func strs(in []types.String) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		out = append(out, s.ValueString())
 	}
-	for _, cm := range m.Components {
-		count := int(cm.Count.ValueInt64())
-		if count <= 0 {
-			count = 1
+	return out
+}
+
+// buildTopology maps the resource model into a catalog.Topology, propagating the
+// environment-level provider/region onto each catalog Spec.
+func (r *environmentResource) buildTopology(m *environmentModel) catalog.Topology {
+	provider := m.Provider.ValueString()
+	region := m.Region.ValueString()
+	name := m.Name.ValueString()
+	var topo catalog.Topology
+
+	if m.Network != nil {
+		topo.Network = &catalog.NetworkSpec{
+			Name: name, Region: region, Provider: provider,
+			CIDR: m.Network.CIDR.ValueString(), Subnets: strs(m.Network.Subnets),
 		}
-		comp := client.Component{Name: cm.Name.ValueString(), Type: cm.Type.ValueString(), Count: count}
-		if cm.VM != nil {
-			comp.VM = &client.VMType{
-				Architecture: cm.VM.Architecture.ValueString(),
-				CPU:          cm.VM.CPU.ValueString(),
-				RAM:          cm.VM.RAM.ValueString(),
-				OS:           cm.VM.OS.ValueString(),
+	}
+	if m.SecurityGroup != nil {
+		sg := &catalog.SecurityGroupSpec{
+			Name: name, Network: name, Region: region, Provider: provider,
+			Description: m.SecurityGroup.Description.ValueString(),
+		}
+		for _, p := range m.SecurityGroup.Expose {
+			sg.Expose = append(sg.Expose, int(p.ValueInt64()))
+		}
+		for _, rule := range m.SecurityGroup.Rules {
+			sg.Rules = append(sg.Rules, catalog.SecurityRule{
+				Direction: rule.Direction.ValueString(),
+				Protocol:  rule.Protocol.ValueString(),
+				FromPort:  int(rule.FromPort.ValueInt64()),
+				ToPort:    int(rule.ToPort.ValueInt64()),
+				CIDRs:     strs(rule.CIDRs),
+				SourceSG:  rule.SourceSG.ValueString(),
+			})
+		}
+		topo.SecurityGroup = sg
+	}
+	if m.VirtualMachine != nil {
+		vm := m.VirtualMachine
+		topo.VirtualMachine = &catalog.VMSpec{
+			Name: name, Region: region, Provider: provider,
+			Architecture:    vm.Architecture.ValueString(),
+			CPU:             int(vm.CPU.ValueInt64()),
+			RAM:             int(vm.RAM.ValueInt64()),
+			OS:              vm.OS.ValueString(),
+			OSVersion:       vm.OSVersion.ValueString(),
+			Count:           int(vm.Count.ValueInt64()),
+			UserData:        vm.UserData.ValueString(),
+			InstanceProfile: vm.InstanceProfile.ValueString(),
+		}
+		if m.Network != nil {
+			topo.VirtualMachine.Network = name
+			if len(m.Network.Subnets) > 0 {
+				topo.VirtualMachine.Subnet = name + "-1"
 			}
 		}
-		topo.Components = append(topo.Components, comp)
+		if m.SecurityGroup != nil {
+			topo.VirtualMachine.SecurityGroup = name
+		}
+	}
+	for _, im := range m.IAM {
+		spec := catalog.IAMSpec{
+			Name: im.Name.ValueString(), Provider: provider,
+			AssumeService:   im.AssumeService.ValueString(),
+			InstanceProfile: im.InstanceProfile.ValueBool(),
+		}
+		for _, p := range im.InlinePolicies {
+			spec.InlinePolicies = append(spec.InlinePolicies, catalog.IAMPolicyDoc{
+				Name: p.Name.ValueString(), Document: p.Document.ValueString(),
+			})
+		}
+		spec.ManagedPolicyARNs = strs(im.ManagedPolicyARNs)
+		topo.IAM = append(topo.IAM, spec)
 	}
 	return topo
 }
+
+// providerHeader emits the terraform{}+provider{} blocks. The provider reads its
+// credentials from the ambient env (no inline creds), so a connected runner/CI
+// authenticates exactly like the per-provider scripts do today.
+func providerHeader(provider string) string {
+	switch provider {
+	case "gcp":
+		return "terraform {\n  required_providers {\n    google = { source = \"hashicorp/google\" }\n  }\n}\nprovider \"google\" {}\n"
+	case "digitalocean":
+		return "terraform {\n  required_providers {\n    digitalocean = { source = \"digitalocean/digitalocean\" }\n  }\n}\nprovider \"digitalocean\" {}\n"
+	default:
+		return "terraform {\n  required_providers {\n    aws = { source = \"hashicorp/aws\" }\n  }\n}\nprovider \"aws\" {}\n"
+	}
+}
+
+// translateAndApply (Mode A) assembles the topology to concrete .tf LOCALLY and
+// runs it with the ambient env credentials.
+func (r *environmentResource) translateAndApply(ctx context.Context, m *environmentModel) (map[string]string, string, error) {
+	if m.modeB() {
+		return nil, "", errModeBNotEnabled
+	}
+	topo := r.buildTopology(m)
+	hcl, err := catalog.AssembleHCL(ctx, r.cat, topo)
+	if err != nil {
+		return nil, "", fmt.Errorf("local translation: %w", err)
+	}
+	workDir, err := r.resolveWorkDir(m)
+	if err != nil {
+		return nil, "", err
+	}
+	runner, err := newTFRunner(workDir)
+	if err != nil {
+		return nil, "", err
+	}
+	docs := []string{providerHeader(m.Provider.ValueString()), hcl}
+	outputs, err := runner.apply(ctx, docs)
+	if err != nil {
+		return nil, workDir, err
+	}
+	return outputs, workDir, nil
+}
+
+var errModeBNotEnabled = fmt.Errorf("managed-account deploy (Mode B, account_binding set) is not yet enabled: " +
+	"it runs server-side with the binding's stored credentials and requires the non-interactive deploy gate " +
+	"(DEPLOY-GATE.md §B, pending). For now omit account_binding to use Mode A (apply locally with your ambient " +
+	"provider env credentials)")
 
 func (r *environmentResource) resolveWorkDir(m *environmentModel) (string, error) {
 	if !m.WorkDir.IsNull() && !m.WorkDir.IsUnknown() && m.WorkDir.ValueString() != "" {
@@ -181,40 +333,7 @@ func (r *environmentResource) resolveWorkDir(m *environmentModel) (string, error
 	return filepath.Join(cwd, ".pyxcloud", "environments", m.Name.ValueString()), nil
 }
 
-// errModeBNotEnabled is returned when the managed-account path is selected before
-// the server-side managed-deploy gate is available.
-var errModeBNotEnabled = fmt.Errorf("managed-account deploy (Mode B, account_binding set) is not yet enabled: " +
-	"it runs server-side with the binding's stored credentials and requires the non-interactive deploy gate " +
-	"(DEPLOY-GATE.md §B, pending). For now omit account_binding to use Mode A (apply locally with your ambient " +
-	"provider env credentials)")
-
-// translateAndApply asks the backend to translate the topology, then runs the
-// resulting terraform in workDir with the ambient env credentials (Mode A).
-func (r *environmentResource) translateAndApply(ctx context.Context, m *environmentModel) (map[string]string, string, error) {
-	if m.modeB() {
-		return nil, "", errModeBNotEnabled
-	}
-	tr, err := r.client.Translate(ctx, r.topologyFromModel(*m))
-	if err != nil {
-		return nil, "", fmt.Errorf("backend translate: %w", err)
-	}
-	if len(tr.Terraform) == 0 {
-		return nil, "", fmt.Errorf("backend returned no terraform for this topology")
-	}
-	workDir, err := r.resolveWorkDir(m)
-	if err != nil {
-		return nil, "", err
-	}
-	runner, err := newTFRunner(workDir)
-	if err != nil {
-		return nil, "", err
-	}
-	outputs, err := runner.apply(ctx, tr.Terraform)
-	if err != nil {
-		return nil, workDir, err
-	}
-	return outputs, workDir, nil
-}
+// ---- CRUD -------------------------------------------------------------------
 
 func (r *environmentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan environmentModel
@@ -222,13 +341,11 @@ func (r *environmentResource) Create(ctx context.Context, req resource.CreateReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	outputs, workDir, err := r.translateAndApply(ctx, &plan)
 	if err != nil {
 		resp.Diagnostics.AddError("Environment apply failed", err.Error())
 		return
 	}
-
 	plan.ID = types.StringValue(plan.Name.ValueString())
 	plan.WorkDir = types.StringValue(workDir)
 	outMap, diags := types.MapValueFrom(ctx, types.StringType, outputs)
@@ -250,13 +367,11 @@ func (r *environmentResource) Read(ctx context.Context, req resource.ReadRequest
 	}
 	runner, err := newTFRunner(workDir)
 	if err != nil {
-		// terraform unavailable on this host — keep prior state rather than dropping it.
-		return
+		return // terraform unavailable — keep prior state
 	}
 	outputs, err := runner.refresh(ctx)
 	if err != nil {
-		// Refresh is best-effort; don't fail Read on a transient output read error.
-		return
+		return // best-effort refresh
 	}
 	outMap, diags := types.MapValueFrom(ctx, types.StringType, outputs)
 	resp.Diagnostics.Append(diags...)
