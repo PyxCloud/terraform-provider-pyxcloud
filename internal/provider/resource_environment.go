@@ -71,6 +71,11 @@ type envComponentModel struct {
 	WAF           *envWAFModel           `tfsdk:"waf"`
 	K8s           *envK8sModel           `tfsdk:"kubernetes"`
 	LB            *envLBModel            `tfsdk:"load_balancer"`
+	Email         *envEmailModel         `tfsdk:"email"`
+}
+
+type envEmailModel struct {
+	Domain types.String `tfsdk:"domain"`
 }
 
 type envLBListenerModel struct {
@@ -467,6 +472,13 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"target_name":       schema.StringAttribute{Optional: true},
 							},
 						},
+						"email": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `email` / `email-service` components (AWS SES).",
+							Attributes: map[string]schema.Attribute{
+								"domain": schema.StringAttribute{Optional: true, MarkdownDescription: "Sending domain to verify."},
+							},
+						},
 					},
 				},
 			},
@@ -625,6 +637,9 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 					lb.Listeners = append(lb.Listeners, catalog.AssembleLBListener{Port: int(l.Port.ValueInt64()), Protocol: l.Protocol.ValueString()})
 				}
 				comp.LB = lb
+			}
+			if cm.Email != nil {
+				comp.Email = &catalog.AssembleEmail{Domain: cm.Email.Domain.ValueString()}
 			}
 		}
 		in.Components = append(in.Components, comp)

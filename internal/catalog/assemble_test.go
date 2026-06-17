@@ -161,3 +161,23 @@ func TestAssembleHCLLoadBalancer(t *testing.T) {
 		t.Errorf("lb env missing aws_lb:\n%s", strings.Join(docs, "\n"))
 	}
 }
+
+func TestAssembleHCLEmailSES(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "mail", Type: "email", Email: &AssembleEmail{Domain: "passo.build"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL email: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, "aws_ses_domain_identity") || !strings.Contains(all, "aws_ses_domain_dkim") {
+		t.Errorf("email env missing SES identity/dkim:\n%s", all)
+	}
+	if strings.Contains(all, "aws_vpc") {
+		t.Errorf("email-only env must not synthesise a VPC:\n%s", all)
+	}
+}

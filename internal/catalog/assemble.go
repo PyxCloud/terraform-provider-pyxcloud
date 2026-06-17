@@ -61,6 +61,12 @@ type AssembleComponent struct {
 	WAF           *AssembleWAF
 	K8s           *AssembleK8s
 	LB            *AssembleLB
+	Email         *AssembleEmail
+}
+
+// AssembleEmail is the config for an `email` / `email-service` component.
+type AssembleEmail struct {
+	Domain string
 }
 
 // AssembleKMS is the config for a `kms` / `encryption-key` component.
@@ -550,6 +556,19 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, lbHCL)
+		case "email", "email-service":
+			if c.Email == nil {
+				return nil, fmt.Errorf("component %q (email): config is required", c.Name)
+			}
+			emPlan, err := TranslateEmail(ctx, cat, EmailSpec{Name: c.Name, Region: in.Region, Provider: in.Provider, Domain: c.Email.Domain})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			emHCL, err := RenderEmailHCL(emPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, emHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
