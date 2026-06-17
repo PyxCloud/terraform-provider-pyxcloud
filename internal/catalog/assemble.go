@@ -32,12 +32,21 @@ type AssembleVM struct {
 	InstanceProfile string
 }
 
+// AssembleIAM is the canonical IAM config for an `iam` component.
+type AssembleIAM struct {
+	AssumeService     string
+	InlinePolicies    []IAMPolicy
+	ManagedPolicyARNs []string
+	InstanceProfile   bool
+}
+
 // AssembleComponent is one canonical component in the environment.
 type AssembleComponent struct {
 	Name  string
 	Type  string
 	Count int
 	VM    *AssembleVM
+	IAM   *AssembleIAM
 }
 
 // AssembleInput is the catalog-native environment description (no client import,
@@ -129,6 +138,23 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, vmHCL)
+		case "iam":
+			iamSpec := IAMSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.IAM != nil {
+				iamSpec.AssumeService = c.IAM.AssumeService
+				iamSpec.InlinePolicies = c.IAM.InlinePolicies
+				iamSpec.ManagedPolicyARNs = c.IAM.ManagedPolicyARNs
+				iamSpec.InstanceProfile = c.IAM.InstanceProfile
+			}
+			iamPlan, err := TranslateIAM(ctx, cat, iamSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			iamHCL, err := RenderIAMHCL(iamPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, iamHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
