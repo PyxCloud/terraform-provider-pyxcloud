@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -21,7 +22,8 @@ import (
 // (/api/translate) and (2) running that terraform locally with the ambient
 // provider env credentials. No accountBinding, no backend-side creds.
 type environmentResource struct {
-	client client.Client
+	client  client.Client
+	catalog catalog.Catalog
 }
 
 var (
@@ -146,11 +148,13 @@ func (r *environmentResource) Configure(_ context.Context, req resource.Configur
 		return
 	}
 	r.client = pd.client
+	r.catalog = pd.catalog
 }
 
-// topologyFromModel builds the canonical client.Topology from the resource model.
-func (r *environmentResource) topologyFromModel(m environmentModel) client.Topology {
-	topo := client.Topology{
+// assembleInputFromModel builds the catalog-native environment description from
+// the resource model, for LOCAL translation (catalog.AssembleHCL).
+func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog.AssembleInput {
+	in := catalog.AssembleInput{
 		Name:     m.Name.ValueString(),
 		Provider: m.Provider.ValueString(),
 		Region:   m.Region.ValueString(),
@@ -160,18 +164,18 @@ func (r *environmentResource) topologyFromModel(m environmentModel) client.Topol
 		if count <= 0 {
 			count = 1
 		}
-		comp := client.Component{Name: cm.Name.ValueString(), Type: cm.Type.ValueString(), Count: count}
+		comp := catalog.AssembleComponent{Name: cm.Name.ValueString(), Type: cm.Type.ValueString(), Count: count}
 		if cm.VM != nil {
-			comp.VM = &client.VMType{
+			comp.VM = &catalog.AssembleVM{
 				Architecture: cm.VM.Architecture.ValueString(),
 				CPU:          cm.VM.CPU.ValueString(),
 				RAM:          cm.VM.RAM.ValueString(),
 				OS:           cm.VM.OS.ValueString(),
 			}
 		}
-		topo.Components = append(topo.Components, comp)
+		in.Components = append(in.Components, comp)
 	}
-	return topo
+	return in
 }
 
 func (r *environmentResource) resolveWorkDir(m *environmentModel) (string, error) {
@@ -192,18 +196,23 @@ var errModeBNotEnabled = fmt.Errorf("managed-account deploy (Mode B, account_bin
 	"(DEPLOY-GATE.md §B, pending). For now omit account_binding to use Mode A (apply locally with your ambient " +
 	"provider env credentials)")
 
-// translateAndApply asks the backend to translate the topology, then runs the
-// resulting terraform in workDir with the ambient env credentials (Mode A).
+// translateAndApply translates the topology LOCALLY (catalog.AssembleHCL — the
+// same Translate/Render the round-trip harness uses, no backend round-trip and no
+// token), then runs the resulting terraform in workDir with the ambient provider
+// env credentials (Mode A).
 func (r *environmentResource) translateAndApply(ctx context.Context, m *environmentModel) (map[string]string, string, error) {
 	if m.modeB() {
 		return nil, "", errModeBNotEnabled
 	}
-	tr, err := r.client.Translate(ctx, r.topologyFromModel(*m))
-	if err != nil {
-		return nil, "", fmt.Errorf("backend translate: %w", err)
+	if r.catalog == nil {
+		return nil, "", fmt.Errorf("provider not configured: missing catalog")
 	}
-	if len(tr.Terraform) == 0 {
-		return nil, "", fmt.Errorf("backend returned no terraform for this topology")
+	docs, err := catalog.AssembleHCL(ctx, r.catalog, r.assembleInputFromModel(*m))
+	if err != nil {
+		return nil, "", fmt.Errorf("translate: %w", err)
+	}
+	if len(docs) == 0 {
+		return nil, "", fmt.Errorf("translation produced no terraform for this topology")
 	}
 	workDir, err := r.resolveWorkDir(m)
 	if err != nil {
@@ -213,7 +222,7 @@ func (r *environmentResource) translateAndApply(ctx context.Context, m *environm
 	if err != nil {
 		return nil, "", err
 	}
-	outputs, err := runner.apply(ctx, tr.Terraform)
+	outputs, err := runner.apply(ctx, docs)
 	if err != nil {
 		return nil, workDir, err
 	}
