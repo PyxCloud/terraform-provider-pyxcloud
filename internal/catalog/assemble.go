@@ -62,6 +62,21 @@ type AssembleComponent struct {
 	K8s           *AssembleK8s
 	LB            *AssembleLB
 	Email         *AssembleEmail
+	BlockStorage  *AssembleBlockStorage
+	PrefixList    *AssemblePrefixList
+}
+
+// AssembleBlockStorage is the config for a `block-storage` component (attaches to a VM).
+type AssembleBlockStorage struct {
+	SizeGB     int
+	VolumeType string
+	DeviceName string
+	TargetVM   string
+}
+
+// AssemblePrefixList is the config for a `prefix-list` component (AWS).
+type AssemblePrefixList struct {
+	Entries []PrefixEntry
 }
 
 // AssembleEmail is the config for an `email` / `email-service` component.
@@ -582,6 +597,38 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, emHCL)
+		case "block-storage":
+			if c.BlockStorage == nil {
+				return nil, fmt.Errorf("component %q (block-storage): config is required", c.Name)
+			}
+			bsPlan, err := TranslateBlockStorage(ctx, cat, BlockStorageSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider,
+				SizeGB: c.BlockStorage.SizeGB, VolumeType: c.BlockStorage.VolumeType,
+				DeviceName: c.BlockStorage.DeviceName, TargetVM: c.BlockStorage.TargetVM,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			bsHCL, err := RenderBlockStorageHCL(bsPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, bsHCL)
+		case "prefix-list":
+			if c.PrefixList == nil {
+				return nil, fmt.Errorf("component %q (prefix-list): config is required", c.Name)
+			}
+			plPlan, err := TranslatePrefixList(ctx, cat, PrefixListSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider, Entries: c.PrefixList.Entries,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			plHCL, err := RenderPrefixListHCL(plPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, plHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

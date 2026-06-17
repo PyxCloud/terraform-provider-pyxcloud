@@ -72,6 +72,24 @@ type envComponentModel struct {
 	K8s           *envK8sModel           `tfsdk:"kubernetes"`
 	LB            *envLBModel            `tfsdk:"load_balancer"`
 	Email         *envEmailModel         `tfsdk:"email"`
+	BlockStorage  *envBlockStorageModel  `tfsdk:"block_storage"`
+	PrefixList    *envPrefixListModel    `tfsdk:"prefix_list"`
+}
+
+type envBlockStorageModel struct {
+	SizeGB     types.Int64  `tfsdk:"size_gb"`
+	VolumeType types.String `tfsdk:"volume_type"`
+	DeviceName types.String `tfsdk:"device_name"`
+	TargetVM   types.String `tfsdk:"target_vm"`
+}
+
+type envPrefixEntryModel struct {
+	CIDR        types.String `tfsdk:"cidr"`
+	Description types.String `tfsdk:"description"`
+}
+
+type envPrefixListModel struct {
+	Entries []envPrefixEntryModel `tfsdk:"entries"`
 }
 
 type envEmailModel struct {
@@ -479,6 +497,31 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"domain": schema.StringAttribute{Optional: true, MarkdownDescription: "Sending domain to verify."},
 							},
 						},
+						"block_storage": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `block-storage` components (EBS/PD/Volume attached to a VM).",
+							Attributes: map[string]schema.Attribute{
+								"size_gb":     schema.Int64Attribute{Required: true},
+								"volume_type": schema.StringAttribute{Optional: true},
+								"device_name": schema.StringAttribute{Optional: true},
+								"target_vm":   schema.StringAttribute{Required: true, MarkdownDescription: "VM component to attach to."},
+							},
+						},
+						"prefix_list": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `prefix-list` components (AWS managed prefix list).",
+							Attributes: map[string]schema.Attribute{
+								"entries": schema.ListNestedAttribute{
+									Required: true,
+									NestedObject: schema.NestedAttributeObject{
+										Attributes: map[string]schema.Attribute{
+											"cidr":        schema.StringAttribute{Required: true},
+											"description": schema.StringAttribute{Optional: true},
+										},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -640,6 +683,16 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			}
 			if cm.Email != nil {
 				comp.Email = &catalog.AssembleEmail{Domain: cm.Email.Domain.ValueString()}
+			}
+			if cm.BlockStorage != nil {
+				comp.BlockStorage = &catalog.AssembleBlockStorage{SizeGB: int(cm.BlockStorage.SizeGB.ValueInt64()), VolumeType: cm.BlockStorage.VolumeType.ValueString(), DeviceName: cm.BlockStorage.DeviceName.ValueString(), TargetVM: cm.BlockStorage.TargetVM.ValueString()}
+			}
+			if cm.PrefixList != nil {
+				pl := &catalog.AssemblePrefixList{}
+				for _, e := range cm.PrefixList.Entries {
+					pl.Entries = append(pl.Entries, catalog.PrefixEntry{CIDR: e.CIDR.ValueString(), Description: e.Description.ValueString()})
+				}
+				comp.PrefixList = pl
 			}
 		}
 		in.Components = append(in.Components, comp)

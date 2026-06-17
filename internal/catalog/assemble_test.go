@@ -222,3 +222,24 @@ func TestAssembleHCLNativeStillUsedWhenSupported(t *testing.T) {
 		t.Errorf("AWS should use the managed secret, no VM:\n%s", all)
 	}
 }
+
+func TestAssembleHCLBlockStorageAndPrefixList(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "data", Type: "virtual-machine", Count: 1, VM: &AssembleVM{Architecture: "x86_64", CPU: "2", RAM: "4", OS: "ubuntu"}},
+			{Name: "datavol", Type: "block-storage", BlockStorage: &AssembleBlockStorage{SizeGB: 100, TargetVM: "data"}},
+			{Name: "office", Type: "prefix-list", PrefixList: &AssemblePrefixList{Entries: []PrefixEntry{{CIDR: "203.0.113.0/24", Description: "office"}}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL ebs+prefixlist: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{"aws_ebs_volume", "aws_volume_attachment", "instance_id = aws_instance.data-1.id", "aws_ec2_managed_prefix_list"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %q\n---\n%s", want, all)
+		}
+	}
+}
