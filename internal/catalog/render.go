@@ -353,10 +353,25 @@ func renderVMAWS(p VMPlan) string {
 		if p.SecurityGroup != "" {
 			fmt.Fprintf(&b, "  vpc_security_group_ids = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
 		}
+		if p.InstanceProfile != "" {
+			fmt.Fprintf(&b, "  iam_instance_profile = %q\n", p.InstanceProfile)
+		}
+		if p.UserData != "" {
+			fmt.Fprintf(&b, "  user_data = base64encode(%s)\n", vmHeredoc(p.UserData))
+		}
 		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", inst.Name)
 		b.WriteString("}\n\n")
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// vmHeredoc renders s as an HCL indented heredoc for VM user_data (no escaping).
+func vmHeredoc(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return "<<-PYXUSERDATA\n" + s + "PYXUSERDATA\n  "
 }
 
 func renderVMGCP(p VMPlan) string {
@@ -400,6 +415,9 @@ func renderVMDO(p VMPlan) string {
 		fmt.Fprintf(&b, "  size   = %q\n", p.InstanceType)
 		if p.NetworkName != "" {
 			fmt.Fprintf(&b, "  vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+		}
+		if p.UserData != "" {
+			fmt.Fprintf(&b, "  user_data = %s\n", vmHeredoc(p.UserData))
 		}
 		fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
 		b.WriteString("}\n\n")
@@ -1306,4 +1324,171 @@ func dedupeCIDRs(rules []RulePlan) []string {
 		}
 	}
 	return out
+}
+
+// RenderIAMHCL renders an IAMPlan into concrete provider HCL. DO never reaches
+// here (TranslateIAM rejects it). AWS emits the role + inline policies + managed
+// attachments + optional instance profile; GCP emits a service account.
+func RenderIAMHCL(p IAMPlan) (string, error) {
+	switch p.Provider {
+	case ProviderAWS:
+		return renderIAMAWS(p), nil
+	case ProviderGCP:
+		return renderIAMGCP(p), nil
+	default:
+		return "", fmt.Errorf("iam: render unsupported for provider %q", p.Provider)
+	}
+}
+
+// iamHeredoc wraps a raw policy JSON document as an HCL indented heredoc so the
+// JSON (quotes, $, braces) needs no escaping.
+func iamHeredoc(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return "<<-PYXIAMPOLICY\n" + s + "PYXIAMPOLICY\n  "
+}
+
+func renderIAMAWS(p IAMPlan) string {
+	var b strings.Builder
+	role := tfName(p.Name)
+	fmt.Fprintf(&b, "resource \"aws_iam_role\" %q {\n", role)
+	fmt.Fprintf(&b, "  name = %q\n", p.Name)
+	fmt.Fprintf(&b, "  assume_role_policy = jsonencode({\n")
+	b.WriteString("    Version = \"2012-10-17\"\n")
+	b.WriteString("    Statement = [{\n")
+	b.WriteString("      Action    = \"sts:AssumeRole\"\n")
+	b.WriteString("      Effect    = \"Allow\"\n")
+	fmt.Fprintf(&b, "      Principal = { Service = %q }\n", p.AssumeService)
+	b.WriteString("    }]\n")
+	b.WriteString("  })\n")
+	fmt.Fprintf(&b, "  tags = { pyxcloud = \"true\" }\n")
+	b.WriteString("}\n\n")
+
+	for _, pol := range p.InlinePolicies {
+		pn := tfName(p.Name + "-" + pol.Name)
+		fmt.Fprintf(&b, "resource \"aws_iam_role_policy\" %q {\n", pn)
+		fmt.Fprintf(&b, "  name   = %q\n", pol.Name)
+		fmt.Fprintf(&b, "  role   = aws_iam_role.%s.id\n", role)
+		fmt.Fprintf(&b, "  policy = %s\n", iamHeredoc(pol.Document))
+		b.WriteString("}\n\n")
+	}
+
+	for i, arn := range p.ManagedPolicyARNs {
+		an := tfName(fmt.Sprintf("%s-managed-%d", p.Name, i+1))
+		fmt.Fprintf(&b, "resource \"aws_iam_role_policy_attachment\" %q {\n", an)
+		fmt.Fprintf(&b, "  role       = aws_iam_role.%s.name\n", role)
+		fmt.Fprintf(&b, "  policy_arn = %q\n", arn)
+		b.WriteString("}\n\n")
+	}
+
+	if p.InstanceProfile {
+		fmt.Fprintf(&b, "resource \"aws_iam_instance_profile\" %q {\n", role)
+		fmt.Fprintf(&b, "  name = %q\n", p.Name)
+		fmt.Fprintf(&b, "  role = aws_iam_role.%s.name\n", role)
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderIAMGCP(p IAMPlan) string {
+	var b strings.Builder
+	sa := tfName(p.Name)
+	fmt.Fprintf(&b, "resource \"google_service_account\" %q {\n", sa)
+	// GCP account_id: <=30 chars, [a-z][-a-z0-9]*; derive a safe id from the name.
+	fmt.Fprintf(&b, "  account_id   = %q\n", gcpAccountID(p.Name))
+	fmt.Fprintf(&b, "  display_name = %q\n", p.Name)
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// gcpAccountID reduces a name to the GCP service-account id charset and length.
+func gcpAccountID(name string) string {
+	s := strings.ToLower(name)
+	var out strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			out.WriteRune(r)
+		} else {
+			out.WriteRune('-')
+		}
+	}
+	id := strings.Trim(out.String(), "-")
+	if id == "" {
+		id = "pyx-sa"
+	}
+	if len(id) > 30 {
+		id = strings.Trim(id[:30], "-")
+	}
+	return id
+}
+
+// RenderMonitoringHCL renders a MonitoringPlan into provider HCL. DO never reaches
+// here (TranslateMonitoring rejects it).
+func RenderMonitoringHCL(p MonitoringPlan) (string, error) {
+	switch p.Provider {
+	case ProviderAWS:
+		return renderMonitoringAWS(p), nil
+	case ProviderGCP:
+		return renderMonitoringGCP(p), nil
+	default:
+		return "", fmt.Errorf("monitoring: render unsupported for provider %q", p.Provider)
+	}
+}
+
+func renderMonitoringAWS(p MonitoringPlan) string {
+	var b strings.Builder
+	for _, lg := range p.LogGroups {
+		rn := tfName(lg.Name)
+		fmt.Fprintf(&b, "resource \"aws_cloudwatch_log_group\" %q {\n", rn)
+		fmt.Fprintf(&b, "  name = %q\n", lg.Name)
+		if lg.RetentionDays > 0 {
+			fmt.Fprintf(&b, "  retention_in_days = %d\n", lg.RetentionDays)
+		}
+		fmt.Fprintf(&b, "  tags = { pyxcloud = \"true\" }\n")
+		b.WriteString("}\n\n")
+	}
+	for _, a := range p.Alarms {
+		rn := tfName(a.Name)
+		fmt.Fprintf(&b, "resource \"aws_cloudwatch_metric_alarm\" %q {\n", rn)
+		fmt.Fprintf(&b, "  alarm_name          = %q\n", a.Name)
+		fmt.Fprintf(&b, "  namespace           = %q\n", a.Namespace)
+		fmt.Fprintf(&b, "  metric_name         = %q\n", a.MetricName)
+		fmt.Fprintf(&b, "  comparison_operator = %q\n", a.ComparisonOperator)
+		fmt.Fprintf(&b, "  threshold           = %g\n", a.Threshold)
+		ep := a.EvaluationPeriods
+		if ep <= 0 {
+			ep = 1
+		}
+		fmt.Fprintf(&b, "  evaluation_periods  = %d\n", ep)
+		per := a.PeriodSeconds
+		if per <= 0 {
+			per = 300
+		}
+		fmt.Fprintf(&b, "  period              = %d\n", per)
+		stat := a.Statistic
+		if stat == "" {
+			stat = "Average"
+		}
+		fmt.Fprintf(&b, "  statistic           = %q\n", stat)
+		fmt.Fprintf(&b, "  tags = { pyxcloud = \"true\" }\n")
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderMonitoringGCP(p MonitoringPlan) string {
+	var b strings.Builder
+	for _, lg := range p.LogGroups {
+		rn := tfName(lg.Name)
+		fmt.Fprintf(&b, "resource \"google_logging_project_bucket_config\" %q {\n", rn)
+		fmt.Fprintf(&b, "  bucket_id      = %q\n", lg.Name)
+		fmt.Fprintf(&b, "  location       = \"global\"\n")
+		if lg.RetentionDays > 0 {
+			fmt.Fprintf(&b, "  retention_days = %d\n", lg.RetentionDays)
+		}
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
 }
