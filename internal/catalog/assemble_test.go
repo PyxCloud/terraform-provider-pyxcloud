@@ -54,3 +54,27 @@ func TestAssembleHCLUnsupportedTypeErrors(t *testing.T) {
 		t.Errorf("expected unsupported-type error, got %v", err)
 	}
 }
+
+func TestAssembleHCLObjectStorageAndSecrets(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "assets", Type: "object-storage", ObjectStorage: &AssembleObjectStorage{Versioning: true}},
+			{Name: "appsecret", Type: "secrets-manager", Secrets: &AssembleSecrets{Description: "app secret"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL os+secrets: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, "aws_s3_bucket") {
+		t.Errorf("missing s3 bucket:\n%s", all)
+	}
+	if !strings.Contains(all, "aws_secretsmanager_secret") {
+		t.Errorf("missing secretsmanager secret:\n%s", all)
+	}
+	if strings.Contains(all, "aws_vpc") {
+		t.Errorf("storage/secrets-only env must not synthesise a VPC:\n%s", all)
+	}
+}

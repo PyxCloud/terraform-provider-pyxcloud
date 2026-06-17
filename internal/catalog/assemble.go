@@ -45,10 +45,12 @@ type AssembleComponent struct {
 	Name       string
 	Type       string
 	Count      int
-	VM         *AssembleVM
-	IAM        *AssembleIAM
-	Monitoring *AssembleMonitoring
-	DNS        *AssembleDNS
+	VM            *AssembleVM
+	IAM           *AssembleIAM
+	Monitoring    *AssembleMonitoring
+	DNS           *AssembleDNS
+	ObjectStorage *AssembleObjectStorage
+	Secrets       *AssembleSecrets
 }
 
 // AssembleMonitoring is the canonical monitoring config for a `monitoring` component.
@@ -61,6 +63,18 @@ type AssembleMonitoring struct {
 type AssembleDNS struct {
 	ZoneID  string
 	Records []DNSRecord
+}
+
+// AssembleObjectStorage is the config for an `object-storage` / `blob-storage` component.
+type AssembleObjectStorage struct {
+	Versioning bool
+	Public     bool
+}
+
+// AssembleSecrets is the config for a `secrets-manager` component.
+type AssembleSecrets struct {
+	Description  string
+	RotationDays int
 }
 
 // AssembleInput is the catalog-native environment description (no client import,
@@ -216,6 +230,36 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			needsCloudflare = true
 			docs = append(docs, dnsHCL)
+		case "object-storage", "blob-storage":
+			osSpec := ObjectStorageSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.ObjectStorage != nil {
+				osSpec.Versioning = c.ObjectStorage.Versioning
+				osSpec.Public = c.ObjectStorage.Public
+			}
+			osPlan, err := TranslateObjectStorage(ctx, cat, osSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			osHCL, err := RenderObjectStorageHCL(osPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, osHCL)
+		case "secrets-manager":
+			secSpec := SecretsSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.Secrets != nil {
+				secSpec.Description = c.Secrets.Description
+				secSpec.RotationDays = c.Secrets.RotationDays
+			}
+			secPlan, err := TranslateSecrets(ctx, cat, secSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			secHCL, err := RenderSecretsHCL(secPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, secHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

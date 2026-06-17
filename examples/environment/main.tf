@@ -70,6 +70,16 @@ resource "pyxcloud_environment" "demo" {
         records = [{ name = "app.example.com", type = "A", content = "203.0.113.10", proxied = true }]
       }
     },
+    {
+      name           = "assets"
+      type           = "object-storage"
+      object_storage = { versioning = true }
+    },
+    {
+      name    = "app-secret"
+      type    = "secrets-manager"
+      secrets = { description = "app credentials" }
+    },
   ]
 }
 

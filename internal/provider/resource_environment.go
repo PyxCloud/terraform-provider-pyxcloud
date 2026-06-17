@@ -38,27 +38,39 @@ func NewEnvironmentResource() resource.Resource {
 
 // environmentModel maps the pyxcloud_environment resource.
 type environmentModel struct {
-	ID             types.String     `tfsdk:"id"`
-	Name           types.String     `tfsdk:"name"`
-	Provider       types.String     `tfsdk:"cloud"`
-	Region         types.String     `tfsdk:"region"`
+	ID             types.String        `tfsdk:"id"`
+	Name           types.String        `tfsdk:"name"`
+	Provider       types.String        `tfsdk:"cloud"`
+	Region         types.String        `tfsdk:"region"`
 	Components     []envComponentModel `tfsdk:"components"`
-	AccountBinding types.String     `tfsdk:"account_binding"`
-	WorkDir        types.String     `tfsdk:"work_dir"`
-	Outputs        types.Map        `tfsdk:"outputs"`
+	AccountBinding types.String        `tfsdk:"account_binding"`
+	WorkDir        types.String        `tfsdk:"work_dir"`
+	Outputs        types.Map           `tfsdk:"outputs"`
 }
 
 // envComponentModel is the env-resource-specific component (decoupled from the
 // shared topology componentModel so env-only blocks like iam don't churn the
 // topology/compare schemas). VM sizing reuses the shared vmTypeModel.
 type envComponentModel struct {
-	Name       types.String        `tfsdk:"name"`
-	Type       types.String        `tfsdk:"type"`
-	Count      types.Int64         `tfsdk:"count"`
-	VM         *vmTypeModel        `tfsdk:"vm"`
-	IAM        *envIAMModel        `tfsdk:"iam"`
-	Monitoring *envMonitoringModel `tfsdk:"monitoring"`
-	DNS        *envDNSModel        `tfsdk:"dns"`
+	Name          types.String           `tfsdk:"name"`
+	Type          types.String           `tfsdk:"type"`
+	Count         types.Int64            `tfsdk:"count"`
+	VM            *vmTypeModel           `tfsdk:"vm"`
+	IAM           *envIAMModel           `tfsdk:"iam"`
+	Monitoring    *envMonitoringModel    `tfsdk:"monitoring"`
+	DNS           *envDNSModel           `tfsdk:"dns"`
+	ObjectStorage *envObjectStorageModel `tfsdk:"object_storage"`
+	Secrets       *envSecretsModel       `tfsdk:"secrets"`
+}
+
+type envObjectStorageModel struct {
+	Versioning types.Bool `tfsdk:"versioning"`
+	Public     types.Bool `tfsdk:"public"`
+}
+
+type envSecretsModel struct {
+	Description  types.String `tfsdk:"description"`
+	RotationDays types.Int64  `tfsdk:"rotation_days"`
 }
 
 type envDNSRecordModel struct {
@@ -181,9 +193,9 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 							Optional:            true,
 							MarkdownDescription: "IAM identity config for `iam` components (role + policies + instance profile).",
 							Attributes: map[string]schema.Attribute{
-								"assume_service": schema.StringAttribute{Optional: true, MarkdownDescription: "Principal allowed to assume the role (default `ec2.amazonaws.com`)."},
+								"assume_service":      schema.StringAttribute{Optional: true, MarkdownDescription: "Principal allowed to assume the role (default `ec2.amazonaws.com`)."},
 								"managed_policy_arns": schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Managed policy ARNs to attach."},
-								"instance_profile": schema.BoolAttribute{Optional: true, MarkdownDescription: "Also emit an instance profile (EC2 attach)."},
+								"instance_profile":    schema.BoolAttribute{Optional: true, MarkdownDescription: "Also emit an instance profile (EC2 attach)."},
 								"inline_policies": schema.ListNestedAttribute{
 									Optional:            true,
 									MarkdownDescription: "Inline policies (raw IAM JSON documents).",
@@ -243,6 +255,22 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 										},
 									},
 								},
+							},
+						},
+						"object_storage": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `object-storage` / `blob-storage` components.",
+							Attributes: map[string]schema.Attribute{
+								"versioning": schema.BoolAttribute{Optional: true},
+								"public":     schema.BoolAttribute{Optional: true, MarkdownDescription: "PUBLIC read (default false; opt-in only)."},
+							},
+						},
+						"secrets": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `secrets-manager` components (the secret VALUE is set out of band, never here).",
+							Attributes: map[string]schema.Attribute{
+								"description":   schema.StringAttribute{Optional: true},
+								"rotation_days": schema.Int64Attribute{Optional: true, MarkdownDescription: "0 = no automatic rotation."},
 							},
 						},
 					},
@@ -341,6 +369,18 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				})
 			}
 			comp.DNS = dns
+		}
+		if cm.ObjectStorage != nil {
+			comp.ObjectStorage = &catalog.AssembleObjectStorage{
+				Versioning: cm.ObjectStorage.Versioning.ValueBool(),
+				Public:     cm.ObjectStorage.Public.ValueBool(),
+			}
+		}
+		if cm.Secrets != nil {
+			comp.Secrets = &catalog.AssembleSecrets{
+				Description:  cm.Secrets.Description.ValueString(),
+				RotationDays: int(cm.Secrets.RotationDays.ValueInt64()),
+			}
 		}
 		in.Components = append(in.Components, comp)
 	}
