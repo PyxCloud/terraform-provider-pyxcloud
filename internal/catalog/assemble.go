@@ -664,6 +664,15 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
 		}
 	}
+	// Declare the out-of-band db_password variable once when any managed-database is
+	// present — the managed_database render references var.db_password (the password
+	// is supplied out of band, never in the topology/state).
+	for _, c := range in.Components {
+		if c.Type == "managed-database" {
+			docs = append([]string{"variable \"db_password\" {\n  type      = string\n  sensitive = true\n}\n"}, docs...)
+			break
+		}
+	}
 	// Pin the Cloudflare provider source when any Cloudflare component is present
 	// (terraform would otherwise assume the non-existent hashicorp/cloudflare).
 	if needsCloudflare {
