@@ -1405,3 +1405,72 @@ func gcpAccountID(name string) string {
 	}
 	return id
 }
+
+// RenderMonitoringHCL renders a MonitoringPlan into provider HCL. DO never reaches
+// here (TranslateMonitoring rejects it).
+func RenderMonitoringHCL(p MonitoringPlan) (string, error) {
+	switch p.Provider {
+	case ProviderAWS:
+		return renderMonitoringAWS(p), nil
+	case ProviderGCP:
+		return renderMonitoringGCP(p), nil
+	default:
+		return "", fmt.Errorf("monitoring: render unsupported for provider %q", p.Provider)
+	}
+}
+
+func renderMonitoringAWS(p MonitoringPlan) string {
+	var b strings.Builder
+	for _, lg := range p.LogGroups {
+		rn := tfName(lg.Name)
+		fmt.Fprintf(&b, "resource \"aws_cloudwatch_log_group\" %q {\n", rn)
+		fmt.Fprintf(&b, "  name = %q\n", lg.Name)
+		if lg.RetentionDays > 0 {
+			fmt.Fprintf(&b, "  retention_in_days = %d\n", lg.RetentionDays)
+		}
+		fmt.Fprintf(&b, "  tags = { pyxcloud = \"true\" }\n")
+		b.WriteString("}\n\n")
+	}
+	for _, a := range p.Alarms {
+		rn := tfName(a.Name)
+		fmt.Fprintf(&b, "resource \"aws_cloudwatch_metric_alarm\" %q {\n", rn)
+		fmt.Fprintf(&b, "  alarm_name          = %q\n", a.Name)
+		fmt.Fprintf(&b, "  namespace           = %q\n", a.Namespace)
+		fmt.Fprintf(&b, "  metric_name         = %q\n", a.MetricName)
+		fmt.Fprintf(&b, "  comparison_operator = %q\n", a.ComparisonOperator)
+		fmt.Fprintf(&b, "  threshold           = %g\n", a.Threshold)
+		ep := a.EvaluationPeriods
+		if ep <= 0 {
+			ep = 1
+		}
+		fmt.Fprintf(&b, "  evaluation_periods  = %d\n", ep)
+		per := a.PeriodSeconds
+		if per <= 0 {
+			per = 300
+		}
+		fmt.Fprintf(&b, "  period              = %d\n", per)
+		stat := a.Statistic
+		if stat == "" {
+			stat = "Average"
+		}
+		fmt.Fprintf(&b, "  statistic           = %q\n", stat)
+		fmt.Fprintf(&b, "  tags = { pyxcloud = \"true\" }\n")
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderMonitoringGCP(p MonitoringPlan) string {
+	var b strings.Builder
+	for _, lg := range p.LogGroups {
+		rn := tfName(lg.Name)
+		fmt.Fprintf(&b, "resource \"google_logging_project_bucket_config\" %q {\n", rn)
+		fmt.Fprintf(&b, "  bucket_id      = %q\n", lg.Name)
+		fmt.Fprintf(&b, "  location       = \"global\"\n")
+		if lg.RetentionDays > 0 {
+			fmt.Fprintf(&b, "  retention_days = %d\n", lg.RetentionDays)
+		}
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}

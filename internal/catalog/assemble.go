@@ -42,11 +42,18 @@ type AssembleIAM struct {
 
 // AssembleComponent is one canonical component in the environment.
 type AssembleComponent struct {
-	Name  string
-	Type  string
-	Count int
-	VM    *AssembleVM
-	IAM   *AssembleIAM
+	Name       string
+	Type       string
+	Count      int
+	VM         *AssembleVM
+	IAM        *AssembleIAM
+	Monitoring *AssembleMonitoring
+}
+
+// AssembleMonitoring is the canonical monitoring config for a `monitoring` component.
+type AssembleMonitoring struct {
+	LogGroups []LogGroup
+	Alarms    []MetricAlarm
 }
 
 // AssembleInput is the catalog-native environment description (no client import,
@@ -155,6 +162,22 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, iamHCL)
+		case "monitoring":
+			if c.Monitoring == nil {
+				return nil, fmt.Errorf("component %q (monitoring): config is required", c.Name)
+			}
+			monPlan, err := TranslateMonitoring(ctx, cat, MonitoringSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider,
+				LogGroups: c.Monitoring.LogGroups, Alarms: c.Monitoring.Alarms,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			monHCL, err := RenderMonitoringHCL(monPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, monHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
