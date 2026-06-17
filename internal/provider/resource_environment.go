@@ -70,6 +70,22 @@ type envComponentModel struct {
 	CDN           *envCDNModel           `tfsdk:"cdn"`
 	WAF           *envWAFModel           `tfsdk:"waf"`
 	K8s           *envK8sModel           `tfsdk:"kubernetes"`
+	LB            *envLBModel            `tfsdk:"load_balancer"`
+}
+
+type envLBListenerModel struct {
+	Port     types.Int64  `tfsdk:"port"`
+	Protocol types.String `tfsdk:"protocol"`
+}
+
+type envLBModel struct {
+	Listeners       []envLBListenerModel `tfsdk:"listeners"`
+	HealthCheckPath types.String         `tfsdk:"health_check_path"`
+	HealthCheckPort types.Int64          `tfsdk:"health_check_port"`
+	HealthProtocol  types.String         `tfsdk:"health_protocol"`
+	Stickiness      types.Bool           `tfsdk:"stickiness"`
+	TargetKind      types.String         `tfsdk:"target_kind"`
+	TargetName      types.String         `tfsdk:"target_name"`
 }
 
 type envCacheModel struct {
@@ -431,6 +447,26 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"desired_nodes": schema.Int64Attribute{Optional: true},
 							},
 						},
+						"load_balancer": schema.SingleNestedAttribute{
+							Optional: true,
+							Attributes: map[string]schema.Attribute{
+								"listeners": schema.ListNestedAttribute{
+									Optional: true,
+									NestedObject: schema.NestedAttributeObject{
+										Attributes: map[string]schema.Attribute{
+											"port":     schema.Int64Attribute{Required: true},
+											"protocol": schema.StringAttribute{Required: true, MarkdownDescription: "http | https | tcp."},
+										},
+									},
+								},
+								"health_check_path": schema.StringAttribute{Optional: true},
+								"health_check_port": schema.Int64Attribute{Optional: true},
+								"health_protocol":   schema.StringAttribute{Optional: true},
+								"stickiness":        schema.BoolAttribute{Optional: true},
+								"target_kind":       schema.StringAttribute{Optional: true, MarkdownDescription: "vm | scale-group."},
+								"target_name":       schema.StringAttribute{Optional: true},
+							},
+						},
 					},
 				},
 			},
@@ -582,6 +618,13 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			}
 			if cm.K8s != nil {
 				comp.K8s = &catalog.AssembleK8s{Version: cm.K8s.Version.ValueString(), Architecture: cm.K8s.Architecture.ValueString(), NodeCPU: int(cm.K8s.NodeCPU.ValueInt64()), NodeRAM: int(cm.K8s.NodeRAM.ValueInt64()), MinNodes: int(cm.K8s.MinNodes.ValueInt64()), MaxNodes: int(cm.K8s.MaxNodes.ValueInt64()), DesiredNodes: int(cm.K8s.DesiredNodes.ValueInt64())}
+			}
+			if cm.LB != nil {
+				lb := &catalog.AssembleLB{HealthCheckPath: cm.LB.HealthCheckPath.ValueString(), HealthCheckPort: int(cm.LB.HealthCheckPort.ValueInt64()), HealthProtocol: cm.LB.HealthProtocol.ValueString(), Stickiness: cm.LB.Stickiness.ValueBool(), TargetKind: cm.LB.TargetKind.ValueString(), TargetName: cm.LB.TargetName.ValueString()}
+				for _, l := range cm.LB.Listeners {
+					lb.Listeners = append(lb.Listeners, catalog.AssembleLBListener{Port: int(l.Port.ValueInt64()), Protocol: l.Protocol.ValueString()})
+				}
+				comp.LB = lb
 			}
 		}
 		in.Components = append(in.Components, comp)

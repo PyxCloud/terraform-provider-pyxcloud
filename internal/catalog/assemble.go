@@ -60,6 +60,7 @@ type AssembleComponent struct {
 	CDN           *AssembleCDN
 	WAF           *AssembleWAF
 	K8s           *AssembleK8s
+	LB            *AssembleLB
 }
 
 // AssembleKMS is the config for a `kms` / `encryption-key` component.
@@ -87,6 +88,23 @@ type AssembleCDN struct {
 type AssembleWAF struct {
 	Scope         string
 	AssociateName string
+}
+
+// AssembleLBListener is one listener (port + protocol) for a load-balancer.
+type AssembleLBListener struct {
+	Port     int
+	Protocol string
+}
+
+// AssembleLB is the config for a `load-balancer` component (network-scoped).
+type AssembleLB struct {
+	Listeners       []AssembleLBListener
+	HealthCheckPath string
+	HealthCheckPort int
+	HealthProtocol  string
+	Stickiness      bool
+	TargetKind      string // scale-group | vm (default vm)
+	TargetName      string // the VM/scale-group component to front
 }
 
 // AssembleK8s is the config for a `managed-kubernetes` / `container-service` component (network-scoped).
@@ -196,7 +214,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		switch c.Type {
 		case "virtual-machine", "virtual-machine-scale-group":
 			hasVM, hasNetworked = true, true
-		case "managed-database", "cache", "managed-kubernetes", "container-service":
+		case "managed-database", "cache", "managed-kubernetes", "container-service", "load-balancer":
 			hasNetworked = true
 		}
 	}
@@ -503,6 +521,35 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, kHCL)
+		case "load-balancer":
+			lbSpec := LoadBalancerSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider,
+				Network: netName, Subnets: subnetNames, SecurityGroup: vmSG,
+				TargetKind: LBTargetVM,
+			}
+			if c.LB != nil {
+				for _, l := range c.LB.Listeners {
+					lbSpec.Listeners = append(lbSpec.Listeners, LBListenerSpec{Port: l.Port, Protocol: l.Protocol})
+				}
+				lbSpec.HealthCheck = LBHealthCheckSpec{Protocol: c.LB.HealthProtocol, Port: c.LB.HealthCheckPort, Path: c.LB.HealthCheckPath}
+				lbSpec.Stickiness = c.LB.Stickiness
+				if c.LB.TargetKind != "" {
+					lbSpec.TargetKind = c.LB.TargetKind
+				}
+				lbSpec.TargetName = c.LB.TargetName
+			}
+			if len(lbSpec.Listeners) == 0 {
+				lbSpec.Listeners = []LBListenerSpec{{Port: 80, Protocol: "http"}}
+			}
+			lbPlan, err := TranslateLoadBalancer(ctx, cat, lbSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			lbHCL, err := RenderLoadBalancerHCL(lbPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, lbHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

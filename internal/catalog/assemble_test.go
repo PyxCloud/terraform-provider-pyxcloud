@@ -141,3 +141,23 @@ func TestAssembleHCLKMS(t *testing.T) {
 		t.Errorf("kms rotation not enabled:\n%s", all)
 	}
 }
+
+func TestAssembleHCLLoadBalancer(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin", Expose: []int{80},
+		Components: []AssembleComponent{
+			{Name: "web", Type: "virtual-machine", Count: 1, VM: &AssembleVM{Architecture: "x86_64", CPU: "2", RAM: "4", OS: "ubuntu"}},
+			{Name: "web-lb", Type: "load-balancer", LB: &AssembleLB{
+				Listeners: []AssembleLBListener{{Port: 80, Protocol: "http"}},
+				TargetKind: "vm", TargetName: "web", HealthCheckPath: "/",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL lb: %v", err)
+	}
+	if !strings.Contains(strings.Join(docs, "\n"), "aws_lb") {
+		t.Errorf("lb env missing aws_lb:\n%s", strings.Join(docs, "\n"))
+	}
+}
