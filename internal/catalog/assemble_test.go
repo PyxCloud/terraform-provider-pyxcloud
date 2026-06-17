@@ -181,3 +181,44 @@ func TestAssembleHCLEmailSES(t *testing.T) {
 		t.Errorf("email-only env must not synthesise a VPC:\n%s", all)
 	}
 }
+
+func TestAssembleHCLMitigationSelfHostsOnVM(t *testing.T) {
+	cat, _ := NewEmbedded()
+	// secrets-manager is NOT native on DigitalOcean -> mitigate (self-host Vault on a droplet).
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "vault", Type: "secrets-manager", Secrets: &AssembleSecrets{}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL mitigation: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, "digitalocean_droplet") {
+		t.Errorf("mitigation should self-host on a droplet:\n%s", all)
+	}
+	if !strings.Contains(all, "hashicorp/vault") {
+		t.Errorf("mitigation should run the Vault container:\n%s", all)
+	}
+	if strings.Contains(all, "aws_secretsmanager_secret") || strings.Contains(all, "digitalocean_vpc") == false {
+		// must NOT use the managed service; must have a VPC for the droplet
+		t.Errorf("mitigation env shape wrong:\n%s", all)
+	}
+}
+
+func TestAssembleHCLNativeStillUsedWhenSupported(t *testing.T) {
+	cat, _ := NewEmbedded()
+	// secrets-manager IS native on AWS -> use the managed service, no VM.
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{{Name: "s", Type: "secrets-manager", Secrets: &AssembleSecrets{}}},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL native: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, "aws_secretsmanager_secret") || strings.Contains(all, "aws_instance") {
+		t.Errorf("AWS should use the managed secret, no VM:\n%s", all)
+	}
+}

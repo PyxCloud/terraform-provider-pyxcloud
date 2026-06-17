@@ -74,6 +74,9 @@ type VMSpec struct {
 	Network       string // canonical network/place name (the VPC)
 	Subnet        string // canonical subnet name to place instances in
 	SecurityGroup string // canonical security-group name to attach
+
+	UserData        string // cloud-init/bootstrap script (provider-neutral plaintext)
+	InstanceProfile string // IAM instance-profile/service-account name to attach
 }
 
 // VMInstancePlan is one concrete instance in the translated plan.
@@ -85,23 +88,25 @@ type VMInstancePlan struct {
 // for one provider. STRUCTURED plan (not rendered .tf) — the provider owns
 // rendering and state, consistent with NetworkPlan / SecurityGroupPlan (§8).
 type VMPlan struct {
-	Provider      string           `json:"provider"`       // aws | gcp | digitalocean
-	CSP           string           `json:"csp"`            // catalog token: aws | gcp | do
-	RegionName    string           `json:"region_name"`    // abstract pyx region
-	CSPRegion     string           `json:"csp_region"`     // concrete provider region (catalog-resolved)
-	VMName        string           `json:"vm_name"`        // logical VM/component name
-	InstanceType  string           `json:"instance_type"`  // concrete SKU from `virtual_machine` (e.g. t3.medium)
-	Architecture  string           `json:"architecture"`   // resolved architecture
-	CPU           int              `json:"cpu"`            // resolved vCPU
-	RAM           int              `json:"ram"`            // resolved RAM (GiB)
-	OSName        string           `json:"os_name"`        // ubuntu | debian
-	OSVersion     string           `json:"os_version"`     // resolved version
-	Image         string           `json:"image"`          // concrete provider image (AMI / family / slug)
-	Instances     []VMInstancePlan `json:"instances"`      // count instances
-	NetworkName   string           `json:"network_name"`   // VPC/network it lives in
-	SubnetName    string           `json:"subnet_name"`    // subnet (where applicable)
-	SecurityGroup string           `json:"security_group"` // SG/firewall to attach
-	ResourceType  string           `json:"resource_type"`  // top provider resource, e.g. aws_instance
+	Provider        string           `json:"provider"`         // aws | gcp | digitalocean
+	CSP             string           `json:"csp"`              // catalog token: aws | gcp | do
+	RegionName      string           `json:"region_name"`      // abstract pyx region
+	CSPRegion       string           `json:"csp_region"`       // concrete provider region (catalog-resolved)
+	VMName          string           `json:"vm_name"`          // logical VM/component name
+	InstanceType    string           `json:"instance_type"`    // concrete SKU from `virtual_machine` (e.g. t3.medium)
+	Architecture    string           `json:"architecture"`     // resolved architecture
+	CPU             int              `json:"cpu"`              // resolved vCPU
+	RAM             int              `json:"ram"`              // resolved RAM (GiB)
+	OSName          string           `json:"os_name"`          // ubuntu | debian
+	OSVersion       string           `json:"os_version"`       // resolved version
+	Image           string           `json:"image"`            // concrete provider image (AMI / family / slug)
+	Instances       []VMInstancePlan `json:"instances"`        // count instances
+	NetworkName     string           `json:"network_name"`     // VPC/network it lives in
+	SubnetName      string           `json:"subnet_name"`      // subnet (where applicable)
+	SecurityGroup   string           `json:"security_group"`   // SG/firewall to attach
+	UserData        string           `json:"user_data"`        // cloud-init/bootstrap
+	InstanceProfile string           `json:"instance_profile"` // IAM instance-profile name
+	ResourceType    string           `json:"resource_type"`    // top provider resource
 }
 
 // VMCatalog is the resolution boundary for virtual-machine SKUs and OS images.
@@ -217,22 +222,24 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 	}
 
 	plan := VMPlan{
-		Provider:      strings.ToLower(spec.Provider),
-		CSP:           row.CSP,
-		RegionName:    row.RegionName,
-		CSPRegion:     row.CSPRegion,
-		VMName:        name,
-		InstanceType:  sku.Name,
-		Architecture:  arch,
-		CPU:           sku.CPU,
-		RAM:           sku.RAM,
-		OSName:        osName,
-		OSVersion:     osVersion,
-		Image:         img.Image,
-		Instances:     instances,
-		NetworkName:   spec.Network,
-		SubnetName:    spec.Subnet,
-		SecurityGroup: spec.SecurityGroup,
+		Provider:        strings.ToLower(spec.Provider),
+		CSP:             row.CSP,
+		RegionName:      row.RegionName,
+		CSPRegion:       row.CSPRegion,
+		VMName:          name,
+		InstanceType:    sku.Name,
+		Architecture:    arch,
+		CPU:             sku.CPU,
+		RAM:             sku.RAM,
+		OSName:          osName,
+		OSVersion:       osVersion,
+		Image:           img.Image,
+		Instances:       instances,
+		NetworkName:     spec.Network,
+		SubnetName:      spec.Subnet,
+		SecurityGroup:   spec.SecurityGroup,
+		UserData:        spec.UserData,
+		InstanceProfile: spec.InstanceProfile,
 	}
 
 	switch plan.Provider {

@@ -217,6 +217,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// managed database. A DNS-only / IAM-only / storage-only env must NOT make a VPC.
 	hasVM, hasNetworked := false, false
 	for _, c := range in.Components {
+		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
+			hasNetworked = true // mitigation runs the service on a VM, which needs the network
+			continue
+		}
 		switch c.Type {
 		case "virtual-machine", "virtual-machine-scale-group":
 			hasVM, hasNetworked = true, true
@@ -274,6 +278,15 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 
 	// 3. Components.
 	for _, c := range in.Components {
+		// Mitigation: provider lacks the managed service -> self-host it on a VM.
+		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
+			mdocs, err := mitigateComponent(ctx, cat, in.Provider, in.Region, c, netName, subnetName, vmSG)
+			if err != nil {
+				return nil, err
+			}
+			docs = append(docs, mdocs...)
+			continue
+		}
 		switch c.Type {
 		case "virtual-machine", "virtual-machine-scale-group":
 			if c.VM == nil {
@@ -284,7 +297,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				Architecture: c.VM.Architecture, CPU: atoiOrZero(c.VM.CPU), RAM: atoiOrZero(c.VM.RAM),
 				OS: c.VM.OS, OSVersion: c.VM.OSVersion, Count: c.Count,
 				Network: netName, Subnet: subnetName, SecurityGroup: vmSG,
-				// UserData/InstanceProfile wired once PR #27 (VMSpec user_data) lands.
+				UserData: c.VM.UserData, InstanceProfile: c.VM.InstanceProfile,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)

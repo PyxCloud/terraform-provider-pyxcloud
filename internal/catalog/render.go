@@ -353,10 +353,25 @@ func renderVMAWS(p VMPlan) string {
 		if p.SecurityGroup != "" {
 			fmt.Fprintf(&b, "  vpc_security_group_ids = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
 		}
+		if p.InstanceProfile != "" {
+			fmt.Fprintf(&b, "  iam_instance_profile = %q\n", p.InstanceProfile)
+		}
+		if p.UserData != "" {
+			fmt.Fprintf(&b, "  user_data = base64encode(%s)\n", vmHeredoc(p.UserData))
+		}
 		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", inst.Name)
 		b.WriteString("}\n\n")
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// vmHeredoc renders s as an HCL indented heredoc for VM user_data (no escaping).
+func vmHeredoc(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return "<<-PYXUSERDATA\n" + s + "PYXUSERDATA\n  "
 }
 
 func renderVMGCP(p VMPlan) string {
@@ -400,6 +415,9 @@ func renderVMDO(p VMPlan) string {
 		fmt.Fprintf(&b, "  size   = %q\n", p.InstanceType)
 		if p.NetworkName != "" {
 			fmt.Fprintf(&b, "  vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+		}
+		if p.UserData != "" {
+			fmt.Fprintf(&b, "  user_data = %s\n", vmHeredoc(p.UserData))
 		}
 		fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
 		b.WriteString("}\n\n")
