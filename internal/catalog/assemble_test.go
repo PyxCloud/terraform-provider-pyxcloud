@@ -100,3 +100,24 @@ func TestAssembleHCLManagedDatabase(t *testing.T) {
 		t.Errorf("mdb env must synthesise a VPC for the subnet group:\n%s", all)
 	}
 }
+
+func TestAssembleHCLMessagingAndServerless(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "jobs", Type: "managed-queue", Queue: &AssembleQueue{}},
+			{Name: "events", Type: "event-streaming", Stream: &AssembleStream{Shards: 1}},
+			{Name: "fn", Type: "serverless-function", Serverless: &AssembleServerless{Runtime: "python", Handler: "main.handler"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL messaging+serverless: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{"aws_sqs_queue", "aws_kinesis_stream", "aws_lambda_function"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %q\n---\n%s", want, all)
+		}
+	}
+}

@@ -62,6 +62,29 @@ type envComponentModel struct {
 	ObjectStorage *envObjectStorageModel `tfsdk:"object_storage"`
 	Secrets       *envSecretsModel       `tfsdk:"secrets"`
 	MDB           *envMDBModel           `tfsdk:"managed_database"`
+	Queue         *envQueueModel         `tfsdk:"queue"`
+	Stream        *envStreamModel        `tfsdk:"stream"`
+	Serverless    *envServerlessModel    `tfsdk:"serverless"`
+}
+
+type envQueueModel struct {
+	FIFO                     types.Bool  `tfsdk:"fifo"`
+	VisibilityTimeoutSeconds types.Int64 `tfsdk:"visibility_timeout_seconds"`
+	MaxReceiveCount          types.Int64 `tfsdk:"max_receive_count"`
+}
+
+type envStreamModel struct {
+	Shards         types.Int64 `tfsdk:"shards"`
+	RetentionHours types.Int64 `tfsdk:"retention_hours"`
+}
+
+type envServerlessModel struct {
+	Runtime        types.String `tfsdk:"runtime"`
+	RuntimeVersion types.String `tfsdk:"runtime_version"`
+	Handler        types.String `tfsdk:"handler"`
+	MemoryMB       types.Int64  `tfsdk:"memory_mb"`
+	TimeoutSeconds types.Int64  `tfsdk:"timeout_seconds"`
+	SourceArtifact types.String `tfsdk:"source_artifact"`
 }
 
 type envMDBModel struct {
@@ -297,6 +320,35 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"encrypted":  schema.BoolAttribute{Optional: true},
 							},
 						},
+						"queue": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `managed-queue` / `message-queue` components (SQS).",
+							Attributes: map[string]schema.Attribute{
+								"fifo":                       schema.BoolAttribute{Optional: true},
+								"visibility_timeout_seconds": schema.Int64Attribute{Optional: true},
+								"max_receive_count":          schema.Int64Attribute{Optional: true},
+							},
+						},
+						"stream": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `event-streaming` / `event-bus` components (Kinesis).",
+							Attributes: map[string]schema.Attribute{
+								"shards":          schema.Int64Attribute{Optional: true},
+								"retention_hours": schema.Int64Attribute{Optional: true},
+							},
+						},
+						"serverless": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `serverless-function` components (Lambda).",
+							Attributes: map[string]schema.Attribute{
+								"runtime":         schema.StringAttribute{Optional: true},
+								"runtime_version": schema.StringAttribute{Optional: true},
+								"handler":         schema.StringAttribute{Optional: true},
+								"memory_mb":       schema.Int64Attribute{Optional: true},
+								"timeout_seconds": schema.Int64Attribute{Optional: true},
+								"source_artifact": schema.StringAttribute{Optional: true},
+							},
+						},
 					},
 				},
 			},
@@ -412,6 +464,24 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				CPU: int(cm.MDB.CPU.ValueInt64()), RAM: int(cm.MDB.RAM.ValueInt64()),
 				StorageGB: int(cm.MDB.StorageGB.ValueInt64()), HA: cm.MDB.HA.ValueBool(),
 				Encrypted: cm.MDB.Encrypted.ValueBool(),
+			}
+		}
+		if cm.Queue != nil {
+			comp.Queue = &catalog.AssembleQueue{
+				FIFO: cm.Queue.FIFO.ValueBool(), VisibilityTimeoutSeconds: int(cm.Queue.VisibilityTimeoutSeconds.ValueInt64()),
+				MaxReceiveCount: int(cm.Queue.MaxReceiveCount.ValueInt64()),
+			}
+		}
+		if cm.Stream != nil {
+			comp.Stream = &catalog.AssembleStream{
+				Shards: int(cm.Stream.Shards.ValueInt64()), RetentionHours: int(cm.Stream.RetentionHours.ValueInt64()),
+			}
+		}
+		if cm.Serverless != nil {
+			comp.Serverless = &catalog.AssembleServerless{
+				Runtime: cm.Serverless.Runtime.ValueString(), RuntimeVersion: cm.Serverless.RuntimeVersion.ValueString(),
+				Handler: cm.Serverless.Handler.ValueString(), MemoryMB: int(cm.Serverless.MemoryMB.ValueInt64()),
+				TimeoutSeconds: int(cm.Serverless.TimeoutSeconds.ValueInt64()), SourceArtifact: cm.Serverless.SourceArtifact.ValueString(),
 			}
 		}
 		in.Components = append(in.Components, comp)

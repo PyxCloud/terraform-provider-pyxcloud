@@ -42,9 +42,9 @@ type AssembleIAM struct {
 
 // AssembleComponent is one canonical component in the environment.
 type AssembleComponent struct {
-	Name       string
-	Type       string
-	Count      int
+	Name          string
+	Type          string
+	Count         int
 	VM            *AssembleVM
 	IAM           *AssembleIAM
 	Monitoring    *AssembleMonitoring
@@ -52,6 +52,9 @@ type AssembleComponent struct {
 	ObjectStorage *AssembleObjectStorage
 	Secrets       *AssembleSecrets
 	MDB           *AssembleMDB
+	Queue         *AssembleQueue
+	Stream        *AssembleStream
+	Serverless    *AssembleServerless
 }
 
 // AssembleMonitoring is the canonical monitoring config for a `monitoring` component.
@@ -89,15 +92,38 @@ type AssembleMDB struct {
 	Encrypted bool
 }
 
+// AssembleQueue is the config for a `managed-queue` / `message-queue` component.
+type AssembleQueue struct {
+	FIFO                     bool
+	VisibilityTimeoutSeconds int
+	MaxReceiveCount          int
+}
+
+// AssembleStream is the config for an `event-streaming` / `event-bus` component.
+type AssembleStream struct {
+	Shards         int
+	RetentionHours int
+}
+
+// AssembleServerless is the config for a `serverless-function` component.
+type AssembleServerless struct {
+	Runtime        string
+	RuntimeVersion string
+	Handler        string
+	MemoryMB       int
+	TimeoutSeconds int
+	SourceArtifact string
+}
+
 // AssembleInput is the catalog-native environment description (no client import,
 // so the catalog stays dependency-free).
 type AssembleInput struct {
-	Name     string
-	Provider string
-	Region   string
-	CIDR     string   // optional; defaults to 10.0.0.0/16
-	Subnets  []string // optional; defaults to a single 10.0.1.0/24
-	Expose   []int    // optional security-group TCP expose ports
+	Name       string
+	Provider   string
+	Region     string
+	CIDR       string   // optional; defaults to 10.0.0.0/16
+	Subnets    []string // optional; defaults to a single 10.0.1.0/24
+	Expose     []int    // optional security-group TCP expose ports
 	Components []AssembleComponent
 }
 
@@ -134,7 +160,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 
 	netName := in.Name + "-net"
 	sgName := in.Name + "-sg"
-	subnetName := ""        // first subnet (VM placement)
+	subnetName := ""         // first subnet (VM placement)
 	var subnetNames []string // all subnets (DB subnet group)
 	vmSG := ""
 
@@ -298,6 +324,56 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, mdbHCL)
+		case "managed-queue", "message-queue":
+			qSpec := QueueSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.Queue != nil {
+				qSpec.FIFO = c.Queue.FIFO
+				qSpec.VisibilityTimeoutSeconds = c.Queue.VisibilityTimeoutSeconds
+				qSpec.MaxReceiveCount = c.Queue.MaxReceiveCount
+			}
+			qPlan, err := TranslateQueue(ctx, cat, qSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			qHCL, err := RenderMessagingHCL(qPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, qHCL)
+		case "event-streaming", "event-bus":
+			sSpec := StreamSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.Stream != nil {
+				sSpec.Shards = c.Stream.Shards
+				sSpec.RetentionHours = c.Stream.RetentionHours
+			}
+			sPlan, err := TranslateStream(ctx, cat, sSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			sHCL, err := RenderMessagingHCL(sPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, sHCL)
+		case "serverless-function":
+			slSpec := ServerlessSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.Serverless != nil {
+				slSpec.Runtime = c.Serverless.Runtime
+				slSpec.RuntimeVersion = c.Serverless.RuntimeVersion
+				slSpec.Handler = c.Serverless.Handler
+				slSpec.MemoryMB = c.Serverless.MemoryMB
+				slSpec.TimeoutSeconds = c.Serverless.TimeoutSeconds
+				slSpec.SourceArtifact = c.Serverless.SourceArtifact
+			}
+			slPlan, err := TranslateServerless(ctx, cat, slSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			slHCL, err := RenderServerlessHCL(slPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, slHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
