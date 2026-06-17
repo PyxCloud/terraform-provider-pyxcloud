@@ -38,6 +38,15 @@ resource "pyxcloud_environment" "demo" {
         os_name      = "ubuntu"
       }
     },
+    {
+      name = "app-role"
+      type = "iam"
+      iam = {
+        assume_service      = "ec2.amazonaws.com"
+        instance_profile    = true
+        managed_policy_arns = ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]
+      }
+    },
   ]
 }
 

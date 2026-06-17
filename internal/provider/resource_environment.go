@@ -42,10 +42,33 @@ type environmentModel struct {
 	Name           types.String     `tfsdk:"name"`
 	Provider       types.String     `tfsdk:"cloud"`
 	Region         types.String     `tfsdk:"region"`
-	Components     []componentModel `tfsdk:"components"`
+	Components     []envComponentModel `tfsdk:"components"`
 	AccountBinding types.String     `tfsdk:"account_binding"`
 	WorkDir        types.String     `tfsdk:"work_dir"`
 	Outputs        types.Map        `tfsdk:"outputs"`
+}
+
+// envComponentModel is the env-resource-specific component (decoupled from the
+// shared topology componentModel so env-only blocks like iam don't churn the
+// topology/compare schemas). VM sizing reuses the shared vmTypeModel.
+type envComponentModel struct {
+	Name  types.String `tfsdk:"name"`
+	Type  types.String `tfsdk:"type"`
+	Count types.Int64  `tfsdk:"count"`
+	VM    *vmTypeModel `tfsdk:"vm"`
+	IAM   *envIAMModel `tfsdk:"iam"`
+}
+
+type envIAMPolicyModel struct {
+	Name     types.String `tfsdk:"name"`
+	Document types.String `tfsdk:"document"`
+}
+
+type envIAMModel struct {
+	AssumeService     types.String        `tfsdk:"assume_service"`
+	InlinePolicies    []envIAMPolicyModel `tfsdk:"inline_policies"`
+	ManagedPolicyARNs []types.String      `tfsdk:"managed_policy_arns"`
+	InstanceProfile   types.Bool          `tfsdk:"instance_profile"`
 }
 
 // modeB reports whether the resource selects the managed-account path (Mode B):
@@ -118,6 +141,25 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"os_name":      schema.StringAttribute{Optional: true, MarkdownDescription: "OS, e.g. `ubuntu`."},
 							},
 						},
+						"iam": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "IAM identity config for `iam` components (role + policies + instance profile).",
+							Attributes: map[string]schema.Attribute{
+								"assume_service": schema.StringAttribute{Optional: true, MarkdownDescription: "Principal allowed to assume the role (default `ec2.amazonaws.com`)."},
+								"managed_policy_arns": schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Managed policy ARNs to attach."},
+								"instance_profile": schema.BoolAttribute{Optional: true, MarkdownDescription: "Also emit an instance profile (EC2 attach)."},
+								"inline_policies": schema.ListNestedAttribute{
+									Optional:            true,
+									MarkdownDescription: "Inline policies (raw IAM JSON documents).",
+									NestedObject: schema.NestedAttributeObject{
+										Attributes: map[string]schema.Attribute{
+											"name":     schema.StringAttribute{Required: true},
+											"document": schema.StringAttribute{Required: true, MarkdownDescription: "Raw IAM policy JSON."},
+										},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -172,6 +214,21 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				RAM:          cm.VM.RAM.ValueString(),
 				OS:           cm.VM.OS.ValueString(),
 			}
+		}
+		if cm.IAM != nil {
+			iam := &catalog.AssembleIAM{
+				AssumeService:   cm.IAM.AssumeService.ValueString(),
+				InstanceProfile: cm.IAM.InstanceProfile.ValueBool(),
+			}
+			for _, arn := range cm.IAM.ManagedPolicyARNs {
+				iam.ManagedPolicyARNs = append(iam.ManagedPolicyARNs, arn.ValueString())
+			}
+			for _, p := range cm.IAM.InlinePolicies {
+				iam.InlinePolicies = append(iam.InlinePolicies, catalog.IAMPolicy{
+					Name: p.Name.ValueString(), Document: p.Document.ValueString(),
+				})
+			}
+			comp.IAM = iam
 		}
 		in.Components = append(in.Components, comp)
 	}
