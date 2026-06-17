@@ -84,8 +84,8 @@ func TestDataSourceSchema(t *testing.T) {
 func TestProviderInterfaces(t *testing.T) {
 	t.Parallel()
 	p := New("test")()
-	if got := len(p.Resources(context.Background())); got != 2 {
-		t.Errorf("expected 2 resources, got %d", got)
+	if got := len(p.Resources(context.Background())); got != 3 {
+		t.Errorf("expected 3 resources (topology, migration, environment), got %d", got)
 	}
 	if got := len(p.DataSources(context.Background())); got != 1 {
 		t.Errorf("expected 1 data source, got %d", got)
