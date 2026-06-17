@@ -55,9 +55,19 @@ func (p *pyxCloudProvider) Metadata(_ context.Context, _ provider.MetadataReques
 
 // providerModel maps the provider configuration block.
 type providerModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
-	Token    types.String `tfsdk:"token"`
+	Endpoint     types.String `tfsdk:"endpoint"`
+	Token        types.String `tfsdk:"token"`
+	ClientID     types.String `tfsdk:"client_id"`
+	ClientSecret types.String `tfsdk:"client_secret"`
+	TokenURL     types.String `tfsdk:"token_url"`
 }
+
+// env fallbacks for machine auth (so CI can inject them without HCL).
+const (
+	envClientID     = "PYXCLOUD_CLIENT_ID"
+	envClientSecret = "PYXCLOUD_CLIENT_SECRET"
+	envTokenURL     = "PYXCLOUD_TOKEN_URL"
+)
 
 func (p *pyxCloudProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
@@ -72,9 +82,24 @@ func (p *pyxCloudProvider) Schema(_ context.Context, _ provider.SchemaRequest, r
 			"token": schema.StringAttribute{
 				Optional:  true,
 				Sensitive: true,
-				MarkdownDescription: "OAuth/SSO-issued bearer token used to authenticate " +
-					"against the PyxCloud API. Falls back to the `" + envToken +
-					"` environment variable when unset.",
+				MarkdownDescription: "Static pre-issued bearer token (tests / break-glass). Falls back to the `" +
+					envToken + "` env var. Prefer machine auth (`client_id`/`client_secret`/`token_url`).",
+			},
+			"client_id": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "OAuth2.1 client id of the provider's own confidential client. With " +
+					"`client_secret` + `token_url`, the provider authenticates via client_credentials — the " +
+					"provider execution authenticates itself, no human pyxcloud/passobuild login. Falls back to `" +
+					envClientID + "`.",
+			},
+			"client_secret": schema.StringAttribute{
+				Optional:            true,
+				Sensitive:           true,
+				MarkdownDescription: "Secret for `client_id` (machine auth). Falls back to `" + envClientSecret + "`. Inject at runtime (CI secret); never commit.",
+			},
+			"token_url": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "passobuild realm OAuth token endpoint for client_credentials. Falls back to `" + envTokenURL + "`.",
 			},
 		},
 	}
@@ -97,19 +122,37 @@ func (p *pyxCloudProvider) Configure(ctx context.Context, req provider.Configure
 		token = cfg.Token.ValueString()
 	}
 
-	// Live HTTP client when authenticated; the in-memory stub otherwise (so unit
-	// tests and offline demos keep working without a token). The live client backs
-	// topology CRUD + Compare against the backend /api/* surface (TfProviderResource).
+	// Machine auth (preferred): the provider's own OAuth2.1 confidential client,
+	// client_credentials — authenticates the provider execution itself, no human
+	// pyxcloud/passobuild login, and not usable without the provider client's creds.
+	pick := func(v types.String, env string) string {
+		if !v.IsNull() && v.ValueString() != "" {
+			return v.ValueString()
+		}
+		return os.Getenv(env)
+	}
+	clientID := pick(cfg.ClientID, envClientID)
+	clientSecret := pick(cfg.ClientSecret, envClientSecret)
+	tokenURL := pick(cfg.TokenURL, envTokenURL)
+	machineAuth := clientID != "" && clientSecret != "" && tokenURL != ""
+
+	// Live HTTP client when authenticated (machine auth OR a static token); the
+	// in-memory stub otherwise (so unit tests / offline demos work without creds).
 	var c client.Client
-	if token == "" {
+	switch {
+	case machineAuth:
+		c = client.NewHTTP(client.Config{
+			Endpoint: endpoint, ClientID: clientID, ClientSecret: clientSecret, TokenURL: tokenURL,
+		})
+	case token != "":
+		c = client.NewHTTP(client.Config{Endpoint: endpoint, Token: token})
+	default:
 		resp.Diagnostics.AddWarning(
-			"No PyxCloud token configured",
-			"Set `token` or the "+envToken+" environment variable to use the live "+
-				"PyxCloud API. Falling back to the in-memory stub client (no persistence).",
+			"No PyxCloud credentials configured",
+			"Set machine auth (`client_id`/`client_secret`/`token_url` or the PYXCLOUD_CLIENT_* env vars) "+
+				"or a static `token`/"+envToken+". Falling back to the in-memory stub client (no persistence).",
 		)
 		c = client.NewStub(client.Config{Endpoint: endpoint, Token: token})
-	} else {
-		c = client.NewHTTP(client.Config{Endpoint: endpoint, Token: token})
 	}
 
 	// Region catalog used by the network translation (pd-TF-REGION-VPC). The

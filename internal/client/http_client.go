@@ -25,19 +25,29 @@ import (
 // maps Components → canonical nodes on the way out and back on the way in, so the
 // backend prices/translates correctly and Read reconstructs the resource state.
 type HTTPClient struct {
-	cfg  Config
-	http *http.Client
+	cfg   Config
+	http  *http.Client
+	creds tokenSource
 }
 
-// NewHTTP returns a Client that talks to the live PyxCloud API at cfg.Endpoint
-// with cfg.Token as the bearer.
+// NewHTTP returns a Client that talks to the live PyxCloud API at cfg.Endpoint.
+// It authenticates via OAuth2.1 client_credentials (the provider's own client; no
+// human login) when ClientID+ClientSecret+TokenURL are set, else with the static
+// cfg.Token.
 func NewHTTP(cfg Config) *HTTPClient {
 	if cfg.Endpoint == "" {
 		cfg.Endpoint = DefaultEndpoint
 	}
+	var creds tokenSource
+	if cfg.ClientID != "" && cfg.ClientSecret != "" && cfg.TokenURL != "" {
+		creds = newClientCredentialsSource(cfg.TokenURL, cfg.ClientID, cfg.ClientSecret)
+	} else if cfg.Token != "" {
+		creds = staticToken(cfg.Token)
+	}
 	return &HTTPClient{
-		cfg:  cfg,
-		http: &http.Client{Timeout: 30 * time.Second},
+		cfg:   cfg,
+		http:  &http.Client{Timeout: 30 * time.Second},
+		creds: creds,
 	}
 }
 
@@ -61,8 +71,14 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body any) (*ht
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	if c.cfg.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	if c.creds != nil {
+		tok, terr := c.creds.token(ctx)
+		if terr != nil {
+			return nil, nil, fmt.Errorf("obtaining access token: %w", terr)
+		}
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
