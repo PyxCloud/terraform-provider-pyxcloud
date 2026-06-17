@@ -3,11 +3,12 @@
 A Terraform provider for the [PyxCloud](https://passo.build) platform, built on
 the modern [terraform-plugin-framework](https://github.com/hashicorp/terraform-plugin-framework).
 
-> **Status: MVP scaffold (`pd-FEAT-TF-PROVIDER`).** The resource and data-source
-> schemas are real and well-modeled. Network calls against the live PyxCloud API
-> are **stubbed** behind a client interface (in-memory storage + synthetic
-> pricing) so the provider compiles, vets, tests, and demos without touching the
-> network or any cloud. See [What's stubbed](#whats-stubbed-vs-real).
+> **Status: live API wiring landed (`pd-FEAT-TF-PROVIDER`).** The resource and
+> data-source schemas are real and well-modeled. When a `token` (or
+> `PYXCLOUD_TOKEN`) is set, the provider now talks to the **live PyxCloud backend**
+> (`HTTPClient` → `/api/topology` CRUD + `/api/compare`, backend
+> `TfProviderResource`). With no token it falls back to the in-memory stub so unit
+> tests and offline demos keep working. See [What's stubbed](#whats-stubbed-vs-real).
 
 ## The PyxCloud abstraction: canonical topology
 
@@ -532,15 +533,19 @@ round-trip harness (real apply/destroy gated on `OVH_*` creds, never in CI).
 
 ## What's stubbed vs real
 
-| Real                                                    | Stubbed (MVP)                                          |
-| ------------------------------------------------------- | ----------------------------------------------------- |
-| Provider / resource / data-source **schemas**           | Topology persistence (in-memory map, not the API)     |
-| Full CRUD wiring + state mapping                         | Pricing (deterministic synthetic cost, not live SP)   |
-| Canonical model (matches backend vocabulary)            | HTTP transport / bearer auth (interface only)         |
-| Provider config + env fallback + cheapest-first ranking | `Compare` against the live console pricing endpoint   |
+| Real                                                              | Stubbed (only when NO token is set)                  |
+| ----------------------------------------------------------------- | ---------------------------------------------------- |
+| Provider / resource / data-source **schemas**                     | In-memory topology store + synthetic pricing (stub)  |
+| Full CRUD wiring + state mapping                                  | — used as the offline/test fallback only             |
+| Canonical model (matches backend vocabulary)                      |                                                      |
+| **Live `HTTPClient`**: topology CRUD + Compare over `/api/*` with bearer auth | |
+| Component ↔ canonical-node shape mapping (so the backend prices/translates) | |
 
-All stubs sit behind `internal/client.Client`; a future `HTTPClient`
-implementation backs the same interface with real calls (see `// TODO` markers).
+Both implementations sit behind `internal/client.Client`. `HTTPClient`
+(`internal/client/http_client.go`) is selected when a `token`/`PYXCLOUD_TOKEN` is
+present; `StubClient` is the no-token fallback. The backend surface it calls is
+`pyx-backend` `TfProviderResource` (`/api/topology`, `/api/compare`,
+`/api/translate`).
 
 ## Build, test, validate
 
