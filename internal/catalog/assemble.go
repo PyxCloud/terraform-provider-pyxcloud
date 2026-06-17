@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // AssembleHCL is the LOCAL translation entry point: it turns a canonical
@@ -673,10 +674,50 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			break
 		}
 	}
-	// Pin the Cloudflare provider source when any Cloudflare component is present
-	// (terraform would otherwise assume the non-existent hashicorp/cloudflare).
-	if needsCloudflare {
-		docs = append([]string{cloudflareRequiredProviders}, docs...)
+	// Emit a required_providers block when one is needed: a non-default-namespace
+	// cloud provider (e.g. digitalocean/digitalocean) always needs its source pinned,
+	// and once ANY required_providers entry exists (e.g. Cloudflare) terraform also
+	// requires the cloud provider declared. AWS-only envs need NO block (hashicorp/aws
+	// auto-installs), keeping the common case clean.
+	if rp := requiredProvidersBlock(in.Provider, needsCloudflare); rp != "" {
+		docs = append([]string{rp}, docs...)
 	}
 	return docs, nil
+}
+
+// cloudProviderSource maps a provider to its (local-name, registry-source) for a
+// terraform required_providers block. The local name matches the resource prefix
+// (aws_*, google_*, digitalocean_*, …).
+var cloudProviderSource = map[string][2]string{
+	ProviderAWS:          {"aws", "hashicorp/aws"},
+	ProviderGCP:          {"google", "hashicorp/google"},
+	ProviderDigitalOcean: {"digitalocean", "digitalocean/digitalocean"},
+	ProviderAzure:        {"azurerm", "hashicorp/azurerm"},
+	ProviderLinode:       {"linode", "linode/linode"},
+	ProviderUbicloud:     {"ubicloud", "ubicloud/ubicloud"},
+	ProviderOracle:       {"oci", "oracle/oci"},
+	ProviderIBM:          {"ibm", "IBM-Cloud/ibm"},
+	ProviderAlibaba:      {"alicloud", "aliyun/alicloud"},
+	ProviderOVH:          {"ovh", "ovh/ovh"},
+	ProviderStackIt:      {"stackit", "stackitcloud/stackit"},
+}
+
+// requiredProvidersBlock returns the terraform{required_providers{...}} HCL when
+// one is needed (non-default cloud source, or Cloudflare present), else "".
+func requiredProvidersBlock(provider string, needsCloudflare bool) string {
+	src, ok := cloudProviderSource[strings.ToLower(provider)]
+	cloudNonDefault := ok && !strings.HasPrefix(src[1], "hashicorp/")
+	if !needsCloudflare && !cloudNonDefault {
+		return "" // AWS/GCP/Azure-only: hashicorp namespace auto-installs, no block needed
+	}
+	var b strings.Builder
+	b.WriteString("terraform {\n  required_providers {\n")
+	if ok {
+		fmt.Fprintf(&b, "    %s = {\n      source = %q\n    }\n", src[0], src[1])
+	}
+	if needsCloudflare {
+		b.WriteString("    cloudflare = {\n      source = \"cloudflare/cloudflare\"\n    }\n")
+	}
+	b.WriteString("  }\n}\n")
+	return b.String()
 }
