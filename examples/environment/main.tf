@@ -80,6 +80,18 @@ resource "pyxcloud_environment" "demo" {
       type    = "secrets-manager"
       secrets = { description = "app credentials" }
     },
+    {
+      name = "app-db"
+      type = "managed-database"
+      managed_database = {
+        engine     = "postgres"
+        version    = "16"
+        cpu        = 2
+        ram        = 4
+        storage_gb = 50
+        encrypted  = true
+      }
+    },
   ]
 }
 

@@ -51,6 +51,7 @@ type AssembleComponent struct {
 	DNS           *AssembleDNS
 	ObjectStorage *AssembleObjectStorage
 	Secrets       *AssembleSecrets
+	MDB           *AssembleMDB
 }
 
 // AssembleMonitoring is the canonical monitoring config for a `monitoring` component.
@@ -77,6 +78,17 @@ type AssembleSecrets struct {
 	RotationDays int
 }
 
+// AssembleMDB is the config for a `managed-database` component.
+type AssembleMDB struct {
+	Engine    string
+	Version   string
+	CPU       int
+	RAM       int
+	StorageGB int
+	HA        bool
+	Encrypted bool
+}
+
 // AssembleInput is the catalog-native environment description (no client import,
 // so the catalog stays dependency-free).
 type AssembleInput struct {
@@ -100,29 +112,34 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	}
 	subnets := in.Subnets
 	if len(subnets) == 0 {
-		subnets = []string{"10.0.1.0/24"}
+		// Two subnets by default so a managed-database subnet group is multi-AZ
+		// (AWS requires >= 2 AZs); VMs just use the first.
+		subnets = []string{"10.0.1.0/24", "10.0.2.0/24"}
 	}
 
 	var docs []string
 	needsCloudflare := false
 
-	// A network (VPC + subnet) is only needed when the environment places VMs.
-	// A DNS-only / IAM-only env must NOT synthesise a VPC.
-	hasVM := false
+	// A network (VPC + subnets) is only needed when the environment places VMs or a
+	// managed database. A DNS-only / IAM-only / storage-only env must NOT make a VPC.
+	hasVM, hasNetworked := false, false
 	for _, c := range in.Components {
-		if c.Type == "virtual-machine" || c.Type == "virtual-machine-scale-group" {
-			hasVM = true
-			break
+		switch c.Type {
+		case "virtual-machine", "virtual-machine-scale-group":
+			hasVM, hasNetworked = true, true
+		case "managed-database":
+			hasNetworked = true
 		}
 	}
 
 	netName := in.Name + "-net"
 	sgName := in.Name + "-sg"
-	subnetName := ""
+	subnetName := ""        // first subnet (VM placement)
+	var subnetNames []string // all subnets (DB subnet group)
 	vmSG := ""
 
-	// 1. Network (VPC + subnets) — only when VMs are present.
-	if hasVM {
+	// 1. Network (VPC + subnets) — when VMs or a managed database are present.
+	if hasNetworked {
 		netPlan, err := TranslateNetwork(ctx, cat, NetworkSpec{
 			Name: netName, Region: in.Region, Provider: in.Provider, CIDR: cidr, Subnets: subnets,
 		})
@@ -138,6 +155,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			return nil, fmt.Errorf("network produced no subnets")
 		}
 		subnetName = netPlan.Subnets[0].Name
+		for _, s := range netPlan.Subnets {
+			subnetNames = append(subnetNames, s.Name)
+		}
 	}
 
 	// 2. Security group — only when VMs are present AND ports are exposed. A SG with
@@ -260,6 +280,24 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, secHCL)
+		case "managed-database":
+			if c.MDB == nil {
+				return nil, fmt.Errorf("component %q (managed-database): config is required", c.Name)
+			}
+			mdbPlan, err := TranslateManagedDatabase(ctx, cat, ManagedDatabaseSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider,
+				Engine: c.MDB.Engine, Version: c.MDB.Version, CPU: c.MDB.CPU, RAM: c.MDB.RAM,
+				StorageGB: c.MDB.StorageGB, HA: c.MDB.HA, Encrypted: c.MDB.Encrypted,
+				Network: netName, Subnets: subnetNames, SecurityGroup: vmSG,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			mdbHCL, err := RenderManagedDatabaseHCL(mdbPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, mdbHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

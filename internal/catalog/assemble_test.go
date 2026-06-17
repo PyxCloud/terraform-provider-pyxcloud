@@ -78,3 +78,25 @@ func TestAssembleHCLObjectStorageAndSecrets(t *testing.T) {
 		t.Errorf("storage/secrets-only env must not synthesise a VPC:\n%s", all)
 	}
 }
+
+func TestAssembleHCLManagedDatabase(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "db", Type: "managed-database", MDB: &AssembleMDB{
+				Engine: "postgres", Version: "16", CPU: 2, RAM: 4, StorageGB: 50, Encrypted: true,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL mdb: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, "aws_db_instance") || !strings.Contains(all, "aws_db_subnet_group") {
+		t.Errorf("mdb env missing db instance/subnet group:\n%s", all)
+	}
+	if !strings.Contains(all, "aws_vpc") {
+		t.Errorf("mdb env must synthesise a VPC for the subnet group:\n%s", all)
+	}
+}

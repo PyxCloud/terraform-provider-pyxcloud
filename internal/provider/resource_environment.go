@@ -61,6 +61,17 @@ type envComponentModel struct {
 	DNS           *envDNSModel           `tfsdk:"dns"`
 	ObjectStorage *envObjectStorageModel `tfsdk:"object_storage"`
 	Secrets       *envSecretsModel       `tfsdk:"secrets"`
+	MDB           *envMDBModel           `tfsdk:"managed_database"`
+}
+
+type envMDBModel struct {
+	Engine    types.String `tfsdk:"engine"`
+	Version   types.String `tfsdk:"version"`
+	CPU       types.Int64  `tfsdk:"cpu"`
+	RAM       types.Int64  `tfsdk:"ram"`
+	StorageGB types.Int64  `tfsdk:"storage_gb"`
+	HA        types.Bool   `tfsdk:"ha"`
+	Encrypted types.Bool   `tfsdk:"encrypted"`
 }
 
 type envObjectStorageModel struct {
@@ -273,6 +284,19 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"rotation_days": schema.Int64Attribute{Optional: true, MarkdownDescription: "0 = no automatic rotation."},
 							},
 						},
+						"managed_database": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `managed-database` components (RDS/Cloud SQL/DO DB).",
+							Attributes: map[string]schema.Attribute{
+								"engine":     schema.StringAttribute{Optional: true, MarkdownDescription: "postgres | mysql."},
+								"version":    schema.StringAttribute{Optional: true},
+								"cpu":        schema.Int64Attribute{Optional: true},
+								"ram":        schema.Int64Attribute{Optional: true},
+								"storage_gb": schema.Int64Attribute{Optional: true},
+								"ha":         schema.BoolAttribute{Optional: true},
+								"encrypted":  schema.BoolAttribute{Optional: true},
+							},
+						},
 					},
 				},
 			},
@@ -380,6 +404,14 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			comp.Secrets = &catalog.AssembleSecrets{
 				Description:  cm.Secrets.Description.ValueString(),
 				RotationDays: int(cm.Secrets.RotationDays.ValueInt64()),
+			}
+		}
+		if cm.MDB != nil {
+			comp.MDB = &catalog.AssembleMDB{
+				Engine: cm.MDB.Engine.ValueString(), Version: cm.MDB.Version.ValueString(),
+				CPU: int(cm.MDB.CPU.ValueInt64()), RAM: int(cm.MDB.RAM.ValueInt64()),
+				StorageGB: int(cm.MDB.StorageGB.ValueInt64()), HA: cm.MDB.HA.ValueBool(),
+				Encrypted: cm.MDB.Encrypted.ValueBool(),
 			}
 		}
 		in.Components = append(in.Components, comp)
