@@ -56,7 +56,7 @@ Manages a canonical topology.
 | ------------ | ------ | -------------------------------------------------- |
 | `id`         | string | computed, server-assigned                          |
 | `name`       | string | required                                           |
-| `provider`   | string | required — `aws` \| `gcp` \| `digitalocean`        |
+| `cloud`      | string | required — `aws` \| `gcp` \| `digitalocean` (named `cloud`; `provider` is a reserved tf meta-arg) |
 | `region`     | string | required — abstract pyx `region_name`, e.g. `Frankfurt` |
 | `components` | list   | required — nested blocks (below)                   |
 
@@ -75,7 +75,7 @@ region maps are baked into the provider binary.
 ```hcl
 resource "pyxcloud_topology" "web" {
   name     = "web-stack"
-  provider = "aws"        # aws | gcp | digitalocean
+  cloud    = "aws"        # aws | gcp | digitalocean ('provider' is a reserved tf meta-arg)
   region   = "Frankfurt"  # abstract pyx region_name
 
   network = {
@@ -128,7 +128,7 @@ rules. The provider descends it to the concrete firewall resources per provider
 ```hcl
 resource "pyxcloud_topology" "web" {
   name     = "production"
-  provider = "aws"        # aws | gcp | digitalocean
+  cloud    = "aws"        # aws | gcp | digitalocean ('provider' is a reserved tf meta-arg)
   region   = "Frankfurt"
 
   network = { cidr = "10.0.0.0/16", subnets = ["10.0.1.0/24"] }
@@ -189,7 +189,7 @@ network and security-group.
 ```hcl
 resource "pyxcloud_topology" "app" {
   name     = "production"
-  provider = "aws"        # aws | gcp | digitalocean
+  cloud    = "aws"        # aws | gcp | digitalocean ('provider' is a reserved tf meta-arg)
   region   = "Dublin"
 
   network        = { cidr = "10.0.0.0/16", subnets = ["10.0.1.0/24"] }
@@ -257,7 +257,7 @@ zones), structured-plan → render pattern as the other components.
 ```hcl
 resource "pyxcloud_topology" "app" {
   name     = "production"
-  provider = "aws"        # aws | gcp | digitalocean
+  cloud    = "aws"        # aws | gcp | digitalocean ('provider' is a reserved tf meta-arg)
   region   = "Dublin"
 
   network        = { cidr = "10.0.0.0/16", subnets = ["10.0.1.0/24", "10.0.2.0/24"] }
@@ -321,7 +321,7 @@ is a hard plan-time error — never an invented class).
 ```hcl
 resource "pyxcloud_topology" "app" {
   name     = "production"
-  provider = "aws"        # aws | gcp | digitalocean
+  cloud    = "aws"        # aws | gcp | digitalocean ('provider' is a reserved tf meta-arg)
   region   = "Frankfurt"
 
   network        = { cidr = "10.0.0.0/16", subnets = ["10.0.1.0/24", "10.0.2.0/24"] }
@@ -399,7 +399,7 @@ a missing region is a hard plan-time error).
 ```hcl
 resource "pyxcloud_topology" "app" {
   name     = "production"
-  provider = "aws"        # aws | gcp | digitalocean
+  cloud    = "aws"        # aws | gcp | digitalocean ('provider' is a reserved tf meta-arg)
   region   = "Frankfurt"
 
   object_storage = {

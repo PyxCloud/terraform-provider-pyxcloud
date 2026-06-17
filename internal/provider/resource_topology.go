@@ -350,7 +350,7 @@ type objectStoragePlanModel struct {
 type topologyModel struct {
 	ID                  types.String              `tfsdk:"id"`
 	Name                types.String              `tfsdk:"name"`
-	Provider            types.String              `tfsdk:"provider"`
+	Provider            types.String              `tfsdk:"cloud"`
 	Region              types.String              `tfsdk:"region"`
 	Components          []componentModel          `tfsdk:"components"`
 	Network             *networkModel             `tfsdk:"network"`
@@ -390,7 +390,10 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Required:            true,
 				MarkdownDescription: "Human-readable topology name.",
 			},
-			"provider": schema.StringAttribute{
+			// `cloud`, not `provider`: `provider` is a reserved Terraform root
+			// attribute/block name (the provider-config meta-argument), so a schema
+			// attribute named `provider` fails validation as a reserved root name.
+			"cloud": schema.StringAttribute{
 				Required: true,
 				MarkdownDescription: "Deployment provider: `aws`, `gcp`, or " +
 					"`digitalocean` (PyxCloud enabled launch providers).",

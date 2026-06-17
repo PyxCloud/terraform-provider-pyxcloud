@@ -38,7 +38,7 @@ func NewEnvironmentResource() resource.Resource {
 type environmentModel struct {
 	ID             types.String     `tfsdk:"id"`
 	Name           types.String     `tfsdk:"name"`
-	Provider       types.String     `tfsdk:"provider"`
+	Provider       types.String     `tfsdk:"cloud"`
 	Region         types.String     `tfsdk:"region"`
 	Components     []componentModel `tfsdk:"components"`
 	AccountBinding types.String     `tfsdk:"account_binding"`
@@ -74,7 +74,11 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				MarkdownDescription: "Environment name, unique per work_dir.",
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
-			"provider": schema.StringAttribute{
+			// NOTE: named `cloud`, not `provider` — `provider` is a reserved Terraform
+			// resource meta-argument (provider-config selection), so a schema attribute
+			// named `provider` is unsettable from HCL (terraform parses `provider = "aws"`
+			// as the meta-arg and then demands a hashicorp/aws provider).
+			"cloud": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "Cloud provider to deploy to: `aws` | `gcp` | `digitalocean`.",
 			},
