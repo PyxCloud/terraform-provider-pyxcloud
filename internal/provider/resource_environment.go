@@ -66,6 +66,37 @@ type envComponentModel struct {
 	Stream        *envStreamModel        `tfsdk:"stream"`
 	Serverless    *envServerlessModel    `tfsdk:"serverless"`
 	KMS           *envKMSModel           `tfsdk:"kms"`
+	Cache         *envCacheModel         `tfsdk:"cache"`
+	CDN           *envCDNModel           `tfsdk:"cdn"`
+	WAF           *envWAFModel           `tfsdk:"waf"`
+	K8s           *envK8sModel           `tfsdk:"kubernetes"`
+}
+
+type envCacheModel struct {
+	Engine   types.String `tfsdk:"engine"`
+	Version  types.String `tfsdk:"version"`
+	MemoryGB types.Int64  `tfsdk:"memory_gb"`
+	HA       types.Bool   `tfsdk:"ha"`
+}
+
+type envCDNModel struct {
+	OriginKind types.String `tfsdk:"origin_kind"`
+	OriginName types.String `tfsdk:"origin_name"`
+}
+
+type envWAFModel struct {
+	Scope         types.String `tfsdk:"scope"`
+	AssociateName types.String `tfsdk:"associate_name"`
+}
+
+type envK8sModel struct {
+	Version      types.String `tfsdk:"version"`
+	Architecture types.String `tfsdk:"architecture"`
+	NodeCPU      types.Int64  `tfsdk:"node_cpu"`
+	NodeRAM      types.Int64  `tfsdk:"node_ram"`
+	MinNodes     types.Int64  `tfsdk:"min_nodes"`
+	MaxNodes     types.Int64  `tfsdk:"max_nodes"`
+	DesiredNodes types.Int64  `tfsdk:"desired_nodes"`
 }
 
 type envKMSModel struct {
@@ -365,6 +396,41 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"deletion_window_days": schema.Int64Attribute{Optional: true},
 							},
 						},
+						"cache": schema.SingleNestedAttribute{
+							Optional: true,
+							Attributes: map[string]schema.Attribute{
+								"engine":    schema.StringAttribute{Optional: true},
+								"version":   schema.StringAttribute{Optional: true},
+								"memory_gb": schema.Int64Attribute{Optional: true},
+								"ha":        schema.BoolAttribute{Optional: true},
+							},
+						},
+						"cdn": schema.SingleNestedAttribute{
+							Optional: true,
+							Attributes: map[string]schema.Attribute{
+								"origin_kind": schema.StringAttribute{Optional: true},
+								"origin_name": schema.StringAttribute{Optional: true},
+							},
+						},
+						"waf": schema.SingleNestedAttribute{
+							Optional: true,
+							Attributes: map[string]schema.Attribute{
+								"scope":          schema.StringAttribute{Optional: true},
+								"associate_name": schema.StringAttribute{Optional: true},
+							},
+						},
+						"kubernetes": schema.SingleNestedAttribute{
+							Optional: true,
+							Attributes: map[string]schema.Attribute{
+								"version":       schema.StringAttribute{Optional: true},
+								"architecture":  schema.StringAttribute{Optional: true},
+								"node_cpu":      schema.Int64Attribute{Optional: true},
+								"node_ram":      schema.Int64Attribute{Optional: true},
+								"min_nodes":     schema.Int64Attribute{Optional: true},
+								"max_nodes":     schema.Int64Attribute{Optional: true},
+								"desired_nodes": schema.Int64Attribute{Optional: true},
+							},
+						},
 					},
 				},
 			},
@@ -504,6 +570,18 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 					Description: cm.KMS.Description.ValueString(), RotationDays: int(cm.KMS.RotationDays.ValueInt64()),
 					DeletionWindowDays: int(cm.KMS.DeletionWindowDays.ValueInt64()),
 				}
+			}
+			if cm.Cache != nil {
+				comp.Cache = &catalog.AssembleCache{Engine: cm.Cache.Engine.ValueString(), Version: cm.Cache.Version.ValueString(), MemoryGB: int(cm.Cache.MemoryGB.ValueInt64()), HA: cm.Cache.HA.ValueBool()}
+			}
+			if cm.CDN != nil {
+				comp.CDN = &catalog.AssembleCDN{OriginKind: cm.CDN.OriginKind.ValueString(), OriginName: cm.CDN.OriginName.ValueString()}
+			}
+			if cm.WAF != nil {
+				comp.WAF = &catalog.AssembleWAF{Scope: cm.WAF.Scope.ValueString(), AssociateName: cm.WAF.AssociateName.ValueString()}
+			}
+			if cm.K8s != nil {
+				comp.K8s = &catalog.AssembleK8s{Version: cm.K8s.Version.ValueString(), Architecture: cm.K8s.Architecture.ValueString(), NodeCPU: int(cm.K8s.NodeCPU.ValueInt64()), NodeRAM: int(cm.K8s.NodeRAM.ValueInt64()), MinNodes: int(cm.K8s.MinNodes.ValueInt64()), MaxNodes: int(cm.K8s.MaxNodes.ValueInt64()), DesiredNodes: int(cm.K8s.DesiredNodes.ValueInt64())}
 			}
 		}
 		in.Components = append(in.Components, comp)

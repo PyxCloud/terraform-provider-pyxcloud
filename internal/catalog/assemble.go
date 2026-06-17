@@ -56,6 +56,10 @@ type AssembleComponent struct {
 	Stream        *AssembleStream
 	Serverless    *AssembleServerless
 	KMS           *AssembleKMS
+	Cache         *AssembleCache
+	CDN           *AssembleCDN
+	WAF           *AssembleWAF
+	K8s           *AssembleK8s
 }
 
 // AssembleKMS is the config for a `kms` / `encryption-key` component.
@@ -63,6 +67,37 @@ type AssembleKMS struct {
 	Description        string
 	RotationDays       int
 	DeletionWindowDays int
+}
+
+// AssembleCache is the config for a `cache` component (network-scoped).
+type AssembleCache struct {
+	Engine   string
+	Version  string
+	MemoryGB int
+	HA       bool
+}
+
+// AssembleCDN is the config for a `cdn-service` / `cdn` component.
+type AssembleCDN struct {
+	OriginKind string // object-storage | load-balancer
+	OriginName string
+}
+
+// AssembleWAF is the config for a `waf-service` / `waf` component.
+type AssembleWAF struct {
+	Scope         string
+	AssociateName string
+}
+
+// AssembleK8s is the config for a `managed-kubernetes` / `container-service` component (network-scoped).
+type AssembleK8s struct {
+	Version      string
+	Architecture string
+	NodeCPU      int
+	NodeRAM      int
+	MinNodes     int
+	MaxNodes     int
+	DesiredNodes int
 }
 
 // AssembleMonitoring is the canonical monitoring config for a `monitoring` component.
@@ -161,7 +196,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		switch c.Type {
 		case "virtual-machine", "virtual-machine-scale-group":
 			hasVM, hasNetworked = true, true
-		case "managed-database":
+		case "managed-database", "cache", "managed-kubernetes", "container-service":
 			hasNetworked = true
 		}
 	}
@@ -398,6 +433,76 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, kmsHCL)
+		case "cache":
+			cSpec := CacheSpec{Name: c.Name, Region: in.Region, Provider: in.Provider,
+				Network: netName, Subnets: subnetNames, SecurityGroup: vmSG}
+			if c.Cache != nil {
+				cSpec.Engine = c.Cache.Engine
+				cSpec.Version = c.Cache.Version
+				cSpec.MemoryGB = c.Cache.MemoryGB
+				cSpec.HA = c.Cache.HA
+			}
+			cPlan, err := TranslateCache(ctx, cat, cSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			cHCL, err := RenderCacheHCL(cPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, cHCL)
+		case "cdn-service", "cdn":
+			if c.CDN == nil {
+				return nil, fmt.Errorf("component %q (cdn): config is required", c.Name)
+			}
+			cdnPlan, err := TranslateCDN(ctx, cat, CDNSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider,
+				OriginKind: c.CDN.OriginKind, OriginName: c.CDN.OriginName,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			cdnHCL, err := RenderCDNHCL(cdnPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, cdnHCL)
+		case "waf-service", "waf":
+			wafSpec := WAFSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.WAF != nil {
+				wafSpec.Scope = c.WAF.Scope
+				wafSpec.AssociateName = c.WAF.AssociateName
+			}
+			wafPlan, err := TranslateWAF(ctx, cat, wafSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			wafHCL, err := RenderWAFHCL(wafPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, wafHCL)
+		case "managed-kubernetes", "container-service":
+			kSpec := K8sSpec{Name: c.Name, Region: in.Region, Provider: in.Provider,
+				Network: netName, Subnets: subnetNames}
+			if c.K8s != nil {
+				kSpec.Version = c.K8s.Version
+				kSpec.Architecture = c.K8s.Architecture
+				kSpec.NodeCPU = c.K8s.NodeCPU
+				kSpec.NodeRAM = c.K8s.NodeRAM
+				kSpec.MinNodes = c.K8s.MinNodes
+				kSpec.MaxNodes = c.K8s.MaxNodes
+				kSpec.DesiredNodes = c.K8s.DesiredNodes
+			}
+			kPlan, err := TranslateKubernetes(ctx, cat, kSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			kHCL, err := RenderKubernetesHCL(kPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, kHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
