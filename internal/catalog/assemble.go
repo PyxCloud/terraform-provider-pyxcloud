@@ -48,12 +48,19 @@ type AssembleComponent struct {
 	VM         *AssembleVM
 	IAM        *AssembleIAM
 	Monitoring *AssembleMonitoring
+	DNS        *AssembleDNS
 }
 
 // AssembleMonitoring is the canonical monitoring config for a `monitoring` component.
 type AssembleMonitoring struct {
 	LogGroups []LogGroup
 	Alarms    []MetricAlarm
+}
+
+// AssembleDNS is the canonical Cloudflare DNS config for a `dns` component.
+type AssembleDNS struct {
+	ZoneID  string
+	Records []DNSRecord
 }
 
 // AssembleInput is the catalog-native environment description (no client import,
@@ -73,8 +80,6 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	if in.Name == "" {
 		return nil, fmt.Errorf("environment: name is required")
 	}
-	netName := in.Name + "-net"
-	sgName := in.Name + "-sg"
 	cidr := in.CIDR
 	if cidr == "" {
 		cidr = "10.0.0.0/16"
@@ -85,29 +90,46 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	}
 
 	var docs []string
+	needsCloudflare := false
 
-	// 1. Network (VPC + subnets).
-	netPlan, err := TranslateNetwork(ctx, cat, NetworkSpec{
-		Name: netName, Region: in.Region, Provider: in.Provider, CIDR: cidr, Subnets: subnets,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("network: %w", err)
+	// A network (VPC + subnet) is only needed when the environment places VMs.
+	// A DNS-only / IAM-only env must NOT synthesise a VPC.
+	hasVM := false
+	for _, c := range in.Components {
+		if c.Type == "virtual-machine" || c.Type == "virtual-machine-scale-group" {
+			hasVM = true
+			break
+		}
 	}
-	netHCL, err := RenderHCL(netPlan)
-	if err != nil {
-		return nil, fmt.Errorf("network render: %w", err)
-	}
-	docs = append(docs, netHCL)
-	if len(netPlan.Subnets) == 0 {
-		return nil, fmt.Errorf("network produced no subnets")
-	}
-	subnetName := netPlan.Subnets[0].Name
 
-	// 2. Security group — only when the environment exposes ports. A SG with no
-	//    rule is rejected by the translator, so with no expose we skip it and the
-	//    VMs fall back to the VPC default SG. vmSG is the name to wire onto VMs ("" = none).
+	netName := in.Name + "-net"
+	sgName := in.Name + "-sg"
+	subnetName := ""
 	vmSG := ""
-	if len(in.Expose) > 0 {
+
+	// 1. Network (VPC + subnets) — only when VMs are present.
+	if hasVM {
+		netPlan, err := TranslateNetwork(ctx, cat, NetworkSpec{
+			Name: netName, Region: in.Region, Provider: in.Provider, CIDR: cidr, Subnets: subnets,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("network: %w", err)
+		}
+		netHCL, err := RenderHCL(netPlan)
+		if err != nil {
+			return nil, fmt.Errorf("network render: %w", err)
+		}
+		docs = append(docs, netHCL)
+		if len(netPlan.Subnets) == 0 {
+			return nil, fmt.Errorf("network produced no subnets")
+		}
+		subnetName = netPlan.Subnets[0].Name
+	}
+
+	// 2. Security group — only when VMs are present AND ports are exposed. A SG with
+	//    no rule is rejected by the translator, so with no expose we skip it and the
+	//    VMs fall back to the VPC default SG. vmSG is the name to wire onto VMs ("" = none).
+	if hasVM && len(in.Expose) > 0 {
 		sgPlan, err := TranslateSecurityGroup(ctx, cat, SecurityGroupSpec{
 			Name: sgName, Network: netName, Region: in.Region, Provider: in.Provider,
 			Description: in.Name + " environment", Expose: in.Expose,
@@ -178,10 +200,31 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, monHCL)
+		case "dns":
+			if c.DNS == nil {
+				return nil, fmt.Errorf("component %q (dns): config is required", c.Name)
+			}
+			dnsPlan, err := TranslateCloudflareDNS(ctx, CloudflareDNSSpec{
+				Name: c.Name, ZoneID: c.DNS.ZoneID, Records: c.DNS.Records,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			dnsHCL, err := RenderCloudflareDNSHCL(dnsPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			needsCloudflare = true
+			docs = append(docs, dnsHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
 		}
+	}
+	// Pin the Cloudflare provider source when any Cloudflare component is present
+	// (terraform would otherwise assume the non-existent hashicorp/cloudflare).
+	if needsCloudflare {
+		docs = append([]string{cloudflareRequiredProviders}, docs...)
 	}
 	return docs, nil
 }

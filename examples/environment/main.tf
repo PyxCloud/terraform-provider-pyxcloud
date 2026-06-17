@@ -47,6 +47,29 @@ resource "pyxcloud_environment" "demo" {
         managed_policy_arns = ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]
       }
     },
+    {
+      name = "obs"
+      type = "monitoring"
+      monitoring = {
+        log_groups = [{ name = "/pyx/app", retention_days = 30 }]
+        alarms = [{
+          name                = "cpu-high"
+          namespace           = "AWS/EC2"
+          metric_name         = "CPUUtilization"
+          comparison_operator = "GreaterThanThreshold"
+          threshold           = 80
+          evaluation_periods  = 2
+        }]
+      }
+    },
+    {
+      name = "edge-dns"
+      type = "dns"
+      dns = {
+        # zone_id supplied via the cloudflare_zone_id tf var
+        records = [{ name = "app.example.com", type = "A", content = "203.0.113.10", proxied = true }]
+      }
+    },
   ]
 }
 

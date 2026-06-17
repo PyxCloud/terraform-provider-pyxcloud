@@ -52,11 +52,47 @@ type environmentModel struct {
 // shared topology componentModel so env-only blocks like iam don't churn the
 // topology/compare schemas). VM sizing reuses the shared vmTypeModel.
 type envComponentModel struct {
-	Name  types.String `tfsdk:"name"`
-	Type  types.String `tfsdk:"type"`
-	Count types.Int64  `tfsdk:"count"`
-	VM    *vmTypeModel `tfsdk:"vm"`
-	IAM   *envIAMModel `tfsdk:"iam"`
+	Name       types.String        `tfsdk:"name"`
+	Type       types.String        `tfsdk:"type"`
+	Count      types.Int64         `tfsdk:"count"`
+	VM         *vmTypeModel        `tfsdk:"vm"`
+	IAM        *envIAMModel        `tfsdk:"iam"`
+	Monitoring *envMonitoringModel `tfsdk:"monitoring"`
+	DNS        *envDNSModel        `tfsdk:"dns"`
+}
+
+type envDNSRecordModel struct {
+	Name    types.String `tfsdk:"name"`
+	Type    types.String `tfsdk:"type"`
+	Content types.String `tfsdk:"content"`
+	TTL     types.Int64  `tfsdk:"ttl"`
+	Proxied types.Bool   `tfsdk:"proxied"`
+}
+
+type envDNSModel struct {
+	ZoneID  types.String        `tfsdk:"zone_id"`
+	Records []envDNSRecordModel `tfsdk:"records"`
+}
+
+type envLogGroupModel struct {
+	Name          types.String `tfsdk:"name"`
+	RetentionDays types.Int64  `tfsdk:"retention_days"`
+}
+
+type envAlarmModel struct {
+	Name               types.String  `tfsdk:"name"`
+	Namespace          types.String  `tfsdk:"namespace"`
+	MetricName         types.String  `tfsdk:"metric_name"`
+	ComparisonOperator types.String  `tfsdk:"comparison_operator"`
+	Threshold          types.Float64 `tfsdk:"threshold"`
+	EvaluationPeriods  types.Int64   `tfsdk:"evaluation_periods"`
+	PeriodSeconds      types.Int64   `tfsdk:"period_seconds"`
+	Statistic          types.String  `tfsdk:"statistic"`
+}
+
+type envMonitoringModel struct {
+	LogGroups []envLogGroupModel `tfsdk:"log_groups"`
+	Alarms    []envAlarmModel    `tfsdk:"alarms"`
 }
 
 type envIAMPolicyModel struct {
@@ -160,6 +196,55 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								},
 							},
 						},
+						"monitoring": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Monitoring config for `monitoring` components (CloudWatch log groups + metric alarms).",
+							Attributes: map[string]schema.Attribute{
+								"log_groups": schema.ListNestedAttribute{
+									Optional: true,
+									NestedObject: schema.NestedAttributeObject{
+										Attributes: map[string]schema.Attribute{
+											"name":           schema.StringAttribute{Required: true},
+											"retention_days": schema.Int64Attribute{Optional: true, MarkdownDescription: "0 = never expire."},
+										},
+									},
+								},
+								"alarms": schema.ListNestedAttribute{
+									Optional: true,
+									NestedObject: schema.NestedAttributeObject{
+										Attributes: map[string]schema.Attribute{
+											"name":                schema.StringAttribute{Required: true},
+											"namespace":           schema.StringAttribute{Required: true},
+											"metric_name":         schema.StringAttribute{Required: true},
+											"comparison_operator": schema.StringAttribute{Required: true},
+											"threshold":           schema.Float64Attribute{Required: true},
+											"evaluation_periods":  schema.Int64Attribute{Optional: true},
+											"period_seconds":      schema.Int64Attribute{Optional: true},
+											"statistic":           schema.StringAttribute{Optional: true},
+										},
+									},
+								},
+							},
+						},
+						"dns": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Cloudflare DNS config for `dns` components (cross-cutting; cloudflare_dns_record).",
+							Attributes: map[string]schema.Attribute{
+								"zone_id": schema.StringAttribute{Optional: true, MarkdownDescription: "Cloudflare zone id (else supplied via the cloudflare_zone_id tf var)."},
+								"records": schema.ListNestedAttribute{
+									Required: true,
+									NestedObject: schema.NestedAttributeObject{
+										Attributes: map[string]schema.Attribute{
+											"name":    schema.StringAttribute{Required: true},
+											"type":    schema.StringAttribute{Required: true, MarkdownDescription: "A | AAAA | CNAME | TXT | MX | ..."},
+											"content": schema.StringAttribute{Required: true},
+											"ttl":     schema.Int64Attribute{Optional: true, MarkdownDescription: "seconds; 1 = automatic."},
+											"proxied": schema.BoolAttribute{Optional: true},
+										},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -229,6 +314,33 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				})
 			}
 			comp.IAM = iam
+		}
+		if cm.Monitoring != nil {
+			mon := &catalog.AssembleMonitoring{}
+			for _, lg := range cm.Monitoring.LogGroups {
+				mon.LogGroups = append(mon.LogGroups, catalog.LogGroup{
+					Name: lg.Name.ValueString(), RetentionDays: int(lg.RetentionDays.ValueInt64()),
+				})
+			}
+			for _, a := range cm.Monitoring.Alarms {
+				mon.Alarms = append(mon.Alarms, catalog.MetricAlarm{
+					Name: a.Name.ValueString(), Namespace: a.Namespace.ValueString(),
+					MetricName: a.MetricName.ValueString(), ComparisonOperator: a.ComparisonOperator.ValueString(),
+					Threshold: a.Threshold.ValueFloat64(), EvaluationPeriods: int(a.EvaluationPeriods.ValueInt64()),
+					PeriodSeconds: int(a.PeriodSeconds.ValueInt64()), Statistic: a.Statistic.ValueString(),
+				})
+			}
+			comp.Monitoring = mon
+		}
+		if cm.DNS != nil {
+			dns := &catalog.AssembleDNS{ZoneID: cm.DNS.ZoneID.ValueString()}
+			for _, r := range cm.DNS.Records {
+				dns.Records = append(dns.Records, catalog.DNSRecord{
+					Name: r.Name.ValueString(), Type: r.Type.ValueString(), Content: r.Content.ValueString(),
+					TTL: int(r.TTL.ValueInt64()), Proxied: r.Proxied.ValueBool(),
+				})
+			}
+			comp.DNS = dns
 		}
 		in.Components = append(in.Components, comp)
 	}
