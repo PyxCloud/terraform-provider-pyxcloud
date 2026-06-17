@@ -353,10 +353,26 @@ func renderVMAWS(p VMPlan) string {
 		if p.SecurityGroup != "" {
 			fmt.Fprintf(&b, "  vpc_security_group_ids = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
 		}
+		if p.InstanceProfile != "" {
+			fmt.Fprintf(&b, "  iam_instance_profile = %q\n", p.InstanceProfile)
+		}
+		if p.UserData != "" {
+			fmt.Fprintf(&b, "  user_data = base64encode(%s)\n", heredoc(p.UserData))
+		}
 		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", inst.Name)
 		b.WriteString("}\n\n")
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// heredoc renders s as an HCL indented heredoc (`<<-PYXUSERDATA ... PYXUSERDATA`),
+// safe for arbitrary multi-line bootstrap scripts (no escaping of $, quotes, etc.).
+func heredoc(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return "<<-PYXUSERDATA\n" + s + "PYXUSERDATA\n  "
 }
 
 func renderVMGCP(p VMPlan) string {
@@ -383,6 +399,15 @@ func renderVMGCP(p VMPlan) string {
 			fmt.Fprintf(&b, "    subnetwork = google_compute_subnetwork.%s.id\n", subnetResourceLabel(p.NetworkName, p.SubnetName))
 		}
 		b.WriteString("  }\n")
+		if p.InstanceProfile != "" {
+			b.WriteString("  service_account {\n")
+			fmt.Fprintf(&b, "    email  = %q\n", p.InstanceProfile)
+			b.WriteString("    scopes = [\"cloud-platform\"]\n")
+			b.WriteString("  }\n")
+		}
+		if p.UserData != "" {
+			fmt.Fprintf(&b, "  metadata = { startup-script = %s }\n", heredoc(p.UserData))
+		}
 		fmt.Fprintf(&b, "  labels = { pyxcloud = \"true\" }\n")
 		b.WriteString("}\n\n")
 	}
@@ -400,6 +425,9 @@ func renderVMDO(p VMPlan) string {
 		fmt.Fprintf(&b, "  size   = %q\n", p.InstanceType)
 		if p.NetworkName != "" {
 			fmt.Fprintf(&b, "  vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+		}
+		if p.UserData != "" {
+			fmt.Fprintf(&b, "  user_data = %s\n", heredoc(p.UserData))
 		}
 		fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
 		b.WriteString("}\n\n")

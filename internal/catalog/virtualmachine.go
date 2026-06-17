@@ -69,6 +69,16 @@ type VMSpec struct {
 	OSVersion    string // optional; defaults per defaultOSVersions
 	Count        int    // number of instances (>= 1)
 
+	// UserData is the cloud-init / bootstrap script run on first boot (the
+	// canonical equivalent of the per-provider scripts' user_data). Provider-neutral
+	// plaintext; the renderer wraps it per provider (AWS base64 user_data, GCP
+	// metadata startup-script, DO user_data). Empty = no bootstrap.
+	UserData string
+
+	// InstanceProfile is the canonical IAM instance-profile/service-account name to
+	// attach (wired from a sibling `iam` component). Empty = none.
+	InstanceProfile string
+
 	// Placement wiring (from the other components). Names are canonical and
 	// resolved to provider references by the renderer.
 	Network       string // canonical network/place name (the VPC)
@@ -97,11 +107,13 @@ type VMPlan struct {
 	OSName        string           `json:"os_name"`        // ubuntu | debian
 	OSVersion     string           `json:"os_version"`     // resolved version
 	Image         string           `json:"image"`          // concrete provider image (AMI / family / slug)
-	Instances     []VMInstancePlan `json:"instances"`      // count instances
-	NetworkName   string           `json:"network_name"`   // VPC/network it lives in
-	SubnetName    string           `json:"subnet_name"`    // subnet (where applicable)
-	SecurityGroup string           `json:"security_group"` // SG/firewall to attach
-	ResourceType  string           `json:"resource_type"`  // top provider resource, e.g. aws_instance
+	Instances       []VMInstancePlan `json:"instances"`        // count instances
+	NetworkName     string           `json:"network_name"`     // VPC/network it lives in
+	SubnetName      string           `json:"subnet_name"`      // subnet (where applicable)
+	SecurityGroup   string           `json:"security_group"`   // SG/firewall to attach
+	UserData        string           `json:"user_data"`        // cloud-init/bootstrap (provider-neutral plaintext)
+	InstanceProfile string           `json:"instance_profile"` // IAM instance-profile/service-account name (optional)
+	ResourceType    string           `json:"resource_type"`    // top provider resource, e.g. aws_instance
 }
 
 // VMCatalog is the resolution boundary for virtual-machine SKUs and OS images.
@@ -229,10 +241,12 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		OSName:        osName,
 		OSVersion:     osVersion,
 		Image:         img.Image,
-		Instances:     instances,
-		NetworkName:   spec.Network,
-		SubnetName:    spec.Subnet,
-		SecurityGroup: spec.SecurityGroup,
+		Instances:       instances,
+		NetworkName:     spec.Network,
+		SubnetName:      spec.Subnet,
+		SecurityGroup:   spec.SecurityGroup,
+		UserData:        spec.UserData,
+		InstanceProfile: spec.InstanceProfile,
 	}
 
 	switch plan.Provider {
