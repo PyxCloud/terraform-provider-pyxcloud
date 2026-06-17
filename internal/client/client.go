@@ -30,6 +30,12 @@ type Client interface {
 	// Compare prices a canonical topology against each candidate (provider, region),
 	// mirroring the console Compare page / backend PricingRanker.rank.
 	Compare(ctx context.Context, t Topology, candidates []Candidate) ([]CandidateCost, error)
+
+	// Translate descends a canonical topology + its chosen (provider, abstract
+	// region) into concrete provider terraform, via the backend translation engine
+	// (RegionResolver + CspTemplateResolver). This is the authoritative,
+	// catalog-driven translation — the source of truth the resource plan reflects.
+	Translate(ctx context.Context, t Topology) (TranslateResult, error)
 }
 
 // Config holds the provider-level connection settings.
@@ -119,6 +125,21 @@ func (c *StubClient) Compare(_ context.Context, t Topology, candidates []Candida
 	// Cheapest first, matching PricingRanker's ordering.
 	sort.SliceStable(out, func(i, j int) bool { return out[i].HourlyUSD < out[j].HourlyUSD })
 	return out, nil
+}
+
+// Translate is stub-only: the in-memory client has no backend translation engine,
+// so it returns an explanatory placeholder per component. The live HTTPClient
+// returns the real catalog-driven terraform. Stub output is never applied.
+//
+// TODO(pd-FEAT-TF-PROVIDER): n/a — translation is inherently a backend concern.
+func (c *StubClient) Translate(_ context.Context, t Topology) (TranslateResult, error) {
+	tf := make([]string, 0, len(t.Components))
+	for _, comp := range t.Components {
+		tf = append(tf, fmt.Sprintf(
+			"# stub: no live backend translation for %q (%s) on %s/%s — set a token to use the live API\n",
+			comp.Name, comp.Type, t.Provider, t.Region))
+	}
+	return TranslateResult{Terraform: tf, Provider: t.Provider, Region: t.Region}, nil
 }
 
 // syntheticHourly produces a deterministic, plausible hourly price from the

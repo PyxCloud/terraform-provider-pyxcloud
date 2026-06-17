@@ -196,6 +196,33 @@ func (c *HTTPClient) Compare(ctx context.Context, t Topology, candidates []Candi
 	return out.Results, nil
 }
 
+// translateRequest mirrors TfProviderResource POST /api/translate.
+type translateRequest struct {
+	Canonical []map[string]any `json:"canonical"`
+	Provider  string           `json:"provider"`
+	Region    string           `json:"region"`
+}
+
+func (c *HTTPClient) Translate(ctx context.Context, t Topology) (TranslateResult, error) {
+	body := translateRequest{
+		Canonical: componentsToCanonical(t.Components),
+		Provider:  t.Provider,
+		Region:    t.Region,
+	}
+	resp, data, err := c.do(ctx, http.MethodPost, "/api/translate", body)
+	if err != nil {
+		return TranslateResult{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return TranslateResult{}, apiError("translate", resp.StatusCode, data)
+	}
+	var out TranslateResult
+	if err := json.Unmarshal(data, &out); err != nil {
+		return TranslateResult{}, fmt.Errorf("decoding translate response: %w", err)
+	}
+	return out, nil
+}
+
 func apiError(op string, status int, body []byte) error {
 	msg := strings.TrimSpace(string(body))
 	// Surface the backend's {"error":"..."} message when present.

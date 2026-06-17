@@ -77,3 +77,15 @@ type CandidateCost struct {
 	MonthlyUSD float64 `json:"monthly_usd"`
 	Priceable  bool    `json:"priceable"` // false when no complete price match exists
 }
+
+// TranslateResult is the concrete, provider-specific terraform the backend emits
+// for a canonical topology + a chosen (provider, abstract region). Terraform holds
+// one rendered HCL document per canonical root node (the existing
+// CspTemplateResolver output). CSPRegion is the concrete region the abstract
+// Region resolved to. Mirrors TfProviderResource POST /api/translate.
+type TranslateResult struct {
+	Terraform []string `json:"terraform"`
+	Provider  string   `json:"provider"`
+	Region    string   `json:"region"`     // abstract pyx region_name
+	CSPRegion string   `json:"csp_region"` // concrete, catalog-resolved
+}

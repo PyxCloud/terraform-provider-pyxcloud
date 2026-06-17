@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,45 @@ func TestHTTPClientCompareMapsResults(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Provider != "aws" || !got[0].Priceable || got[0].HourlyUSD != 0.05 {
 		t.Errorf("compare result not mapped: %+v", got)
+	}
+}
+
+func TestHTTPClientTranslate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["provider"] != "aws" || body["region"] != "Dublin" {
+			t.Errorf("provider/region not sent: %v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"terraform":  []string{"resource \"aws_instance\" \"app\" {}", "resource \"aws_db_instance\" \"db\" {}"},
+			"provider":   "aws",
+			"region":     "Dublin",
+			"csp_region": "eu-west-1",
+		})
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(Config{Endpoint: srv.URL, Token: "t"})
+	out, err := c.Translate(context.Background(), sampleTopology())
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if out.CSPRegion != "eu-west-1" || len(out.Terraform) != 2 {
+		t.Errorf("translate result not mapped: %+v", out)
+	}
+}
+
+func TestHTTPClientTranslateError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "no cspRegion for region 'Mars' on provider 'aws'"})
+	}))
+	defer srv.Close()
+	c := NewHTTP(Config{Endpoint: srv.URL, Token: "t"})
+	_, err := c.Translate(context.Background(), sampleTopology())
+	if err == nil || !strings.Contains(err.Error(), "no cspRegion") {
+		t.Errorf("expected surfaced backend error, got: %v", err)
 	}
 }
 
