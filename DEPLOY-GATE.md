@@ -1,12 +1,52 @@
-# PyxCloud Provider — Non-Interactive Deploy Gate (service-account apply path)
+# PyxCloud Provider — Apply Path (how a topology becomes a real environment)
 
 > Spec for how `terraform apply` of a `pyxcloud_topology` actually **provisions an
 > environment** — the apply half of "environment builds via the pyxcloud provider
 > instead of per-provider terraform". Spec-first, per the repo methodology
-> (SPEC.md). Status: **proposed**, gating implementation. Security-critical: it
-> extends an auth/approval boundary, so it must be reviewed before code.
+> (SPEC.md). Status: **proposed**.
 
-## 1. The problem
+## 0. Two apply modes (DEFAULT = env-credential, no gate)
+
+The cloud credentials decide the architecture. There are two modes; **mode A is the
+default** and is what replaces today's per-provider terraform scripts.
+
+### Mode A — env-credential, terraform-native (DEFAULT, no accountBinding, no gate)
+
+The apply runs **where the standard provider credentials already live** — the runner /
+CI / shell executing terraform — exactly like the per-provider scripts do today. The
+provider:
+
+1. calls the live backend `POST /api/translate` (the catalog-driven abstract→concrete
+   translation) to get the concrete provider `.tf` for the topology + `{provider,
+   region}`;
+2. **executes** that `.tf` itself via an embedded terraform run (`terraform-exec`) in a
+   work dir, letting the cloud providers resolve creds from the **standard env-var
+   chain** — AWS `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`/
+   `AWS_REGION` (or `AWS_PROFILE`), GCP `GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CREDENTIALS`,
+   DigitalOcean `DIGITALOCEAN_TOKEN`, etc.;
+3. records the terraform state/outputs on the resource.
+
+**No `accountBinding`, no backend-side cloud credentials, no approval/step-up token, and
+no raw secrets ever sent to the API** (CLAUDE.md: secrets never echoed raw). Authorization
+is the cloud's own IAM via the ambient credentials — the same trust model the current
+scripts rely on. This is the path that makes `terraform apply` build a real environment
+out of the box.
+
+`region` may be the abstract pyx `region_name` (translated to a cspRegion by the backend)
+or, when present, the standard provider region env (`AWS_REGION`) as the default.
+
+### Mode B — backend-driven deploy (OPTIONAL, accountBinding + gate)
+
+For users who want **PyxCloud** to drive the deploy server-side (no local terraform; the
+backend writes the `.tf` to a repo + a GitHub Actions pipeline applies it), the existing
+`VibeDeployService.deployDirect` path applies, which needs a stored `accountBinding` for
+cloud creds. That server-driven path is non-interactive and therefore needs the
+service-account deploy gate specified in §1–§5 below. **Mode B is opt-in; Mode A needs
+none of §1–§5.**
+
+---
+
+## 1. The problem (Mode B only)
 
 The backend deploy path (`POST /vibe/deploy/direct` → `VibeDeployService.deployDirect`)
 already turns a canonical topology + `{provider, cspRegion, accountBindingId}` into a
@@ -98,10 +138,20 @@ automigrate authorizer mints its token. The provider never sees the private key.
 
 ## 5. Build order (each its own reviewable PR)
 
-1. Delegated key: gen script + Vault path + `tfdeployerPublicKey` config (no behavior yet).
-2. `verifyDeployApproval`: add the `pyx:deploy-provider` delegated branch + policy check + unit tests.
-3. `StepUpAuthFilter`: service-account `tf-deployer` exemption + tests.
-4. SSO: realm role `tf-deployer` + a service-account client (single-sign-on repo).
-5. Backend `POST /api/topology/{id}/deploy` + token issuer + deployment-state persistence.
-6. Provider: `account_binding` attribute + Create/Update/Delete deploy wiring + tests.
-7. Pilot: one repo's macro components end-to-end (plan → translate → deploy → destroy) in a test env.
+### Mode A (DEFAULT — env-credential, ship this first; needs none of §1–§4)
+A1. Provider client: consume `POST /api/translate` (done — `client.Translate`).
+A2. `pyxcloud_topology` Create/Read/Update/Delete runs an embedded terraform
+    (`terraform-exec`) over the backend-translated `.tf` in a work dir, inheriting the
+    process env (so the cloud providers resolve creds from `AWS_*` / `GOOGLE_*` /
+    `DIGITALOCEAN_TOKEN`). State/outputs stored on the resource. No accountBinding.
+A3. Pilot: one repo's macro components end-to-end (plan → translate → apply → destroy)
+    against a test cloud account via env creds.
+
+### Mode B (OPTIONAL — backend-driven, needs the §1–§4 gate)
+B1. Delegated key: gen script + Vault path + `tfdeployerPublicKey` config.
+B2. `verifyDeployApproval`: `pyx:deploy-provider` delegated branch + policy check + tests.
+B3. `StepUpAuthFilter`: service-account `tf-deployer` exemption + tests.
+B4. SSO: realm role `tf-deployer` + service-account client (single-sign-on repo).
+B5. Backend `POST /api/topology/{id}/deploy` (server-driven deployDirect) + token issuer
+    + deployment-state persistence.
+B6. Provider: optional `account_binding` attribute selecting Mode B.
