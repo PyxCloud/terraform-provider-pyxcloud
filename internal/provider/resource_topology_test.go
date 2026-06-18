@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
+	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
 
 	fwresource "github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-func TestTopologyComponentsSchemaIsFlat(t *testing.T) {
+func TestTopologySchemaUsesPyxTypedComponentBlocks(t *testing.T) {
 	t.Parallel()
 	r := NewTopologyResource()
 	resp := &fwresource.SchemaResponse{}
@@ -20,34 +21,36 @@ func TestTopologyComponentsSchemaIsFlat(t *testing.T) {
 		t.Fatalf("topology schema diagnostics: %+v", resp.Diagnostics)
 	}
 
-	components, ok := resp.Schema.Attributes["components"].(schema.ListNestedAttribute)
-	if !ok {
-		t.Fatalf("components schema = %T, want schema.ListNestedAttribute", resp.Schema.Attributes["components"])
+	if _, ok := resp.Schema.Attributes["components"]; ok {
+		t.Fatal("schema must not expose generic components block")
 	}
-	attrs := components.NestedObject.Attributes
-	for _, name := range []string{"path", "name", "type", "count", "architecture", "cpu", "ram", "os_name", "min", "max", "desired", "health"} {
-		if _, ok := attrs[name]; !ok {
-			t.Errorf("expected flat component attribute %q", name)
+	for _, componentType := range pyxComponentTypes {
+		blockName := componentType.BlockName
+		block, ok := resp.Schema.Attributes[blockName].(schema.ListNestedAttribute)
+		if !ok {
+			t.Fatalf("%s schema = %T, want schema.ListNestedAttribute", blockName, resp.Schema.Attributes[blockName])
 		}
-	}
-	if _, ok := attrs["vm"]; ok {
-		t.Error("component schema must not expose nested vm block")
-	}
-	if _, ok := attrs["scale_group"]; ok {
-		t.Error("component schema must not expose nested scale_group block")
+		attrs := block.NestedObject.Attributes
+		for _, name := range []string{"path", "name", "count", "architecture", "cpu", "ram", "os_name", "min", "max", "desired", "health"} {
+			if _, ok := attrs[name]; !ok {
+				t.Errorf("%s missing flat component attribute %q", blockName, name)
+			}
+		}
+		if _, ok := attrs["type"]; ok {
+			t.Errorf("%s must not expose redundant type attribute", blockName)
+		}
 	}
 }
 
-func TestTopologyModelToTopologyUsesFlatComponentFields(t *testing.T) {
+func TestTopologyModelToTopologyUsesPyxTypedBlocks(t *testing.T) {
 	t.Parallel()
 	topo := modelToTopology(topologyModel{
 		Name:     types.StringValue("production"),
 		Provider: types.StringValue("aws"),
 		Region:   types.StringValue("Dublin"),
-		Components: []componentModel{{
+		PyxAutoscaleVirtualMachineGroup: []componentModel{{
 			Path:         types.StringValue("/0/Europe/0/Web-Net/0/app"),
 			Name:         types.StringValue("app"),
-			Type:         types.StringValue("virtual-machine-scale-group"),
 			Count:        types.Int64Value(3),
 			Architecture: types.StringValue("x86_64"),
 			CPU:          types.StringValue("2"),
@@ -59,6 +62,9 @@ func TestTopologyModelToTopologyUsesFlatComponentFields(t *testing.T) {
 		t.Fatalf("components = %d, want 1", len(topo.Components))
 	}
 	comp := topo.Components[0]
+	if comp.Type != "virtual-machine-scale-group" {
+		t.Errorf("type = %q", comp.Type)
+	}
 	if comp.Path != "/0/Europe/0/Web-Net/0/app" {
 		t.Errorf("path = %q", comp.Path)
 	}
@@ -67,6 +73,39 @@ func TestTopologyModelToTopologyUsesFlatComponentFields(t *testing.T) {
 	}
 	if comp.VM.Architecture != "x86_64" || comp.VM.CPU != "2" || comp.VM.RAM != "4" || comp.VM.OS != "ubuntu" {
 		t.Errorf("vm = %+v", comp.VM)
+	}
+}
+
+func TestTopologyToModelDistributesCanonicalComponentsToPyxBlocks(t *testing.T) {
+	t.Parallel()
+	model := topologyToModel(client.Topology{
+		Components: []client.Component{{
+			Name: "db", Type: "managed-database", Path: "/0/Europe/0/DB-Net/0/app-db",
+		}},
+	})
+	if len(model.PyxDatabase) != 1 {
+		t.Fatalf("pyx_database count = %d, want 1", len(model.PyxDatabase))
+	}
+	if model.PyxDatabase[0].Name.ValueString() != "db" {
+		t.Errorf("pyx_database name = %q", model.PyxDatabase[0].Name.ValueString())
+	}
+}
+
+func TestTopologyComponentBlockHasNoLegacyNestedBlocks(t *testing.T) {
+	t.Parallel()
+	r := NewTopologyResource()
+	resp := &fwresource.SchemaResponse{}
+	r.Schema(context.Background(), fwresource.SchemaRequest{}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("topology schema diagnostics: %+v", resp.Diagnostics)
+	}
+	block := resp.Schema.Attributes["pyx_virtual_machine"].(schema.ListNestedAttribute)
+	attrs := block.NestedObject.Attributes
+	for _, name := range []string{"vm", "scale_group"} {
+		if _, ok := attrs[name]; !ok {
+			continue
+		}
+		t.Errorf("component schema must not expose nested %s block", name)
 	}
 }
 

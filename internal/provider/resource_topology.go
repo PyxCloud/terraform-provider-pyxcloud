@@ -45,7 +45,6 @@ type vmTypeModel struct {
 type componentModel struct {
 	Path         types.String `tfsdk:"path"`
 	Name         types.String `tfsdk:"name"`
-	Type         types.String `tfsdk:"type"`
 	Count        types.Int64  `tfsdk:"count"`
 	Architecture types.String `tfsdk:"architecture"`
 	CPU          types.String `tfsdk:"cpu"`
@@ -55,6 +54,39 @@ type componentModel struct {
 	Max          types.Int64  `tfsdk:"max"`
 	Desired      types.Int64  `tfsdk:"desired"`
 	Health       types.String `tfsdk:"health"`
+}
+
+type pyxComponentType struct {
+	BlockName     string
+	CanonicalType string
+	Description   string
+}
+
+var pyxComponentTypes = []pyxComponentType{
+	{BlockName: "pyx_vpc", CanonicalType: "vpc", Description: "PyxCloud VPC/network component."},
+	{BlockName: "pyx_network_rule", CanonicalType: "network-rule", Description: "PyxCloud network rule component."},
+	{BlockName: "pyx_access_policy", CanonicalType: "access-policy", Description: "PyxCloud access policy component."},
+	{BlockName: "pyx_monitoring", CanonicalType: "monitoring", Description: "PyxCloud monitoring component."},
+	{BlockName: "pyx_dns", CanonicalType: "dns", Description: "PyxCloud DNS component."},
+	{BlockName: "pyx_virtual_machine", CanonicalType: "virtual-machine", Description: "PyxCloud virtual machine component."},
+	{BlockName: "pyx_autoscale_virtual_machine_group", CanonicalType: "virtual-machine-scale-group", Description: "PyxCloud autoscaling virtual machine group component."},
+	{BlockName: "pyx_database", CanonicalType: "managed-database", Description: "PyxCloud managed database component."},
+	{BlockName: "pyx_load_balancer", CanonicalType: "load-balancer", Description: "PyxCloud load balancer component."},
+	{BlockName: "pyx_cache", CanonicalType: "cache", Description: "PyxCloud cache component."},
+	{BlockName: "pyx_object_storage", CanonicalType: "object-storage", Description: "PyxCloud object storage component."},
+	{BlockName: "pyx_secret", CanonicalType: "secrets-manager", Description: "PyxCloud secret manager component."},
+	{BlockName: "pyx_queue", CanonicalType: "managed-queue", Description: "PyxCloud queue component."},
+	{BlockName: "pyx_stream", CanonicalType: "event-streaming", Description: "PyxCloud stream component."},
+	{BlockName: "pyx_serverless_function", CanonicalType: "serverless-function", Description: "PyxCloud serverless function component."},
+	{BlockName: "pyx_kms", CanonicalType: "kms", Description: "PyxCloud KMS/encryption-key component."},
+	{BlockName: "pyx_cdn", CanonicalType: "cdn", Description: "PyxCloud CDN component."},
+	{BlockName: "pyx_waf", CanonicalType: "waf", Description: "PyxCloud WAF component."},
+	{BlockName: "pyx_kubernetes", CanonicalType: "kubernetes", Description: "PyxCloud Kubernetes component."},
+	{BlockName: "pyx_email", CanonicalType: "email", Description: "PyxCloud email component."},
+	{BlockName: "pyx_block_storage", CanonicalType: "block-storage", Description: "PyxCloud block storage component."},
+	{BlockName: "pyx_prefix_list", CanonicalType: "prefix-list", Description: "PyxCloud prefix list component."},
+	{BlockName: "pyx_synthetics", CanonicalType: "synthetics", Description: "PyxCloud synthetics component."},
+	{BlockName: "pyx_alb_attachment", CanonicalType: "attach-to-existing-alb", Description: "PyxCloud existing ALB attachment component."},
 }
 
 // networkModel maps the abstract `network` block of a place: the canonical
@@ -356,25 +388,48 @@ type objectStoragePlanModel struct {
 
 // topologyModel maps the pyxcloud_topology resource state.
 type topologyModel struct {
-	ID                  types.String              `tfsdk:"id"`
-	Name                types.String              `tfsdk:"name"`
-	Provider            types.String              `tfsdk:"cloud"`
-	Region              types.String              `tfsdk:"region"`
-	Components          []componentModel          `tfsdk:"components"`
-	Network             *networkModel             `tfsdk:"network"`
-	NetworkPlan         *networkPlanModel         `tfsdk:"network_plan"`
-	SecurityGroup       *securityGroupModel       `tfsdk:"security_group"`
-	SecurityGroupPlan   *securityGroupPlanModel   `tfsdk:"security_group_plan"`
-	VirtualMachine      *virtualMachineModel      `tfsdk:"virtual_machine"`
-	VirtualMachinePlan  *virtualMachinePlanModel  `tfsdk:"virtual_machine_plan"`
-	ScaleGroup          *scaleGroupModel          `tfsdk:"scale_group"`
-	ScaleGroupPlan      *scaleGroupPlanModel      `tfsdk:"scale_group_plan"`
-	LoadBalancer        *loadBalancerModel        `tfsdk:"load_balancer"`
-	LoadBalancerPlan    *loadBalancerPlanModel    `tfsdk:"load_balancer_plan"`
-	ManagedDatabase     *managedDatabaseModel     `tfsdk:"managed_database"`
-	ManagedDatabasePlan *managedDatabasePlanModel `tfsdk:"managed_database_plan"`
-	ObjectStorage       *objectStorageModel       `tfsdk:"object_storage"`
-	ObjectStoragePlan   *objectStoragePlanModel   `tfsdk:"object_storage_plan"`
+	ID                              types.String              `tfsdk:"id"`
+	Name                            types.String              `tfsdk:"name"`
+	Provider                        types.String              `tfsdk:"cloud"`
+	Region                          types.String              `tfsdk:"region"`
+	PyxVPC                          []componentModel          `tfsdk:"pyx_vpc"`
+	PyxNetworkRule                  []componentModel          `tfsdk:"pyx_network_rule"`
+	PyxAccessPolicy                 []componentModel          `tfsdk:"pyx_access_policy"`
+	PyxMonitoring                   []componentModel          `tfsdk:"pyx_monitoring"`
+	PyxDNS                          []componentModel          `tfsdk:"pyx_dns"`
+	PyxVirtualMachine               []componentModel          `tfsdk:"pyx_virtual_machine"`
+	PyxAutoscaleVirtualMachineGroup []componentModel          `tfsdk:"pyx_autoscale_virtual_machine_group"`
+	PyxDatabase                     []componentModel          `tfsdk:"pyx_database"`
+	PyxLoadBalancer                 []componentModel          `tfsdk:"pyx_load_balancer"`
+	PyxCache                        []componentModel          `tfsdk:"pyx_cache"`
+	PyxObjectStorage                []componentModel          `tfsdk:"pyx_object_storage"`
+	PyxSecret                       []componentModel          `tfsdk:"pyx_secret"`
+	PyxQueue                        []componentModel          `tfsdk:"pyx_queue"`
+	PyxStream                       []componentModel          `tfsdk:"pyx_stream"`
+	PyxServerlessFunction           []componentModel          `tfsdk:"pyx_serverless_function"`
+	PyxKMS                          []componentModel          `tfsdk:"pyx_kms"`
+	PyxCDN                          []componentModel          `tfsdk:"pyx_cdn"`
+	PyxWAF                          []componentModel          `tfsdk:"pyx_waf"`
+	PyxKubernetes                   []componentModel          `tfsdk:"pyx_kubernetes"`
+	PyxEmail                        []componentModel          `tfsdk:"pyx_email"`
+	PyxBlockStorage                 []componentModel          `tfsdk:"pyx_block_storage"`
+	PyxPrefixList                   []componentModel          `tfsdk:"pyx_prefix_list"`
+	PyxSynthetics                   []componentModel          `tfsdk:"pyx_synthetics"`
+	PyxALBAttachment                []componentModel          `tfsdk:"pyx_alb_attachment"`
+	Network                         *networkModel             `tfsdk:"network"`
+	NetworkPlan                     *networkPlanModel         `tfsdk:"network_plan"`
+	SecurityGroup                   *securityGroupModel       `tfsdk:"security_group"`
+	SecurityGroupPlan               *securityGroupPlanModel   `tfsdk:"security_group_plan"`
+	VirtualMachine                  *virtualMachineModel      `tfsdk:"virtual_machine"`
+	VirtualMachinePlan              *virtualMachinePlanModel  `tfsdk:"virtual_machine_plan"`
+	ScaleGroup                      *scaleGroupModel          `tfsdk:"scale_group"`
+	ScaleGroupPlan                  *scaleGroupPlanModel      `tfsdk:"scale_group_plan"`
+	LoadBalancer                    *loadBalancerModel        `tfsdk:"load_balancer"`
+	LoadBalancerPlan                *loadBalancerPlanModel    `tfsdk:"load_balancer_plan"`
+	ManagedDatabase                 *managedDatabaseModel     `tfsdk:"managed_database"`
+	ManagedDatabasePlan             *managedDatabasePlanModel `tfsdk:"managed_database_plan"`
+	ObjectStorage                   *objectStorageModel       `tfsdk:"object_storage"`
+	ObjectStoragePlan               *objectStoragePlanModel   `tfsdk:"object_storage_plan"`
 }
 
 func (r *topologyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -411,55 +466,30 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				MarkdownDescription: "Abstract PyxCloud macro-region, e.g. `EU West`, " +
 					"`US East`, `Asia` — resolved to a concrete CSP region at deploy time.",
 			},
-			"components": schema.ListNestedAttribute{
-				Required:            true,
-				MarkdownDescription: "Canonical components that make up the topology.",
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"path": schema.StringAttribute{
-							Optional:            true,
-							MarkdownDescription: "Canonical topology path for this component, e.g. `/0/Europe/0/Web-Net/0/app`.",
-						},
-						"name": schema.StringAttribute{
-							Required:            true,
-							MarkdownDescription: "Component name, unique within the topology.",
-						},
-						"type": schema.StringAttribute{
-							Required: true,
-							MarkdownDescription: "Canonical component type, e.g. " +
-								"`virtual-machine`, `virtual-machine-scale-group`, " +
-								"`managed-database`, `load-balancer`, `cache`, " +
-								"`object-storage`, `blob-storage`.",
-						},
-						"count": schema.Int64Attribute{
-							Optional: true,
-							Computed: true,
-							MarkdownDescription: "Number of instances of this component " +
-								"(defaults to 1).",
-						},
-						"architecture": schema.StringAttribute{
-							Optional:            true,
-							MarkdownDescription: "CPU architecture, e.g. `x86_64`, `arm64`.",
-						},
-						"cpu": schema.StringAttribute{
-							Optional:            true,
-							MarkdownDescription: "vCPU count, e.g. `2`.",
-						},
-						"ram": schema.StringAttribute{
-							Optional:            true,
-							MarkdownDescription: "RAM in GiB, e.g. `4`.",
-						},
-						"os_name": schema.StringAttribute{
-							Optional:            true,
-							MarkdownDescription: "Operating system, e.g. `ubuntu`.",
-						},
-						"min":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Minimum instances for scale-group components."},
-						"max":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Maximum instances for scale-group components."},
-						"desired": schema.Int64Attribute{Optional: true, MarkdownDescription: "Desired instances for scale-group components."},
-						"health":  schema.StringAttribute{Optional: true, MarkdownDescription: "Health check kind for scale-group components: `ec2` | `elb`."},
-					},
-				},
-			},
+			"pyx_vpc":                             pyxTopologyComponentBlock("PyxCloud VPC/network component."),
+			"pyx_network_rule":                    pyxTopologyComponentBlock("PyxCloud network rule component."),
+			"pyx_access_policy":                   pyxTopologyComponentBlock("PyxCloud access policy component."),
+			"pyx_monitoring":                      pyxTopologyComponentBlock("PyxCloud monitoring component."),
+			"pyx_dns":                             pyxTopologyComponentBlock("PyxCloud DNS component."),
+			"pyx_virtual_machine":                 pyxTopologyComponentBlock("PyxCloud virtual machine component."),
+			"pyx_autoscale_virtual_machine_group": pyxTopologyComponentBlock("PyxCloud autoscaling virtual machine group component."),
+			"pyx_database":                        pyxTopologyComponentBlock("PyxCloud managed database component."),
+			"pyx_load_balancer":                   pyxTopologyComponentBlock("PyxCloud load balancer component."),
+			"pyx_cache":                           pyxTopologyComponentBlock("PyxCloud cache component."),
+			"pyx_object_storage":                  pyxTopologyComponentBlock("PyxCloud object storage component."),
+			"pyx_secret":                          pyxTopologyComponentBlock("PyxCloud secret manager component."),
+			"pyx_queue":                           pyxTopologyComponentBlock("PyxCloud queue component."),
+			"pyx_stream":                          pyxTopologyComponentBlock("PyxCloud stream component."),
+			"pyx_serverless_function":             pyxTopologyComponentBlock("PyxCloud serverless function component."),
+			"pyx_kms":                             pyxTopologyComponentBlock("PyxCloud KMS/encryption-key component."),
+			"pyx_cdn":                             pyxTopologyComponentBlock("PyxCloud CDN component."),
+			"pyx_waf":                             pyxTopologyComponentBlock("PyxCloud WAF component."),
+			"pyx_kubernetes":                      pyxTopologyComponentBlock("PyxCloud Kubernetes component."),
+			"pyx_email":                           pyxTopologyComponentBlock("PyxCloud email component."),
+			"pyx_block_storage":                   pyxTopologyComponentBlock("PyxCloud block storage component."),
+			"pyx_prefix_list":                     pyxTopologyComponentBlock("PyxCloud prefix list component."),
+			"pyx_synthetics":                      pyxTopologyComponentBlock("PyxCloud synthetics component."),
+			"pyx_alb_attachment":                  pyxTopologyComponentBlock("PyxCloud existing ALB attachment component."),
 			"network": schema.SingleNestedAttribute{
 				Optional: true,
 				MarkdownDescription: "Abstract network for the place (pd-TF-REGION-VPC): a " +
@@ -1043,6 +1073,51 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					"force_destroy": schema.BoolAttribute{Computed: true},
 					"resource_type": schema.StringAttribute{Computed: true},
 				},
+			},
+		},
+	}
+}
+
+func pyxTopologyComponentBlock(description string) schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional:            true,
+		MarkdownDescription: description + " Properties are flat at the `pyx_*` block level.",
+		NestedObject: schema.NestedAttributeObject{
+			Attributes: map[string]schema.Attribute{
+				"path": schema.StringAttribute{
+					Optional:            true,
+					MarkdownDescription: "Canonical topology path for this component, e.g. `/0/Europe/0/Web-Net/0/app`.",
+				},
+				"name": schema.StringAttribute{
+					Required:            true,
+					MarkdownDescription: "Component name, unique within the topology.",
+				},
+				"count": schema.Int64Attribute{
+					Optional: true,
+					Computed: true,
+					MarkdownDescription: "Number of instances of this component " +
+						"(defaults to 1).",
+				},
+				"architecture": schema.StringAttribute{
+					Optional:            true,
+					MarkdownDescription: "CPU architecture, e.g. `x86_64`, `arm64`.",
+				},
+				"cpu": schema.StringAttribute{
+					Optional:            true,
+					MarkdownDescription: "vCPU count, e.g. `2`.",
+				},
+				"ram": schema.StringAttribute{
+					Optional:            true,
+					MarkdownDescription: "RAM in GiB, e.g. `4`.",
+				},
+				"os_name": schema.StringAttribute{
+					Optional:            true,
+					MarkdownDescription: "Operating system, e.g. `ubuntu`.",
+				},
+				"min":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Minimum instances for autoscale components."},
+				"max":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Maximum instances for autoscale components."},
+				"desired": schema.Int64Attribute{Optional: true, MarkdownDescription: "Desired instances for autoscale components."},
+				"health":  schema.StringAttribute{Optional: true, MarkdownDescription: "Health check kind for autoscale components: `ec2` | `elb`."},
 			},
 		},
 	}
@@ -1995,36 +2070,7 @@ func (r *topologyResource) Delete(ctx context.Context, req resource.DeleteReques
 
 // modelToTopology converts Terraform state into the canonical client model.
 func modelToTopology(m topologyModel) client.Topology {
-	comps := make([]client.Component, 0, len(m.Components))
-	for _, cm := range m.Components {
-		count := int(cm.Count.ValueInt64())
-		if count <= 0 {
-			count = 1
-		}
-		comp := client.Component{
-			Path:         cm.Path.ValueString(),
-			Name:         cm.Name.ValueString(),
-			Type:         cm.Type.ValueString(),
-			Count:        count,
-			Architecture: cm.Architecture.ValueString(),
-			CPU:          cm.CPU.ValueString(),
-			RAM:          cm.RAM.ValueString(),
-			OSName:       cm.OSName.ValueString(),
-			Min:          int(cm.Min.ValueInt64()),
-			Max:          int(cm.Max.ValueInt64()),
-			Desired:      int(cm.Desired.ValueInt64()),
-			Health:       cm.Health.ValueString(),
-		}
-		if hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
-			comp.VM = &client.VMType{
-				Architecture: cm.Architecture.ValueString(),
-				CPU:          cm.CPU.ValueString(),
-				RAM:          cm.RAM.ValueString(),
-				OS:           cm.OSName.ValueString(),
-			}
-		}
-		comps = append(comps, comp)
-	}
+	comps := topologyComponentsFromModel(m)
 	return client.Topology{
 		ID:         m.ID.ValueString(),
 		Name:       m.Name.ValueString(),
@@ -2036,12 +2082,16 @@ func modelToTopology(m topologyModel) client.Topology {
 
 // topologyToModel converts the canonical client model back into Terraform state.
 func topologyToModel(t client.Topology) topologyModel {
-	comps := make([]componentModel, 0, len(t.Components))
+	m := topologyModel{
+		ID:       types.StringValue(t.ID),
+		Name:     types.StringValue(t.Name),
+		Provider: types.StringValue(t.Provider),
+		Region:   types.StringValue(t.Region),
+	}
 	for _, c := range t.Components {
 		cm := componentModel{
 			Path:         stringValueOrNull(c.Path),
 			Name:         types.StringValue(c.Name),
-			Type:         types.StringValue(c.Type),
 			Count:        types.Int64Value(int64(c.Count)),
 			Architecture: stringValueOrNull(c.Architecture),
 			CPU:          stringValueOrNull(c.CPU),
@@ -2058,14 +2108,125 @@ func topologyToModel(t client.Topology) topologyModel {
 			cm.RAM = stringValueOrNull(c.VM.RAM)
 			cm.OSName = stringValueOrNull(c.VM.OS)
 		}
-		comps = append(comps, cm)
+		appendTopologyComponentModel(&m, c.Type, cm)
 	}
-	return topologyModel{
-		ID:         types.StringValue(t.ID),
-		Name:       types.StringValue(t.Name),
-		Provider:   types.StringValue(t.Provider),
-		Region:     types.StringValue(t.Region),
-		Components: comps,
+	return m
+}
+
+func topologyComponentsFromModel(m topologyModel) []client.Component {
+	var comps []client.Component
+	appendComponents := func(canonicalType string, models []componentModel) {
+		for _, cm := range models {
+			comps = append(comps, componentModelToClient(canonicalType, cm))
+		}
+	}
+	appendComponents("vpc", m.PyxVPC)
+	appendComponents("network-rule", m.PyxNetworkRule)
+	appendComponents("access-policy", m.PyxAccessPolicy)
+	appendComponents("monitoring", m.PyxMonitoring)
+	appendComponents("dns", m.PyxDNS)
+	appendComponents("virtual-machine", m.PyxVirtualMachine)
+	appendComponents("virtual-machine-scale-group", m.PyxAutoscaleVirtualMachineGroup)
+	appendComponents("managed-database", m.PyxDatabase)
+	appendComponents("load-balancer", m.PyxLoadBalancer)
+	appendComponents("cache", m.PyxCache)
+	appendComponents("object-storage", m.PyxObjectStorage)
+	appendComponents("secrets-manager", m.PyxSecret)
+	appendComponents("managed-queue", m.PyxQueue)
+	appendComponents("event-streaming", m.PyxStream)
+	appendComponents("serverless-function", m.PyxServerlessFunction)
+	appendComponents("kms", m.PyxKMS)
+	appendComponents("cdn", m.PyxCDN)
+	appendComponents("waf", m.PyxWAF)
+	appendComponents("kubernetes", m.PyxKubernetes)
+	appendComponents("email", m.PyxEmail)
+	appendComponents("block-storage", m.PyxBlockStorage)
+	appendComponents("prefix-list", m.PyxPrefixList)
+	appendComponents("synthetics", m.PyxSynthetics)
+	appendComponents("attach-to-existing-alb", m.PyxALBAttachment)
+	return comps
+}
+
+func componentModelToClient(canonicalType string, cm componentModel) client.Component {
+	count := int(cm.Count.ValueInt64())
+	if count <= 0 {
+		count = 1
+	}
+	comp := client.Component{
+		Path:         cm.Path.ValueString(),
+		Name:         cm.Name.ValueString(),
+		Type:         canonicalType,
+		Count:        count,
+		Architecture: cm.Architecture.ValueString(),
+		CPU:          cm.CPU.ValueString(),
+		RAM:          cm.RAM.ValueString(),
+		OSName:       cm.OSName.ValueString(),
+		Min:          int(cm.Min.ValueInt64()),
+		Max:          int(cm.Max.ValueInt64()),
+		Desired:      int(cm.Desired.ValueInt64()),
+		Health:       cm.Health.ValueString(),
+	}
+	if hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
+		comp.VM = &client.VMType{
+			Architecture: cm.Architecture.ValueString(),
+			CPU:          cm.CPU.ValueString(),
+			RAM:          cm.RAM.ValueString(),
+			OS:           cm.OSName.ValueString(),
+		}
+	}
+	return comp
+}
+
+func appendTopologyComponentModel(m *topologyModel, canonicalType string, cm componentModel) {
+	switch canonicalType {
+	case "vpc":
+		m.PyxVPC = append(m.PyxVPC, cm)
+	case "network-rule":
+		m.PyxNetworkRule = append(m.PyxNetworkRule, cm)
+	case "access-policy":
+		m.PyxAccessPolicy = append(m.PyxAccessPolicy, cm)
+	case "monitoring":
+		m.PyxMonitoring = append(m.PyxMonitoring, cm)
+	case "dns":
+		m.PyxDNS = append(m.PyxDNS, cm)
+	case "virtual-machine":
+		m.PyxVirtualMachine = append(m.PyxVirtualMachine, cm)
+	case "virtual-machine-scale-group":
+		m.PyxAutoscaleVirtualMachineGroup = append(m.PyxAutoscaleVirtualMachineGroup, cm)
+	case "managed-database":
+		m.PyxDatabase = append(m.PyxDatabase, cm)
+	case "load-balancer":
+		m.PyxLoadBalancer = append(m.PyxLoadBalancer, cm)
+	case "cache":
+		m.PyxCache = append(m.PyxCache, cm)
+	case "object-storage", "blob-storage":
+		m.PyxObjectStorage = append(m.PyxObjectStorage, cm)
+	case "secrets-manager":
+		m.PyxSecret = append(m.PyxSecret, cm)
+	case "managed-queue", "message-queue":
+		m.PyxQueue = append(m.PyxQueue, cm)
+	case "event-streaming", "event-bus":
+		m.PyxStream = append(m.PyxStream, cm)
+	case "serverless-function":
+		m.PyxServerlessFunction = append(m.PyxServerlessFunction, cm)
+	case "kms", "encryption-key":
+		m.PyxKMS = append(m.PyxKMS, cm)
+	case "cdn", "cdn-service":
+		m.PyxCDN = append(m.PyxCDN, cm)
+	case "waf", "waf-service":
+		m.PyxWAF = append(m.PyxWAF, cm)
+	case "kubernetes", "managed-kubernetes":
+		m.PyxKubernetes = append(m.PyxKubernetes, cm)
+	case "email", "email-service":
+		m.PyxEmail = append(m.PyxEmail, cm)
+	case "block-storage":
+		m.PyxBlockStorage = append(m.PyxBlockStorage, cm)
+	case "prefix-list":
+		m.PyxPrefixList = append(m.PyxPrefixList, cm)
+	case "synthetics", "uptime-check":
+		m.PyxSynthetics = append(m.PyxSynthetics, cm)
+	case "attach-to-existing-alb":
+		m.PyxALBAttachment = append(m.PyxALBAttachment, cm)
 	}
 }
 

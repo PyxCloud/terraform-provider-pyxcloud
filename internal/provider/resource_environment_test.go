@@ -17,7 +17,7 @@ func TestEnvironmentSchemaHasDualModeSelector(t *testing.T) {
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("environment schema diagnostics: %+v", resp.Diagnostics)
 	}
-	for _, attr := range []string{"id", "name", "cloud", "region", "components", "account_binding", "work_dir", "outputs"} {
+	for _, attr := range []string{"id", "name", "cloud", "region", "pyx_virtual_machine", "account_binding", "work_dir", "outputs"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("expected '%s' attribute on pyxcloud_environment", attr)
 		}
@@ -29,7 +29,7 @@ func TestEnvironmentSchemaHasDualModeSelector(t *testing.T) {
 	}
 }
 
-func TestEnvironmentComponentsSchemaIsFlat(t *testing.T) {
+func TestEnvironmentSchemaUsesPyxTypedComponentBlocks(t *testing.T) {
 	t.Parallel()
 	r := NewEnvironmentResource()
 	resp := &fwresource.SchemaResponse{}
@@ -38,23 +38,34 @@ func TestEnvironmentComponentsSchemaIsFlat(t *testing.T) {
 		t.Fatalf("environment schema diagnostics: %+v", resp.Diagnostics)
 	}
 
-	components, ok := resp.Schema.Attributes["components"].(schema.ListNestedAttribute)
-	if !ok {
-		t.Fatalf("components schema = %T, want schema.ListNestedAttribute", resp.Schema.Attributes["components"])
+	if _, ok := resp.Schema.Attributes["components"]; ok {
+		t.Fatal("schema must not expose generic components block")
 	}
-	attrs := components.NestedObject.Attributes
-	for _, name := range []string{
-		"path", "name", "type", "count", "architecture", "cpu", "ram", "os_name",
-		"min", "max", "desired", "health", "user_data", "instance_profile", "root_disk_gb",
-		"engine", "version", "storage_gb", "encrypted", "alb_listener_arn", "host_header",
-		"scale_group", "assume_service", "managed_policy_arns", "inline_policies",
-		"zone_id", "records", "listeners", "target_kind", "target_name",
-	} {
-		if _, ok := attrs[name]; !ok {
-			t.Errorf("expected flat component attribute %q", name)
+	for _, componentType := range pyxComponentTypes {
+		blockName := componentType.BlockName
+		block, ok := resp.Schema.Attributes[blockName].(schema.ListNestedAttribute)
+		if !ok {
+			t.Fatalf("%s schema = %T, want schema.ListNestedAttribute", blockName, resp.Schema.Attributes[blockName])
+		}
+		attrs := block.NestedObject.Attributes
+		for _, name := range []string{
+			"path", "name", "count", "architecture", "cpu", "ram", "os_name",
+			"min", "max", "desired", "health", "user_data", "instance_profile", "root_disk_gb",
+			"engine", "version", "storage_gb", "encrypted", "alb_listener_arn", "host_header",
+			"scale_group", "assume_service", "managed_policy_arns", "inline_policies",
+			"zone_id", "records", "listeners", "target_kind", "target_name",
+		} {
+			if _, ok := attrs[name]; !ok {
+				t.Errorf("%s missing flat component attribute %q", blockName, name)
+			}
+		}
+		if _, ok := attrs["type"]; ok {
+			t.Errorf("%s must not expose redundant type attribute", blockName)
 		}
 	}
+	block := resp.Schema.Attributes["pyx_virtual_machine"].(schema.ListNestedAttribute)
 	for _, name := range []string{"vm", "managed_database", "attach_to_existing_alb", "iam", "dns", "load_balancer"} {
+		attrs := block.NestedObject.Attributes
 		if _, ok := attrs[name]; ok {
 			t.Errorf("component schema must not expose nested %s block", name)
 		}
@@ -68,10 +79,9 @@ func TestEnvironmentAssembleInputUsesFlatComponentFields(t *testing.T) {
 		Name:     types.StringValue("production"),
 		Provider: types.StringValue("aws"),
 		Region:   types.StringValue("Dublin"),
-		Components: []envComponentModel{{
+		PyxAutoscaleVirtualMachineGroup: []envComponentModel{{
 			Path:                types.StringValue("/0/Europe/0/Web-Net/0/app"),
 			Name:                types.StringValue("app"),
-			Type:                types.StringValue("virtual-machine-scale-group"),
 			Count:               types.Int64Value(3),
 			Architecture:        types.StringValue("x86_64"),
 			CPU:                 types.StringValue("2"),

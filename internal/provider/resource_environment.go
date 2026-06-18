@@ -39,14 +39,37 @@ func NewEnvironmentResource() resource.Resource {
 
 // environmentModel maps the pyxcloud_environment resource.
 type environmentModel struct {
-	ID             types.String        `tfsdk:"id"`
-	Name           types.String        `tfsdk:"name"`
-	Provider       types.String        `tfsdk:"cloud"`
-	Region         types.String        `tfsdk:"region"`
-	Components     []envComponentModel `tfsdk:"components"`
-	AccountBinding types.String        `tfsdk:"account_binding"`
-	WorkDir        types.String        `tfsdk:"work_dir"`
-	Outputs        types.Map           `tfsdk:"outputs"`
+	ID                              types.String        `tfsdk:"id"`
+	Name                            types.String        `tfsdk:"name"`
+	Provider                        types.String        `tfsdk:"cloud"`
+	Region                          types.String        `tfsdk:"region"`
+	PyxVPC                          []envComponentModel `tfsdk:"pyx_vpc"`
+	PyxNetworkRule                  []envComponentModel `tfsdk:"pyx_network_rule"`
+	PyxAccessPolicy                 []envComponentModel `tfsdk:"pyx_access_policy"`
+	PyxMonitoring                   []envComponentModel `tfsdk:"pyx_monitoring"`
+	PyxDNS                          []envComponentModel `tfsdk:"pyx_dns"`
+	PyxVirtualMachine               []envComponentModel `tfsdk:"pyx_virtual_machine"`
+	PyxAutoscaleVirtualMachineGroup []envComponentModel `tfsdk:"pyx_autoscale_virtual_machine_group"`
+	PyxDatabase                     []envComponentModel `tfsdk:"pyx_database"`
+	PyxLoadBalancer                 []envComponentModel `tfsdk:"pyx_load_balancer"`
+	PyxCache                        []envComponentModel `tfsdk:"pyx_cache"`
+	PyxObjectStorage                []envComponentModel `tfsdk:"pyx_object_storage"`
+	PyxSecret                       []envComponentModel `tfsdk:"pyx_secret"`
+	PyxQueue                        []envComponentModel `tfsdk:"pyx_queue"`
+	PyxStream                       []envComponentModel `tfsdk:"pyx_stream"`
+	PyxServerlessFunction           []envComponentModel `tfsdk:"pyx_serverless_function"`
+	PyxKMS                          []envComponentModel `tfsdk:"pyx_kms"`
+	PyxCDN                          []envComponentModel `tfsdk:"pyx_cdn"`
+	PyxWAF                          []envComponentModel `tfsdk:"pyx_waf"`
+	PyxKubernetes                   []envComponentModel `tfsdk:"pyx_kubernetes"`
+	PyxEmail                        []envComponentModel `tfsdk:"pyx_email"`
+	PyxBlockStorage                 []envComponentModel `tfsdk:"pyx_block_storage"`
+	PyxPrefixList                   []envComponentModel `tfsdk:"pyx_prefix_list"`
+	PyxSynthetics                   []envComponentModel `tfsdk:"pyx_synthetics"`
+	PyxALBAttachment                []envComponentModel `tfsdk:"pyx_alb_attachment"`
+	AccountBinding                  types.String        `tfsdk:"account_binding"`
+	WorkDir                         types.String        `tfsdk:"work_dir"`
+	Outputs                         types.Map           `tfsdk:"outputs"`
 }
 
 // envComponentModel is the env-resource-specific component (decoupled from the
@@ -55,7 +78,6 @@ type environmentModel struct {
 type envComponentModel struct {
 	Path                     types.String          `tfsdk:"path"`
 	Name                     types.String          `tfsdk:"name"`
-	Type                     types.String          `tfsdk:"type"`
 	Count                    types.Int64           `tfsdk:"count"`
 	Architecture             types.String          `tfsdk:"architecture"`
 	CPU                      types.String          `tfsdk:"cpu"`
@@ -367,13 +389,30 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"the deploy server-side with the binding's stored credentials (no creds on the runner). Mode B " +
 					"requires the server-side managed-deploy gate (DEPLOY-GATE.md §B) and is enabled once that lands.",
 			},
-			"components": schema.ListNestedAttribute{
-				Required:            true,
-				MarkdownDescription: "Canonical components that make up the environment. Component properties are flat at this level; nested type-specific blocks are not exposed.",
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: flatEnvironmentComponentAttributes(),
-				},
-			},
+			"pyx_vpc":                             pyxEnvironmentComponentBlock("PyxCloud VPC/network component."),
+			"pyx_network_rule":                    pyxEnvironmentComponentBlock("PyxCloud network rule component."),
+			"pyx_access_policy":                   pyxEnvironmentComponentBlock("PyxCloud access policy component."),
+			"pyx_monitoring":                      pyxEnvironmentComponentBlock("PyxCloud monitoring component."),
+			"pyx_dns":                             pyxEnvironmentComponentBlock("PyxCloud DNS component."),
+			"pyx_virtual_machine":                 pyxEnvironmentComponentBlock("PyxCloud virtual machine component."),
+			"pyx_autoscale_virtual_machine_group": pyxEnvironmentComponentBlock("PyxCloud autoscaling virtual machine group component."),
+			"pyx_database":                        pyxEnvironmentComponentBlock("PyxCloud managed database component."),
+			"pyx_load_balancer":                   pyxEnvironmentComponentBlock("PyxCloud load balancer component."),
+			"pyx_cache":                           pyxEnvironmentComponentBlock("PyxCloud cache component."),
+			"pyx_object_storage":                  pyxEnvironmentComponentBlock("PyxCloud object storage component."),
+			"pyx_secret":                          pyxEnvironmentComponentBlock("PyxCloud secret manager component."),
+			"pyx_queue":                           pyxEnvironmentComponentBlock("PyxCloud queue component."),
+			"pyx_stream":                          pyxEnvironmentComponentBlock("PyxCloud stream component."),
+			"pyx_serverless_function":             pyxEnvironmentComponentBlock("PyxCloud serverless function component."),
+			"pyx_kms":                             pyxEnvironmentComponentBlock("PyxCloud KMS/encryption-key component."),
+			"pyx_cdn":                             pyxEnvironmentComponentBlock("PyxCloud CDN component."),
+			"pyx_waf":                             pyxEnvironmentComponentBlock("PyxCloud WAF component."),
+			"pyx_kubernetes":                      pyxEnvironmentComponentBlock("PyxCloud Kubernetes component."),
+			"pyx_email":                           pyxEnvironmentComponentBlock("PyxCloud email component."),
+			"pyx_block_storage":                   pyxEnvironmentComponentBlock("PyxCloud block storage component."),
+			"pyx_prefix_list":                     pyxEnvironmentComponentBlock("PyxCloud prefix list component."),
+			"pyx_synthetics":                      pyxEnvironmentComponentBlock("PyxCloud synthetics component."),
+			"pyx_alb_attachment":                  pyxEnvironmentComponentBlock("PyxCloud existing ALB attachment component."),
 			"work_dir": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
@@ -390,11 +429,18 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 	}
 }
 
+func pyxEnvironmentComponentBlock(description string) schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional:            true,
+		MarkdownDescription: description + " Properties are flat at the `pyx_*` block level.",
+		NestedObject:        schema.NestedAttributeObject{Attributes: flatEnvironmentComponentAttributes()},
+	}
+}
+
 func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"path":         schema.StringAttribute{Optional: true, MarkdownDescription: "Canonical topology path for this component, e.g. `/0/Europe/0/Web-Net/0/app`."},
 		"name":         schema.StringAttribute{Required: true, MarkdownDescription: "Component name."},
-		"type":         schema.StringAttribute{Required: true, MarkdownDescription: "Canonical component type, e.g. `virtual-machine`, `managed-database`, `load-balancer`, `object-storage`."},
 		"count":        schema.Int64Attribute{Optional: true, Computed: true, MarkdownDescription: "Instance count (defaults to 1)."},
 		"architecture": schema.StringAttribute{Optional: true, MarkdownDescription: "CPU architecture, e.g. `x86_64`, `arm64`."},
 		"cpu":          schema.StringAttribute{Optional: true, MarkdownDescription: "vCPU count, e.g. `2`."},
@@ -565,14 +611,15 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		Provider: m.Provider.ValueString(),
 		Region:   m.Region.ValueString(),
 	}
-	for _, cm := range m.Components {
+	for _, typed := range environmentComponentsFromModel(m) {
+		cm := typed.model
 		count := int(cm.Count.ValueInt64())
 		if count <= 0 {
 			count = 1
 		}
-		comp := catalog.AssembleComponent{Path: cm.Path.ValueString(), Name: cm.Name.ValueString(), Type: cm.Type.ValueString(), Count: count}
+		comp := catalog.AssembleComponent{Path: cm.Path.ValueString(), Name: cm.Name.ValueString(), Type: typed.canonicalType, Count: count}
 
-		if cm.Type.ValueString() == "virtual-machine" || hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
+		if typed.canonicalType == "virtual-machine" || hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
 			comp.VM = &catalog.AssembleVM{
 				Architecture:    cm.Architecture.ValueString(),
 				CPU:             cm.CPU.ValueString(),
@@ -582,7 +629,7 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				InstanceProfile: cm.InstanceProfileName.ValueString(),
 			}
 		}
-		if cm.Type.ValueString() == "virtual-machine-scale-group" || hasScaleGroupFields(cm) {
+		if typed.canonicalType == "virtual-machine-scale-group" || hasScaleGroupFields(cm) {
 			comp.ScaleGroup = &catalog.AssembleScaleGroup{
 				Architecture:    cm.Architecture.ValueString(),
 				CPU:             cm.CPU.ValueString(),
@@ -597,7 +644,7 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				RootDiskGB:      int(cm.RootDiskGB.ValueInt64()),
 			}
 		}
-		if cm.Type.ValueString() == "attach-to-existing-alb" || nonEmptyString(cm.ALBListenerARN) || nonEmptyString(cm.HostHeader) || nonEmptyString(cm.ScaleGroupName) {
+		if typed.canonicalType == "attach-to-existing-alb" || nonEmptyString(cm.ALBListenerARN) || nonEmptyString(cm.HostHeader) || nonEmptyString(cm.ScaleGroupName) {
 			comp.AttachToExistingALB = &catalog.AssembleAttachToExistingALB{
 				ALBListenerARN:  cm.ALBListenerARN.ValueString(),
 				HostHeader:      cm.HostHeader.ValueString(),
@@ -609,7 +656,7 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				Priority:        int(cm.Priority.ValueInt64()),
 			}
 		}
-		if cm.Type.ValueString() == "iam" || nonEmptyString(cm.AssumeService) || len(cm.ManagedPolicyARNs) > 0 || len(cm.InlinePolicies) > 0 {
+		if typed.canonicalType == "access-policy" || nonEmptyString(cm.AssumeService) || len(cm.ManagedPolicyARNs) > 0 || len(cm.InlinePolicies) > 0 {
 			iam := &catalog.AssembleIAM{AssumeService: cm.AssumeService.ValueString()}
 			for _, arn := range cm.ManagedPolicyARNs {
 				iam.ManagedPolicyARNs = append(iam.ManagedPolicyARNs, arn.ValueString())
@@ -619,7 +666,7 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			}
 			comp.IAM = iam
 		}
-		if cm.Type.ValueString() == "monitoring" || len(cm.LogGroups) > 0 || len(cm.Alarms) > 0 {
+		if typed.canonicalType == "monitoring" || len(cm.LogGroups) > 0 || len(cm.Alarms) > 0 {
 			mon := &catalog.AssembleMonitoring{}
 			for _, lg := range cm.LogGroups {
 				mon.LogGroups = append(mon.LogGroups, catalog.LogGroup{Name: lg.Name.ValueString(), RetentionDays: int(lg.RetentionDays.ValueInt64())})
@@ -629,67 +676,67 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			}
 			comp.Monitoring = mon
 		}
-		if cm.Type.ValueString() == "dns" || nonEmptyString(cm.ZoneID) || len(cm.Records) > 0 {
+		if typed.canonicalType == "dns" || nonEmptyString(cm.ZoneID) || len(cm.Records) > 0 {
 			dns := &catalog.AssembleDNS{ZoneID: cm.ZoneID.ValueString()}
 			for _, r := range cm.Records {
 				dns.Records = append(dns.Records, catalog.DNSRecord{Name: r.Name.ValueString(), Type: r.Type.ValueString(), Content: r.Content.ValueString(), TTL: int(r.TTL.ValueInt64()), Proxied: r.Proxied.ValueBool()})
 			}
 			comp.DNS = dns
 		}
-		if cm.Type.ValueString() == "object-storage" || cm.Type.ValueString() == "blob-storage" || boolSet(cm.Versioning) || boolSet(cm.Public) {
+		if typed.canonicalType == "object-storage" || boolSet(cm.Versioning) || boolSet(cm.Public) {
 			comp.ObjectStorage = &catalog.AssembleObjectStorage{Versioning: cm.Versioning.ValueBool(), Public: cm.Public.ValueBool()}
 		}
-		if cm.Type.ValueString() == "secrets-manager" || nonEmptyString(cm.Description) || intSet(cm.RotationDays) {
+		if typed.canonicalType == "secrets-manager" || nonEmptyString(cm.Description) || intSet(cm.RotationDays) {
 			comp.Secrets = &catalog.AssembleSecrets{Description: cm.Description.ValueString(), RotationDays: int(cm.RotationDays.ValueInt64())}
 		}
-		if cm.Type.ValueString() == "managed-database" || hasDatabaseFields(cm) {
+		if typed.canonicalType == "managed-database" || hasDatabaseFields(cm) {
 			comp.MDB = &catalog.AssembleMDB{Engine: cm.Engine.ValueString(), Version: cm.Version.ValueString(), CPU: intFromString(cm.CPU), RAM: intFromString(cm.RAM), StorageGB: int(cm.StorageGB.ValueInt64()), HA: cm.HA.ValueBool(), Encrypted: cm.Encrypted.ValueBool()}
 		}
-		if cm.Type.ValueString() == "managed-queue" || cm.Type.ValueString() == "message-queue" || boolSet(cm.FIFO) || intSet(cm.VisibilityTimeoutSeconds) || intSet(cm.MaxReceiveCount) {
+		if typed.canonicalType == "managed-queue" || boolSet(cm.FIFO) || intSet(cm.VisibilityTimeoutSeconds) || intSet(cm.MaxReceiveCount) {
 			comp.Queue = &catalog.AssembleQueue{FIFO: cm.FIFO.ValueBool(), VisibilityTimeoutSeconds: int(cm.VisibilityTimeoutSeconds.ValueInt64()), MaxReceiveCount: int(cm.MaxReceiveCount.ValueInt64())}
 		}
-		if cm.Type.ValueString() == "event-streaming" || cm.Type.ValueString() == "event-bus" || intSet(cm.Shards) || intSet(cm.RetentionHours) {
+		if typed.canonicalType == "event-streaming" || intSet(cm.Shards) || intSet(cm.RetentionHours) {
 			comp.Stream = &catalog.AssembleStream{Shards: int(cm.Shards.ValueInt64()), RetentionHours: int(cm.RetentionHours.ValueInt64())}
 		}
-		if cm.Type.ValueString() == "serverless-function" || nonEmptyString(cm.Runtime) || nonEmptyString(cm.Handler) || nonEmptyString(cm.SourceArtifact) {
+		if typed.canonicalType == "serverless-function" || nonEmptyString(cm.Runtime) || nonEmptyString(cm.Handler) || nonEmptyString(cm.SourceArtifact) {
 			comp.Serverless = &catalog.AssembleServerless{Runtime: cm.Runtime.ValueString(), RuntimeVersion: cm.RuntimeVersion.ValueString(), Handler: cm.Handler.ValueString(), MemoryMB: int(cm.MemoryMB.ValueInt64()), TimeoutSeconds: int(cm.TimeoutSeconds.ValueInt64()), SourceArtifact: cm.SourceArtifact.ValueString()}
 		}
-		if cm.Type.ValueString() == "kms" || cm.Type.ValueString() == "encryption-key" || intSet(cm.DeletionWindowDays) {
+		if typed.canonicalType == "kms" || intSet(cm.DeletionWindowDays) {
 			comp.KMS = &catalog.AssembleKMS{Description: cm.Description.ValueString(), RotationDays: int(cm.RotationDays.ValueInt64()), DeletionWindowDays: int(cm.DeletionWindowDays.ValueInt64())}
 		}
-		if cm.Type.ValueString() == "cache" || intSet(cm.MemoryGB) {
+		if typed.canonicalType == "cache" || intSet(cm.MemoryGB) {
 			comp.Cache = &catalog.AssembleCache{Engine: cm.Engine.ValueString(), Version: cm.Version.ValueString(), MemoryGB: int(cm.MemoryGB.ValueInt64()), HA: cm.HA.ValueBool()}
 		}
-		if cm.Type.ValueString() == "cdn" || cm.Type.ValueString() == "cdn-service" || nonEmptyString(cm.OriginKind) || nonEmptyString(cm.OriginName) {
+		if typed.canonicalType == "cdn" || nonEmptyString(cm.OriginKind) || nonEmptyString(cm.OriginName) {
 			comp.CDN = &catalog.AssembleCDN{OriginKind: cm.OriginKind.ValueString(), OriginName: cm.OriginName.ValueString()}
 		}
-		if cm.Type.ValueString() == "waf" || nonEmptyString(cm.Scope) || nonEmptyString(cm.AssociateName) {
+		if typed.canonicalType == "waf" || nonEmptyString(cm.Scope) || nonEmptyString(cm.AssociateName) {
 			comp.WAF = &catalog.AssembleWAF{Scope: cm.Scope.ValueString(), AssociateName: cm.AssociateName.ValueString()}
 		}
-		if cm.Type.ValueString() == "kubernetes" || intSet(cm.NodeCPU) || intSet(cm.MinNodes) {
+		if typed.canonicalType == "kubernetes" || intSet(cm.NodeCPU) || intSet(cm.MinNodes) {
 			comp.K8s = &catalog.AssembleK8s{Version: cm.Version.ValueString(), Architecture: cm.Architecture.ValueString(), NodeCPU: int(cm.NodeCPU.ValueInt64()), NodeRAM: int(cm.NodeRAM.ValueInt64()), MinNodes: int(cm.MinNodes.ValueInt64()), MaxNodes: int(cm.MaxNodes.ValueInt64()), DesiredNodes: int(cm.DesiredNodes.ValueInt64())}
 		}
-		if cm.Type.ValueString() == "load-balancer" || len(cm.Listeners) > 0 || nonEmptyString(cm.TargetKind) || nonEmptyString(cm.TargetName) {
+		if typed.canonicalType == "load-balancer" || len(cm.Listeners) > 0 || nonEmptyString(cm.TargetKind) || nonEmptyString(cm.TargetName) {
 			lb := &catalog.AssembleLB{HealthCheckPath: cm.HealthCheckPath.ValueString(), HealthCheckPort: intFromString(cm.HealthCheckPortString), HealthProtocol: cm.HealthProtocol.ValueString(), Stickiness: cm.Stickiness.ValueBool(), TargetKind: cm.TargetKind.ValueString(), TargetName: cm.TargetName.ValueString()}
 			for _, l := range cm.Listeners {
 				lb.Listeners = append(lb.Listeners, catalog.AssembleLBListener{Port: int(l.Port.ValueInt64()), Protocol: l.Protocol.ValueString()})
 			}
 			comp.LB = lb
 		}
-		if cm.Type.ValueString() == "email" || cm.Type.ValueString() == "email-service" || nonEmptyString(cm.Domain) {
+		if typed.canonicalType == "email" || nonEmptyString(cm.Domain) {
 			comp.Email = &catalog.AssembleEmail{Domain: cm.Domain.ValueString()}
 		}
-		if cm.Type.ValueString() == "block-storage" || intSet(cm.SizeGB) || nonEmptyString(cm.TargetVM) {
+		if typed.canonicalType == "block-storage" || intSet(cm.SizeGB) || nonEmptyString(cm.TargetVM) {
 			comp.BlockStorage = &catalog.AssembleBlockStorage{SizeGB: int(cm.SizeGB.ValueInt64()), VolumeType: cm.VolumeType.ValueString(), DeviceName: cm.DeviceName.ValueString(), TargetVM: cm.TargetVM.ValueString()}
 		}
-		if cm.Type.ValueString() == "prefix-list" || len(cm.Entries) > 0 {
+		if typed.canonicalType == "prefix-list" || len(cm.Entries) > 0 {
 			pl := &catalog.AssemblePrefixList{}
 			for _, e := range cm.Entries {
 				pl.Entries = append(pl.Entries, catalog.PrefixEntry{CIDR: e.CIDR.ValueString(), Description: e.Description.ValueString()})
 			}
 			comp.PrefixList = pl
 		}
-		if cm.Type.ValueString() == "synthetics" || cm.Type.ValueString() == "uptime-check" || nonEmptyString(cm.TargetURL) || nonEmptyString(cm.ScheduleExpr) {
+		if typed.canonicalType == "synthetics" || nonEmptyString(cm.TargetURL) || nonEmptyString(cm.ScheduleExpr) {
 			comp.Synthetics = &catalog.AssembleSynthetics{TargetURL: cm.TargetURL.ValueString(), Runtime: cm.Runtime.ValueString(), Handler: cm.Handler.ValueString(), ScheduleExpr: cm.ScheduleExpr.ValueString(), ArtifactBucket: cm.ArtifactBucket.ValueString(), ExecRoleARN: cm.ExecRoleARN.ValueString()}
 		}
 		in.Components = append(in.Components, comp)
@@ -699,6 +746,45 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 
 func hasScaleGroupFields(cm envComponentModel) bool {
 	return intSet(cm.Min) || intSet(cm.Max) || intSet(cm.Desired) || nonEmptyString(cm.Health) || nonEmptyString(cm.UserData) || nonEmptyString(cm.InstanceProfileName) || intSet(cm.RootDiskGB)
+}
+
+type typedEnvComponentModel struct {
+	canonicalType string
+	model         envComponentModel
+}
+
+func environmentComponentsFromModel(m environmentModel) []typedEnvComponentModel {
+	var out []typedEnvComponentModel
+	appendComponents := func(canonicalType string, models []envComponentModel) {
+		for _, model := range models {
+			out = append(out, typedEnvComponentModel{canonicalType: canonicalType, model: model})
+		}
+	}
+	appendComponents("vpc", m.PyxVPC)
+	appendComponents("network-rule", m.PyxNetworkRule)
+	appendComponents("access-policy", m.PyxAccessPolicy)
+	appendComponents("monitoring", m.PyxMonitoring)
+	appendComponents("dns", m.PyxDNS)
+	appendComponents("virtual-machine", m.PyxVirtualMachine)
+	appendComponents("virtual-machine-scale-group", m.PyxAutoscaleVirtualMachineGroup)
+	appendComponents("managed-database", m.PyxDatabase)
+	appendComponents("load-balancer", m.PyxLoadBalancer)
+	appendComponents("cache", m.PyxCache)
+	appendComponents("object-storage", m.PyxObjectStorage)
+	appendComponents("secrets-manager", m.PyxSecret)
+	appendComponents("managed-queue", m.PyxQueue)
+	appendComponents("event-streaming", m.PyxStream)
+	appendComponents("serverless-function", m.PyxServerlessFunction)
+	appendComponents("kms", m.PyxKMS)
+	appendComponents("cdn", m.PyxCDN)
+	appendComponents("waf", m.PyxWAF)
+	appendComponents("kubernetes", m.PyxKubernetes)
+	appendComponents("email", m.PyxEmail)
+	appendComponents("block-storage", m.PyxBlockStorage)
+	appendComponents("prefix-list", m.PyxPrefixList)
+	appendComponents("synthetics", m.PyxSynthetics)
+	appendComponents("attach-to-existing-alb", m.PyxALBAttachment)
+	return out
 }
 
 func hasDatabaseFields(cm envComponentModel) bool {

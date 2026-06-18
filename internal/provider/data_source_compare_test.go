@@ -8,7 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 )
 
-func TestCompareComponentsSchemaIsFlat(t *testing.T) {
+func TestCompareSchemaUsesPyxTypedComponentBlocks(t *testing.T) {
 	t.Parallel()
 	d := NewCompareDataSource()
 	resp := &fwdatasource.SchemaResponse{}
@@ -17,20 +17,23 @@ func TestCompareComponentsSchemaIsFlat(t *testing.T) {
 		t.Fatalf("compare schema diagnostics: %+v", resp.Diagnostics)
 	}
 
-	components, ok := resp.Schema.Attributes["components"].(schema.ListNestedAttribute)
-	if !ok {
-		t.Fatalf("components schema = %T, want schema.ListNestedAttribute", resp.Schema.Attributes["components"])
+	if _, ok := resp.Schema.Attributes["components"]; ok {
+		t.Fatal("schema must not expose generic components block")
 	}
-	attrs := components.NestedObject.Attributes
-	for _, name := range []string{"path", "name", "type", "count", "architecture", "cpu", "ram", "os_name", "min", "max", "desired", "health"} {
-		if _, ok := attrs[name]; !ok {
-			t.Errorf("expected flat component attribute %q", name)
+	for _, componentType := range pyxComponentTypes {
+		blockName := componentType.BlockName
+		block, ok := resp.Schema.Attributes[blockName].(schema.ListNestedAttribute)
+		if !ok {
+			t.Fatalf("%s schema = %T, want schema.ListNestedAttribute", blockName, resp.Schema.Attributes[blockName])
 		}
-	}
-	if _, ok := attrs["vm"]; ok {
-		t.Error("component schema must not expose nested vm block")
-	}
-	if _, ok := attrs["scale_group"]; ok {
-		t.Error("component schema must not expose nested scale_group block")
+		attrs := block.NestedObject.Attributes
+		for _, name := range []string{"path", "name", "count", "architecture", "cpu", "ram", "os_name", "min", "max", "desired", "health"} {
+			if _, ok := attrs[name]; !ok {
+				t.Errorf("%s missing flat component attribute %q", blockName, name)
+			}
+		}
+		if _, ok := attrs["type"]; ok {
+			t.Errorf("%s must not expose redundant type attribute", blockName)
+		}
 	}
 }

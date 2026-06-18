@@ -45,9 +45,32 @@ type candidateCostModel struct {
 // compareModel maps the pyxcloud_compare data source.
 type compareModel struct {
 	// Inputs: an inline canonical topology to price + candidate targets.
-	Name       types.String     `tfsdk:"name"`
-	Components []componentModel `tfsdk:"components"`
-	Candidates []candidateModel `tfsdk:"candidates"`
+	Name                            types.String     `tfsdk:"name"`
+	PyxVPC                          []componentModel `tfsdk:"pyx_vpc"`
+	PyxNetworkRule                  []componentModel `tfsdk:"pyx_network_rule"`
+	PyxAccessPolicy                 []componentModel `tfsdk:"pyx_access_policy"`
+	PyxMonitoring                   []componentModel `tfsdk:"pyx_monitoring"`
+	PyxDNS                          []componentModel `tfsdk:"pyx_dns"`
+	PyxVirtualMachine               []componentModel `tfsdk:"pyx_virtual_machine"`
+	PyxAutoscaleVirtualMachineGroup []componentModel `tfsdk:"pyx_autoscale_virtual_machine_group"`
+	PyxDatabase                     []componentModel `tfsdk:"pyx_database"`
+	PyxLoadBalancer                 []componentModel `tfsdk:"pyx_load_balancer"`
+	PyxCache                        []componentModel `tfsdk:"pyx_cache"`
+	PyxObjectStorage                []componentModel `tfsdk:"pyx_object_storage"`
+	PyxSecret                       []componentModel `tfsdk:"pyx_secret"`
+	PyxQueue                        []componentModel `tfsdk:"pyx_queue"`
+	PyxStream                       []componentModel `tfsdk:"pyx_stream"`
+	PyxServerlessFunction           []componentModel `tfsdk:"pyx_serverless_function"`
+	PyxKMS                          []componentModel `tfsdk:"pyx_kms"`
+	PyxCDN                          []componentModel `tfsdk:"pyx_cdn"`
+	PyxWAF                          []componentModel `tfsdk:"pyx_waf"`
+	PyxKubernetes                   []componentModel `tfsdk:"pyx_kubernetes"`
+	PyxEmail                        []componentModel `tfsdk:"pyx_email"`
+	PyxBlockStorage                 []componentModel `tfsdk:"pyx_block_storage"`
+	PyxPrefixList                   []componentModel `tfsdk:"pyx_prefix_list"`
+	PyxSynthetics                   []componentModel `tfsdk:"pyx_synthetics"`
+	PyxALBAttachment                []componentModel `tfsdk:"pyx_alb_attachment"`
+	Candidates                      []candidateModel `tfsdk:"candidates"`
 
 	// Outputs.
 	Results  []candidateCostModel `tfsdk:"results"`
@@ -68,33 +91,30 @@ func (d *compareDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 				Optional:            true,
 				MarkdownDescription: "Optional label for the topology being compared.",
 			},
-			"components": schema.ListNestedAttribute{
-				Required: true,
-				MarkdownDescription: "Canonical components to price (same shape as the " +
-					"pyxcloud_topology resource).",
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"path": schema.StringAttribute{
-							Optional:            true,
-							MarkdownDescription: "Canonical topology path for this component, e.g. `/0/Europe/0/Web-Net/0/app`.",
-						},
-						"name": schema.StringAttribute{Required: true},
-						"type": schema.StringAttribute{Required: true},
-						"count": schema.Int64Attribute{
-							Optional:            true,
-							MarkdownDescription: "Instance count (defaults to 1).",
-						},
-						"architecture": schema.StringAttribute{Optional: true},
-						"cpu":          schema.StringAttribute{Optional: true},
-						"ram":          schema.StringAttribute{Optional: true},
-						"os_name":      schema.StringAttribute{Optional: true},
-						"min":          schema.Int64Attribute{Optional: true},
-						"max":          schema.Int64Attribute{Optional: true},
-						"desired":      schema.Int64Attribute{Optional: true},
-						"health":       schema.StringAttribute{Optional: true},
-					},
-				},
-			},
+			"pyx_vpc":                             pyxCompareComponentBlock("PyxCloud VPC/network component."),
+			"pyx_network_rule":                    pyxCompareComponentBlock("PyxCloud network rule component."),
+			"pyx_access_policy":                   pyxCompareComponentBlock("PyxCloud access policy component."),
+			"pyx_monitoring":                      pyxCompareComponentBlock("PyxCloud monitoring component."),
+			"pyx_dns":                             pyxCompareComponentBlock("PyxCloud DNS component."),
+			"pyx_virtual_machine":                 pyxCompareComponentBlock("PyxCloud virtual machine component."),
+			"pyx_autoscale_virtual_machine_group": pyxCompareComponentBlock("PyxCloud autoscaling virtual machine group component."),
+			"pyx_database":                        pyxCompareComponentBlock("PyxCloud managed database component."),
+			"pyx_load_balancer":                   pyxCompareComponentBlock("PyxCloud load balancer component."),
+			"pyx_cache":                           pyxCompareComponentBlock("PyxCloud cache component."),
+			"pyx_object_storage":                  pyxCompareComponentBlock("PyxCloud object storage component."),
+			"pyx_secret":                          pyxCompareComponentBlock("PyxCloud secret manager component."),
+			"pyx_queue":                           pyxCompareComponentBlock("PyxCloud queue component."),
+			"pyx_stream":                          pyxCompareComponentBlock("PyxCloud stream component."),
+			"pyx_serverless_function":             pyxCompareComponentBlock("PyxCloud serverless function component."),
+			"pyx_kms":                             pyxCompareComponentBlock("PyxCloud KMS/encryption-key component."),
+			"pyx_cdn":                             pyxCompareComponentBlock("PyxCloud CDN component."),
+			"pyx_waf":                             pyxCompareComponentBlock("PyxCloud WAF component."),
+			"pyx_kubernetes":                      pyxCompareComponentBlock("PyxCloud Kubernetes component."),
+			"pyx_email":                           pyxCompareComponentBlock("PyxCloud email component."),
+			"pyx_block_storage":                   pyxCompareComponentBlock("PyxCloud block storage component."),
+			"pyx_prefix_list":                     pyxCompareComponentBlock("PyxCloud prefix list component."),
+			"pyx_synthetics":                      pyxCompareComponentBlock("PyxCloud synthetics component."),
+			"pyx_alb_attachment":                  pyxCompareComponentBlock("PyxCloud existing ALB attachment component."),
 			"candidates": schema.ListNestedAttribute{
 				Required:            true,
 				MarkdownDescription: "(provider, region) targets to price the topology against.",
@@ -142,6 +162,31 @@ func (d *compareDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 	}
 }
 
+func pyxCompareComponentBlock(description string) schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional:            true,
+		MarkdownDescription: description + " Properties are flat at the `pyx_*` block level.",
+		NestedObject: schema.NestedAttributeObject{
+			Attributes: map[string]schema.Attribute{
+				"path": schema.StringAttribute{
+					Optional:            true,
+					MarkdownDescription: "Canonical topology path for this component, e.g. `/0/Europe/0/Web-Net/0/app`.",
+				},
+				"name":         schema.StringAttribute{Required: true},
+				"count":        schema.Int64Attribute{Optional: true, MarkdownDescription: "Instance count (defaults to 1)."},
+				"architecture": schema.StringAttribute{Optional: true},
+				"cpu":          schema.StringAttribute{Optional: true},
+				"ram":          schema.StringAttribute{Optional: true},
+				"os_name":      schema.StringAttribute{Optional: true},
+				"min":          schema.Int64Attribute{Optional: true},
+				"max":          schema.Int64Attribute{Optional: true},
+				"desired":      schema.Int64Attribute{Optional: true},
+				"health":       schema.StringAttribute{Optional: true},
+			},
+		},
+	}
+}
+
 func (d *compareDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
@@ -164,37 +209,7 @@ func (d *compareDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		return
 	}
 
-	topo := client.Topology{Name: data.Name.ValueString()}
-	topo.Components = make([]client.Component, 0, len(data.Components))
-	for _, cm := range data.Components {
-		count := int(cm.Count.ValueInt64())
-		if count <= 0 {
-			count = 1
-		}
-		comp := client.Component{
-			Path:         cm.Path.ValueString(),
-			Name:         cm.Name.ValueString(),
-			Type:         cm.Type.ValueString(),
-			Count:        count,
-			Architecture: cm.Architecture.ValueString(),
-			CPU:          cm.CPU.ValueString(),
-			RAM:          cm.RAM.ValueString(),
-			OSName:       cm.OSName.ValueString(),
-			Min:          int(cm.Min.ValueInt64()),
-			Max:          int(cm.Max.ValueInt64()),
-			Desired:      int(cm.Desired.ValueInt64()),
-			Health:       cm.Health.ValueString(),
-		}
-		if hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
-			comp.VM = &client.VMType{
-				Architecture: cm.Architecture.ValueString(),
-				CPU:          cm.CPU.ValueString(),
-				RAM:          cm.RAM.ValueString(),
-				OS:           cm.OSName.ValueString(),
-			}
-		}
-		topo.Components = append(topo.Components, comp)
-	}
+	topo := client.Topology{Name: data.Name.ValueString(), Components: compareComponentsFromModel(data)}
 
 	candidates := make([]client.Candidate, 0, len(data.Candidates))
 	for _, cm := range data.Candidates {
@@ -225,6 +240,40 @@ func (d *compareDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func compareComponentsFromModel(m compareModel) []client.Component {
+	var comps []client.Component
+	appendComponents := func(canonicalType string, models []componentModel) {
+		for _, cm := range models {
+			comps = append(comps, componentModelToClient(canonicalType, cm))
+		}
+	}
+	appendComponents("vpc", m.PyxVPC)
+	appendComponents("network-rule", m.PyxNetworkRule)
+	appendComponents("access-policy", m.PyxAccessPolicy)
+	appendComponents("monitoring", m.PyxMonitoring)
+	appendComponents("dns", m.PyxDNS)
+	appendComponents("virtual-machine", m.PyxVirtualMachine)
+	appendComponents("virtual-machine-scale-group", m.PyxAutoscaleVirtualMachineGroup)
+	appendComponents("managed-database", m.PyxDatabase)
+	appendComponents("load-balancer", m.PyxLoadBalancer)
+	appendComponents("cache", m.PyxCache)
+	appendComponents("object-storage", m.PyxObjectStorage)
+	appendComponents("secrets-manager", m.PyxSecret)
+	appendComponents("managed-queue", m.PyxQueue)
+	appendComponents("event-streaming", m.PyxStream)
+	appendComponents("serverless-function", m.PyxServerlessFunction)
+	appendComponents("kms", m.PyxKMS)
+	appendComponents("cdn", m.PyxCDN)
+	appendComponents("waf", m.PyxWAF)
+	appendComponents("kubernetes", m.PyxKubernetes)
+	appendComponents("email", m.PyxEmail)
+	appendComponents("block-storage", m.PyxBlockStorage)
+	appendComponents("prefix-list", m.PyxPrefixList)
+	appendComponents("synthetics", m.PyxSynthetics)
+	appendComponents("attach-to-existing-alb", m.PyxALBAttachment)
+	return comps
 }
 
 func costToModel(c client.CandidateCost) candidateCostModel {

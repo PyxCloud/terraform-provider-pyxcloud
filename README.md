@@ -72,10 +72,16 @@ Manages a canonical topology.
 | `name`       | string | required                                           |
 | `cloud`      | string | required — `aws` \| `gcp` \| `digitalocean` (named `cloud`; `provider` is a reserved tf meta-arg) |
 | `region`     | string | required — abstract pyx `region_name`, e.g. `Frankfurt` |
-| `components` | list   | required — nested blocks (below)                   |
+| `pyx_*` blocks | blocks | optional repeated component blocks, e.g. `pyx_virtual_machine`, `pyx_database` |
 
-Each `components` block: `name` (req), `type` (req), `count` (opt, default 1),
-and an optional `vm { architecture, cpu, ram, os_name }` sizing block.
+Component config is expressed with explicit `pyx_`-prefixed repeated blocks
+instead of a generic `components { type = ... }` block. For example:
+`pyx_virtual_machine`, `pyx_autoscale_virtual_machine_group`, `pyx_database`,
+`pyx_object_storage`, `pyx_access_policy`, `pyx_vpc`, and the other supported
+component blocks. Each block has `name` (req), `path` (opt), `count` (opt,
+default 1), and flat properties such as `architecture`, `cpu`, `ram`, `os_name`,
+`min`, `max`, `desired`, `engine`, `storage_gb`, etc. The block name implies the
+canonical component type, so there is no `type` field.
 
 Implements full CRUD (Create / Read / Update / Delete) against the client
 interface.
@@ -487,7 +493,7 @@ Prices a canonical topology across candidate `(provider, region)` pairs and
 returns per-candidate cost **cheapest-first** — the Terraform analogue of the
 console Compare page (backend `PricingRanker.rank`).
 
-**Inputs:** `name` (opt), `components` (same shape as the resource),
+**Inputs:** `name` (opt), `pyx_*` component blocks (same shape as the resource),
 `candidates` (list of `{ provider, region }`).
 
 **Outputs:**
@@ -498,9 +504,18 @@ console Compare page (backend `PricingRanker.rank`).
 
 ```hcl
 data "pyxcloud_compare" "options" {
-  components { name = "app" type = "virtual-machine" count = 3
-    vm { architecture = "x86_64" cpu = "2" ram = "4" os_name = "ubuntu" } }
-  components { name = "db" type = "managed-database" }
+  pyx_virtual_machine {
+    name         = "app"
+    count        = 3
+    architecture = "x86_64"
+    cpu          = "2"
+    ram          = "4"
+    os_name      = "ubuntu"
+  }
+
+  pyx_database {
+    name = "db"
+  }
 
   candidates { provider = "aws"          region = "EU West" }
   candidates { provider = "gcp"          region = "EU West" }

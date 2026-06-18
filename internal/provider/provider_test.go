@@ -42,7 +42,7 @@ func TestResourceSchema(t *testing.T) {
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("resource schema diagnostics: %+v", resp.Diagnostics)
 	}
-	for _, attr := range []string{"id", "name", "cloud", "region", "components", "network", "network_plan"} {
+	for _, attr := range []string{"id", "name", "cloud", "region", "pyx_virtual_machine", "pyx_database", "network", "network_plan"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("expected '%s' attribute on pyxcloud_topology", attr)
 		}
@@ -67,7 +67,7 @@ func TestDataSourceSchema(t *testing.T) {
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("data source schema diagnostics: %+v", resp.Diagnostics)
 	}
-	for _, attr := range []string{"components", "candidates", "results", "cheapest"} {
+	for _, attr := range []string{"pyx_virtual_machine", "pyx_database", "candidates", "results", "cheapest"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("expected '%s' attribute on pyxcloud_compare", attr)
 		}

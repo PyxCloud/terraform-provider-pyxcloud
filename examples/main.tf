@@ -11,7 +11,7 @@ provider "pyxcloud" {
   # token = "..."  # or export PYXCLOUD_TOKEN
 }
 
-# A canonical topology: provider-independent components + sizing, pinned to a
+# A canonical topology: provider-independent pyx_* components + sizing, pinned to a
 # deployment provider and abstract macro-region.
 resource "pyxcloud_topology" "web" {
   name     = "web-stack"
@@ -39,26 +39,21 @@ resource "pyxcloud_topology" "web" {
     ]
   }
 
-  components {
+  pyx_autoscale_virtual_machine_group {
     name  = "app"
-    type  = "virtual-machine-scale-group"
     count = 3
-    vm {
-      architecture = "x86_64"
-      cpu          = "2"
-      ram          = "4"
-      os_name      = "ubuntu"
-    }
+    architecture = "x86_64"
+    cpu          = "2"
+    ram          = "4"
+    os_name      = "ubuntu"
   }
 
-  components {
+  pyx_load_balancer {
     name = "edge"
-    type = "load-balancer"
   }
 
-  components {
+  pyx_database {
     name = "db"
-    type = "managed-database"
   }
 }
 
@@ -67,26 +62,21 @@ resource "pyxcloud_topology" "web" {
 data "pyxcloud_compare" "options" {
   name = "web-stack"
 
-  components {
+  pyx_autoscale_virtual_machine_group {
     name  = "app"
-    type  = "virtual-machine-scale-group"
     count = 3
-    vm {
-      architecture = "x86_64"
-      cpu          = "2"
-      ram          = "4"
-      os_name      = "ubuntu"
-    }
+    architecture = "x86_64"
+    cpu          = "2"
+    ram          = "4"
+    os_name      = "ubuntu"
   }
 
-  components {
+  pyx_load_balancer {
     name = "edge"
-    type = "load-balancer"
   }
 
-  components {
+  pyx_database {
     name = "db"
-    type = "managed-database"
   }
 
   candidates {
