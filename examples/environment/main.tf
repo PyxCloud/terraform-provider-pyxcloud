@@ -27,22 +27,22 @@ resource "pyxcloud_environment" "demo" {
   cloud  = "aws"
   region = "Dublin"
 
-  pyx_virtual_machine {
+  pyx_virtual_machine = [{
     name         = "app"
     architecture = "x86_64"
     cpu          = "2"
     ram          = "4"
     os_name      = "ubuntu"
-  }
+  }]
 
-  pyx_access_policy {
+  pyx_access_policy = [{
     name                = "app-role"
     assume_service      = "ec2.amazonaws.com"
     managed_policy_arns = ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]
-  }
+  }]
 
-  pyx_monitoring {
-    name = "obs"
+  pyx_monitoring = [{
+    name       = "obs"
     log_groups = [{ name = "/pyx/app", retention_days = 30 }]
     alarms = [{
       name                = "cpu-high"
@@ -52,25 +52,25 @@ resource "pyxcloud_environment" "demo" {
       threshold           = 80
       evaluation_periods  = 2
     }]
-  }
+  }]
 
-  pyx_dns {
+  pyx_dns = [{
     name = "edge-dns"
     # zone_id supplied via the cloudflare_zone_id tf var
     records = [{ name = "app.example.com", type = "A", content = "203.0.113.10", proxied = true }]
-  }
+  }]
 
-  pyx_object_storage {
+  pyx_object_storage = [{
     name       = "assets"
     versioning = true
-  }
+  }]
 
-  pyx_secret {
+  pyx_secret = [{
     name        = "app-secret"
     description = "app credentials"
-  }
+  }]
 
-  pyx_database {
+  pyx_database = [{
     name       = "app-db"
     engine     = "postgres"
     version    = "16"
@@ -78,7 +78,7 @@ resource "pyxcloud_environment" "demo" {
     ram        = "4"
     storage_gb = 50
     encrypted  = true
-  }
+  }]
 }
 
 output "environment_outputs" {
