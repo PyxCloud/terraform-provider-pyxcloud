@@ -47,7 +47,7 @@ func TestEnvironmentComponentsSchemaIsFlat(t *testing.T) {
 		"path", "name", "type", "count", "architecture", "cpu", "ram", "os_name",
 		"min", "max", "desired", "health", "user_data", "instance_profile", "root_disk_gb",
 		"engine", "version", "storage_gb", "encrypted", "alb_listener_arn", "host_header",
-		"scale_group", "assume_service", "managed_policy_arns", "inline_policies",
+		"scale_group", "assume_service", "create_instance_profile", "managed_policy_arns", "inline_policies",
 		"zone_id", "records", "listeners", "target_kind", "target_name",
 	} {
 		if _, ok := attrs[name]; !ok {
@@ -58,6 +58,31 @@ func TestEnvironmentComponentsSchemaIsFlat(t *testing.T) {
 		if _, ok := attrs[name]; ok {
 			t.Errorf("component schema must not expose nested %s block", name)
 		}
+	}
+}
+
+func TestEnvironmentAssembleInputMapsFlatIAMInstanceProfile(t *testing.T) {
+	t.Parallel()
+	r := &environmentResource{}
+	in := r.assembleInputFromModel(environmentModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Dublin"),
+		Components: []envComponentModel{{
+			Name:                  types.StringValue("app-role"),
+			Type:                  types.StringValue("iam"),
+			AssumeService:         types.StringValue("ec2.amazonaws.com"),
+			CreateInstanceProfile: types.BoolValue(true),
+		}},
+	})
+	if len(in.Components) != 1 {
+		t.Fatalf("components = %d, want 1", len(in.Components))
+	}
+	if in.Components[0].IAM == nil {
+		t.Fatal("expected flat IAM fields to populate catalog IAM")
+	}
+	if !in.Components[0].IAM.InstanceProfile {
+		t.Fatalf("IAM InstanceProfile = false, want true")
 	}
 }
 

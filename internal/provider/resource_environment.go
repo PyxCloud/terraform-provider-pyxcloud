@@ -77,6 +77,7 @@ type envComponentModel struct {
 	ScaleGroupName           types.String          `tfsdk:"scale_group"`
 	Priority                 types.Int64           `tfsdk:"priority"`
 	AssumeService            types.String          `tfsdk:"assume_service"`
+	CreateInstanceProfile    types.Bool            `tfsdk:"create_instance_profile"`
 	InlinePolicies           []envIAMPolicyModel   `tfsdk:"inline_policies"`
 	ManagedPolicyARNs        []types.String        `tfsdk:"managed_policy_arns"`
 	LogGroups                []envLogGroupModel    `tfsdk:"log_groups"`
@@ -419,6 +420,7 @@ func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 		"scale_group":                schema.StringAttribute{Optional: true, MarkdownDescription: "Name of the sibling scale-group component to attach."},
 		"priority":                   schema.Int64Attribute{Optional: true, MarkdownDescription: "Listener rule priority."},
 		"assume_service":             schema.StringAttribute{Optional: true, MarkdownDescription: "Principal allowed to assume an IAM role."},
+		"create_instance_profile":    schema.BoolAttribute{Optional: true, MarkdownDescription: "For IAM components, also create an EC2 instance profile with the role name."},
 		"managed_policy_arns":        schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Managed policy ARNs to attach."},
 		"inline_policies":            inlinePolicyAttribute(),
 		"log_groups":                 logGroupsAttribute(),
@@ -609,8 +611,11 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				Priority:        int(cm.Priority.ValueInt64()),
 			}
 		}
-		if cm.Type.ValueString() == "iam" || nonEmptyString(cm.AssumeService) || len(cm.ManagedPolicyARNs) > 0 || len(cm.InlinePolicies) > 0 {
-			iam := &catalog.AssembleIAM{AssumeService: cm.AssumeService.ValueString()}
+		if cm.Type.ValueString() == "iam" || nonEmptyString(cm.AssumeService) || boolSet(cm.CreateInstanceProfile) || len(cm.ManagedPolicyARNs) > 0 || len(cm.InlinePolicies) > 0 {
+			iam := &catalog.AssembleIAM{
+				AssumeService:   cm.AssumeService.ValueString(),
+				InstanceProfile: cm.CreateInstanceProfile.ValueBool(),
+			}
 			for _, arn := range cm.ManagedPolicyARNs {
 				iam.ManagedPolicyARNs = append(iam.ManagedPolicyARNs, arn.ValueString())
 			}
