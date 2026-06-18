@@ -52,6 +52,18 @@ type AssembleScaleGroup struct {
 	RootDiskGB      int
 }
 
+// AssembleAttachToExistingALB is the config for an `attach-to-existing-alb` component.
+type AssembleAttachToExistingALB struct {
+	ALBListenerARN  string
+	HostHeader      string
+	Port            int
+	Protocol        string
+	HealthCheckPath string
+	HealthCheckPort string
+	ScaleGroup      string
+	Priority        int
+}
+
 // AssembleIAM is the canonical IAM config for an `iam` component.
 type AssembleIAM struct {
 	AssumeService     string
@@ -62,13 +74,14 @@ type AssembleIAM struct {
 
 // AssembleComponent is one canonical component in the environment.
 type AssembleComponent struct {
-	Name          string
-	Type          string
-	Count         int
-	VM            *AssembleVM
-	ScaleGroup    *AssembleScaleGroup
-	IAM           *AssembleIAM
-	Monitoring    *AssembleMonitoring
+	Name                string
+	Type                string
+	Count               int
+	VM                  *AssembleVM
+	ScaleGroup          *AssembleScaleGroup
+	AttachToExistingALB *AssembleAttachToExistingALB
+	IAM                 *AssembleIAM
+	Monitoring          *AssembleMonitoring
 	DNS           *AssembleDNS
 	ObjectStorage *AssembleObjectStorage
 	Secrets       *AssembleSecrets
@@ -271,7 +284,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		switch c.Type {
 		case "virtual-machine", "virtual-machine-scale-group":
 			hasVM, hasNetworked = true, true
-		case "managed-database", "cache", "managed-kubernetes", "container-service", "load-balancer":
+		case "managed-database", "cache", "managed-kubernetes", "container-service", "load-balancer", "attach-to-existing-alb":
 			hasNetworked = true
 		}
 	}
@@ -375,6 +388,33 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, sgHCL)
+		case "attach-to-existing-alb":
+			if c.AttachToExistingALB == nil {
+				return nil, fmt.Errorf("component %q (%s): attach_to_existing_alb config is required", c.Name, c.Type)
+			}
+			att := c.AttachToExistingALB
+			attPlan, err := TranslateAttachToExistingALB(ctx, cat, AttachToExistingALBSpec{
+				Name:            c.Name,
+				Region:          in.Region,
+				Provider:        in.Provider,
+				ALBListenerARN:  att.ALBListenerARN,
+				HostHeader:      att.HostHeader,
+				Port:            att.Port,
+				Protocol:        att.Protocol,
+				HealthCheckPath: att.HealthCheckPath,
+				HealthCheckPort: att.HealthCheckPort,
+				ScaleGroup:      att.ScaleGroup,
+				Priority:        att.Priority,
+				Network:         netName,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			attHCL, err := RenderAttachToExistingALBHCL(attPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, attHCL)
 		case "iam":
 			iamSpec := IAMSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.IAM != nil {
