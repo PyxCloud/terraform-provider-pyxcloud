@@ -161,6 +161,33 @@ resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
 	}
 }
 
+func TestAWSSecurityGroupRuleImportCandidatesMultipleCIDRSources(t *testing.T) {
+	hcl := `
+resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
+  type              = "ingress"
+  security_group_id = aws_security_group.beta-api-sg.id
+  protocol          = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  cidr_blocks       = ["0.0.0.0/0"]
+  ipv6_cidr_blocks  = ["::/0"]
+}
+`
+	got := awsSecurityGroupRuleImportCandidates(hcl, map[string]string{"beta-api-sg": "sg-090dcaa930a166d99"})
+	want := map[importCandidate]bool{
+		{Address: "aws_security_group_rule.beta-api-sg_ingress_0", ID: "sg-090dcaa930a166d99_ingress_tcp_8080_8080_0.0.0.0/0"}: true,
+		{Address: "aws_security_group_rule.beta-api-sg_ingress_0", ID: "sg-090dcaa930a166d99_ingress_tcp_8080_8080_::/0"}:      true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d candidates, got %#v", len(want), got)
+	}
+	for _, candidate := range got {
+		if !want[candidate] {
+			t.Fatalf("unexpected candidate %#v; got %#v", candidate, got)
+		}
+	}
+}
+
 func TestDiscoverAWSImportCandidatesAdoptsSecurityGroupsOutsideDefaultVPC(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test creates a POSIX shell fake aws executable")

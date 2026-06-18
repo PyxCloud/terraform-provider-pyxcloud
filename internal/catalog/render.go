@@ -173,27 +173,36 @@ func renderSGAWS(p SecurityGroupPlan) string {
 	b.WriteString("}\n")
 
 	for i, r := range p.Rules {
-		rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
-		fmt.Fprintf(&b, "\nresource \"aws_security_group_rule\" %q {\n", rn)
-		fmt.Fprintf(&b, "  type              = %q\n", r.Direction)
-		fmt.Fprintf(&b, "  security_group_id = aws_security_group.%s.id\n", name)
-		fmt.Fprintf(&b, "  protocol          = %q\n", awsProto(r.Protocol))
-		fmt.Fprintf(&b, "  from_port         = %d\n", r.FromPort)
-		fmt.Fprintf(&b, "  to_port           = %d\n", r.ToPort)
 		if r.SourceSG != "" {
-			fmt.Fprintf(&b, "  source_security_group_id = aws_security_group.%s.id\n", tfName(r.SourceSG))
-		} else {
-			v4, v6 := splitCIDRs(r.CIDRs)
-			if len(v4) > 0 {
-				fmt.Fprintf(&b, "  cidr_blocks       = %s\n", hclCIDRList(v4))
-			}
-			if len(v6) > 0 {
-				fmt.Fprintf(&b, "  ipv6_cidr_blocks  = %s\n", hclCIDRList(v6))
-			}
+			rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
+			writeAWSSecurityGroupRule(&b, rn, name, r, fmt.Sprintf("aws_security_group.%s.id", tfName(r.SourceSG)), "source_security_group_id")
+			continue
 		}
-		b.WriteString("}\n")
+		v4, v6 := splitCIDRs(r.CIDRs)
+		for j, cidr := range v4 {
+			rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
+			if j > 0 || len(v6) > 0 {
+				rn = fmt.Sprintf("%s_%s_%d_ipv4_%d", name, r.Direction, i, j)
+			}
+			writeAWSSecurityGroupRule(&b, rn, name, r, hclCIDRList([]string{cidr}), "cidr_blocks")
+		}
+		for j, cidr := range v6 {
+			rn := fmt.Sprintf("%s_%s_%d_ipv6_%d", name, r.Direction, i, j)
+			writeAWSSecurityGroupRule(&b, rn, name, r, hclCIDRList([]string{cidr}), "ipv6_cidr_blocks")
+		}
 	}
 	return b.String()
+}
+
+func writeAWSSecurityGroupRule(b *strings.Builder, resourceName, sgName string, r RulePlan, value, attr string) {
+	fmt.Fprintf(b, "\nresource \"aws_security_group_rule\" %q {\n", resourceName)
+	fmt.Fprintf(b, "  type              = %q\n", r.Direction)
+	fmt.Fprintf(b, "  security_group_id = aws_security_group.%s.id\n", sgName)
+	fmt.Fprintf(b, "  protocol          = %q\n", awsProto(r.Protocol))
+	fmt.Fprintf(b, "  from_port         = %d\n", r.FromPort)
+	fmt.Fprintf(b, "  to_port           = %d\n", r.ToPort)
+	fmt.Fprintf(b, "  %-17s = %s\n", attr, value)
+	b.WriteString("}\n")
 }
 
 func renderSGGCP(p SecurityGroupPlan) string {
