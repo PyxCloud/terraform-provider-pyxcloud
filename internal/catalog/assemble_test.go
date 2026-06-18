@@ -259,3 +259,63 @@ func TestAssembleHCLSynthetics(t *testing.T) {
 		t.Errorf("synthetics env missing canary:\n%s", strings.Join(docs, "\n"))
 	}
 }
+
+func TestAssembleHCLAttachToExistingALB(t *testing.T) {
+	cat, err := NewEmbedded()
+	if err != nil {
+		t.Fatalf("embedded catalog: %v", err)
+	}
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name:     "demo",
+		Provider: "aws",
+		Region:   "Dublin",
+		Components: []AssembleComponent{
+			{
+				Name: "api-asg",
+				Type: "virtual-machine-scale-group",
+				ScaleGroup: &AssembleScaleGroup{
+					Architecture: "x86_64",
+					CPU:          "2",
+					RAM:          "4",
+					OS:           "ubuntu",
+					Min:          1,
+					Max:          5,
+					Desired:      2,
+					Health:       "elb",
+				},
+			},
+			{
+				Name: "api-attach",
+				Type: "attach-to-existing-alb",
+				AttachToExistingALB: &AssembleAttachToExistingALB{
+					ALBListenerARN:  "arn:aws:elasticloadbalancing:eu-west-1:123456789012:listener/app/shared-alb/123456",
+					HostHeader:      "api.pyxcloud.local",
+					Port:            8080,
+					Protocol:        "http",
+					HealthCheckPath: "/health",
+					ScaleGroup:      "api-asg",
+					Priority:        100,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL attach-to-existing-alb: %v", err)
+	}
+
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		"resource \"aws_lb_target_group\" \"api-attach_tg\"",
+		"resource \"aws_lb_listener_rule\" \"api-attach_rule\"",
+		"resource \"aws_autoscaling_attachment\" \"api-attach_attach\"",
+		"listener_arn = \"arn:aws:elasticloadbalancing:eu-west-1:123456789012:listener/app/shared-alb/123456\"",
+		"priority     = 100",
+		"values = [\"api.pyxcloud.local\"]",
+		"autoscaling_group_name = aws_autoscaling_group.api-asg_asg.name",
+		"target_group_arn = aws_lb_target_group.api-attach_tg.arn",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %q\n---\n%s", want, all)
+		}
+	}
+}

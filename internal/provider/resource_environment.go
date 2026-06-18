@@ -55,27 +55,28 @@ type envComponentModel struct {
 	Name          types.String           `tfsdk:"name"`
 	Type          types.String           `tfsdk:"type"`
 	Count         types.Int64            `tfsdk:"count"`
-	VM            *vmTypeModel           `tfsdk:"vm"`
-	ScaleGroup    *envScaleGroupModel    `tfsdk:"scale_group"`
-	IAM           *envIAMModel           `tfsdk:"iam"`
-	Monitoring    *envMonitoringModel    `tfsdk:"monitoring"`
-	DNS           *envDNSModel           `tfsdk:"dns"`
-	ObjectStorage *envObjectStorageModel `tfsdk:"object_storage"`
-	Secrets       *envSecretsModel       `tfsdk:"secrets"`
-	MDB           *envMDBModel           `tfsdk:"managed_database"`
-	Queue         *envQueueModel         `tfsdk:"queue"`
-	Stream        *envStreamModel        `tfsdk:"stream"`
-	Serverless    *envServerlessModel    `tfsdk:"serverless"`
-	KMS           *envKMSModel           `tfsdk:"kms"`
-	Cache         *envCacheModel         `tfsdk:"cache"`
-	CDN           *envCDNModel           `tfsdk:"cdn"`
-	WAF           *envWAFModel           `tfsdk:"waf"`
-	K8s           *envK8sModel           `tfsdk:"kubernetes"`
-	LB            *envLBModel            `tfsdk:"load_balancer"`
-	Email         *envEmailModel         `tfsdk:"email"`
-	BlockStorage  *envBlockStorageModel  `tfsdk:"block_storage"`
-	PrefixList    *envPrefixListModel    `tfsdk:"prefix_list"`
-	Synthetics    *envSyntheticsModel    `tfsdk:"synthetics"`
+	VM                  *vmTypeModel                 `tfsdk:"vm"`
+	ScaleGroup          *envScaleGroupModel          `tfsdk:"scale_group"`
+	AttachToExistingALB *envAttachToExistingALBModel `tfsdk:"attach_to_existing_alb"`
+	IAM                 *envIAMModel                 `tfsdk:"iam"`
+	Monitoring          *envMonitoringModel          `tfsdk:"monitoring"`
+	DNS                 *envDNSModel                 `tfsdk:"dns"`
+	ObjectStorage       *envObjectStorageModel       `tfsdk:"object_storage"`
+	Secrets             *envSecretsModel             `tfsdk:"secrets"`
+	MDB                 *envMDBModel                 `tfsdk:"managed_database"`
+	Queue               *envQueueModel               `tfsdk:"queue"`
+	Stream              *envStreamModel              `tfsdk:"stream"`
+	Serverless          *envServerlessModel          `tfsdk:"serverless"`
+	KMS                 *envKMSModel                 `tfsdk:"kms"`
+	Cache               *envCacheModel               `tfsdk:"cache"`
+	CDN                 *envCDNModel                 `tfsdk:"cdn"`
+	WAF                 *envWAFModel                 `tfsdk:"waf"`
+	K8s                 *envK8sModel                 `tfsdk:"kubernetes"`
+	LB                  *envLBModel                  `tfsdk:"load_balancer"`
+	Email               *envEmailModel               `tfsdk:"email"`
+	BlockStorage        *envBlockStorageModel        `tfsdk:"block_storage"`
+	PrefixList          *envPrefixListModel          `tfsdk:"prefix_list"`
+	Synthetics          *envSyntheticsModel          `tfsdk:"synthetics"`
 }
 
 type envScaleGroupModel struct {
@@ -90,6 +91,17 @@ type envScaleGroupModel struct {
 	UserData        types.String `tfsdk:"user_data"`
 	InstanceProfile types.String `tfsdk:"instance_profile"`
 	RootDiskGB      types.Int64  `tfsdk:"root_disk_gb"`
+}
+
+type envAttachToExistingALBModel struct {
+	ALBListenerARN  types.String `tfsdk:"alb_listener_arn"`
+	HostHeader      types.String `tfsdk:"host_header"`
+	Port            types.Int64  `tfsdk:"port"`
+	Protocol        types.String `tfsdk:"protocol"`
+	HealthCheckPath types.String `tfsdk:"health_check_path"`
+	HealthCheckPort types.String `tfsdk:"health_check_port"`
+	ScaleGroup      types.String `tfsdk:"scale_group"`
+	Priority        types.Int64  `tfsdk:"priority"`
 }
 
 type envSyntheticsModel struct {
@@ -340,6 +352,20 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"user_data":        schema.StringAttribute{Optional: true, MarkdownDescription: "cloud-init/bootstrap baked into the launch template (e.g. the native-binary pull)."},
 								"instance_profile": schema.StringAttribute{Optional: true, MarkdownDescription: "IAM instance-profile name to attach (from a sibling `iam` component)."},
 								"root_disk_gb":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Root EBS volume size in GiB (0 = default)."},
+							},
+						},
+						"attach_to_existing_alb": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for attaching a scale group to an existing ALB listener.",
+							Attributes: map[string]schema.Attribute{
+								"alb_listener_arn":  schema.StringAttribute{Required: true, MarkdownDescription: "ARN of the existing ALB listener."},
+								"host_header":       schema.StringAttribute{Required: true, MarkdownDescription: "Host header rule to match."},
+								"port":              schema.Int64Attribute{Required: true, MarkdownDescription: "Port the target group forwards traffic to."},
+								"protocol":          schema.StringAttribute{Optional: true, MarkdownDescription: "Protocol (default `http`)."},
+								"health_check_path": schema.StringAttribute{Optional: true, MarkdownDescription: "Health check path (default `/`)."},
+								"health_check_port": schema.StringAttribute{Optional: true, MarkdownDescription: "Health check port (default is target group port)."},
+								"scale_group":       schema.StringAttribute{Required: true, MarkdownDescription: "Name of the sibling scale-group component to attach."},
+								"priority":          schema.Int64Attribute{Required: true, MarkdownDescription: "Unique priority for the listener rule."},
 							},
 						},
 						"iam": schema.SingleNestedAttribute{
@@ -644,6 +670,18 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				UserData:        cm.ScaleGroup.UserData.ValueString(),
 				InstanceProfile: cm.ScaleGroup.InstanceProfile.ValueString(),
 				RootDiskGB:      int(cm.ScaleGroup.RootDiskGB.ValueInt64()),
+			}
+		}
+		if cm.AttachToExistingALB != nil {
+			comp.AttachToExistingALB = &catalog.AssembleAttachToExistingALB{
+				ALBListenerARN:  cm.AttachToExistingALB.ALBListenerARN.ValueString(),
+				HostHeader:      cm.AttachToExistingALB.HostHeader.ValueString(),
+				Port:            int(cm.AttachToExistingALB.Port.ValueInt64()),
+				Protocol:        cm.AttachToExistingALB.Protocol.ValueString(),
+				HealthCheckPath: cm.AttachToExistingALB.HealthCheckPath.ValueString(),
+				HealthCheckPort: cm.AttachToExistingALB.HealthCheckPort.ValueString(),
+				ScaleGroup:      cm.AttachToExistingALB.ScaleGroup.ValueString(),
+				Priority:        int(cm.AttachToExistingALB.Priority.ValueInt64()),
 			}
 		}
 		if cm.IAM != nil {
