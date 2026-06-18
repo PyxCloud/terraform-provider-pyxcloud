@@ -184,6 +184,11 @@ func discoverAWSImportCandidates(ctx context.Context, docs []string) []importCan
 	for _, m := range resourceNameRE("aws_iam_instance_profile").FindAllStringSubmatch(all, -1) {
 		add("aws_iam_instance_profile."+m[1], m[2])
 	}
+	if accountID := awsOutput(ctx, "sts", "get-caller-identity", "--query", "Account", "--output", "text"); accountID != "" {
+		for _, m := range resourceNameRE("aws_iam_policy").FindAllStringSubmatch(all, -1) {
+			add("aws_iam_policy."+m[1], "arn:aws:iam::"+accountID+":policy/"+m[2])
+		}
+	}
 	for _, m := range resourceNameRE("aws_cloudwatch_log_group").FindAllStringSubmatch(all, -1) {
 		add("aws_cloudwatch_log_group."+m[1], m[2])
 	}
@@ -243,6 +248,9 @@ func awsSecurityGroupRuleImportCandidates(hcl string, sgIDs map[string]string) [
 		if cidr := awsSGRuleCIDRRE.FindStringSubmatch(body); len(cidr) == 2 {
 			spec.cidrBlock = cidr[1]
 		}
+		if cidr := awsSGRuleIPv6CIDRRE.FindStringSubmatch(body); len(cidr) == 2 {
+			spec.cidrBlock = cidr[1]
+		}
 		for _, attr := range hclStringAttrRE.FindAllStringSubmatch(body, -1) {
 			switch attr[1] {
 			case "type":
@@ -278,6 +286,7 @@ var (
 	awsSGRuleRE               = regexp.MustCompile(`(?s)resource\s+"aws_security_group_rule"\s+"([^"]+)"\s+\{(.*?)\n\}`)
 	awsSGRuleSGRefRE          = regexp.MustCompile(`security_group_id\s+=\s+aws_security_group\.([A-Za-z0-9_-]+)\.id`)
 	awsSGRuleCIDRRE           = regexp.MustCompile(`cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
+	awsSGRuleIPv6CIDRRE       = regexp.MustCompile(`ipv6_cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
 	hclStringAttrRE           = regexp.MustCompile(`(?m)^\s+([a-zA-Z_]+)\s+=\s+"([^"]*)"`)
 )
 

@@ -135,3 +135,27 @@ resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
 		t.Fatalf("candidate = %#v, want %#v", got[0], want)
 	}
 }
+
+func TestAWSSecurityGroupRuleImportCandidatesIPv6(t *testing.T) {
+	hcl := `
+resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
+  type              = "ingress"
+  security_group_id = aws_security_group.beta-api-sg.id
+  protocol          = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  ipv6_cidr_blocks  = ["::/0"]
+}
+`
+	got := awsSecurityGroupRuleImportCandidates(hcl, map[string]string{"beta-api-sg": "sg-090dcaa930a166d99"})
+	if len(got) != 1 {
+		t.Fatalf("expected one candidate, got %#v", got)
+	}
+	want := importCandidate{
+		Address: "aws_security_group_rule.beta-api-sg_ingress_0",
+		ID:      "sg-090dcaa930a166d99_ingress_tcp_8080_8080_::/0",
+	}
+	if got[0] != want {
+		t.Fatalf("candidate = %#v, want %#v", got[0], want)
+	}
+}
