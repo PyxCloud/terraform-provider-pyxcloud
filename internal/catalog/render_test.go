@@ -26,9 +26,13 @@ func TestRenderAWS(t *testing.T) {
 	t.Parallel()
 	hcl := renderFor(t, "aws", "Dublin", []string{"10.0.1.0/24", "10.0.2.0/24"})
 	for _, want := range []string{
-		`resource "aws_vpc"`, `cidr_block = "10.0.0.0/16"`,
-		`resource "aws_subnet"`, `availability_zone = "eu-west-1a"`,
-		`availability_zone = "eu-west-1b"`,
+		`data "aws_vpc" "default" { default = true }`,
+		`data "aws_subnets" "default"`,
+		`values = [data.aws_vpc.default.id]`,
+		`data "aws_subnet" "production_1"`,
+		`id = tolist(data.aws_subnets.default.ids)[0]`,
+		`data "aws_subnet" "production_2"`,
+		`id = tolist(data.aws_subnets.default.ids)[1]`,
 	} {
 		if !strings.Contains(hcl, want) {
 			t.Errorf("AWS HCL missing %q\n%s", want, hcl)
@@ -88,7 +92,7 @@ func TestRenderSGAWS(t *testing.T) {
 	for _, want := range []string{
 		`resource "aws_security_group" "web"`,
 		`description = "web tier"`,
-		`vpc_id      = aws_vpc.production.id`,
+		`vpc_id      = data.aws_vpc.default.id`,
 		`resource "aws_security_group_rule"`,
 		`from_port         = 80`,
 		`from_port         = 443`,

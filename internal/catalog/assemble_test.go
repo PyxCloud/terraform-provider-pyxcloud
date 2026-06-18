@@ -29,8 +29,8 @@ func TestAssembleHCLAWSVMEnv(t *testing.T) {
 	}
 	all := strings.Join(docs, "\n")
 	for _, want := range []string{
-		"resource \"aws_vpc\"",
-		"resource \"aws_subnet\"",
+		"data \"aws_vpc\" \"default\"",
+		"data \"aws_subnet\"",
 		"resource \"aws_security_group\"",
 		"resource \"aws_instance\"",
 		"vpc_security_group_ids = [aws_security_group.demo-sg.id]", // VM wired to the synthesised SG
@@ -305,7 +305,12 @@ func TestAssembleHCLAttachToExistingALB(t *testing.T) {
 
 	all := strings.Join(docs, "\n")
 	for _, want := range []string{
+		"data \"aws_vpc\" \"default\"",
+		"data \"aws_subnet\" \"demo-net_1\"",
+		"data \"aws_subnet\" \"demo-net_2\"",
+		"vpc_zone_identifier = [data.aws_subnet.demo-net_1.id, data.aws_subnet.demo-net_2.id]",
 		"resource \"aws_lb_target_group\" \"api-attach_tg\"",
+		"vpc_id      = data.aws_vpc.default.id",
 		"resource \"aws_lb_listener_rule\" \"api-attach_rule\"",
 		"resource \"aws_autoscaling_attachment\" \"api-attach_attach\"",
 		"listener_arn = \"arn:aws:elasticloadbalancing:eu-west-1:123456789012:listener/app/shared-alb/123456\"",
@@ -316,6 +321,14 @@ func TestAssembleHCLAttachToExistingALB(t *testing.T) {
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("missing %q\n---\n%s", want, all)
+		}
+	}
+	for _, unwanted := range []string{
+		"resource \"aws_vpc\"",
+		"resource \"aws_subnet\"",
+	} {
+		if strings.Contains(all, unwanted) {
+			t.Errorf("attach-to-existing-alb must reuse the ambient VPC/subnets, found %q\n---\n%s", unwanted, all)
 		}
 	}
 }
