@@ -416,7 +416,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, attHCL)
-		case "iam":
+		case "iam", "access-policy":
 			iamSpec := IAMSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.IAM != nil {
 				iamSpec.AssumeService = c.IAM.AssumeService
