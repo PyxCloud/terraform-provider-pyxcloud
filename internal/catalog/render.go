@@ -498,6 +498,24 @@ func renderASGAWS(p ScaleGroupPlan) string {
 	if p.SecurityGroup != "" {
 		fmt.Fprintf(&b, "  vpc_security_group_ids = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
 	}
+	if p.InstanceProfile != "" {
+		b.WriteString("  iam_instance_profile {\n")
+		fmt.Fprintf(&b, "    name = %q\n", p.InstanceProfile)
+		b.WriteString("  }\n")
+	}
+	if p.RootDiskGB > 0 {
+		b.WriteString("  block_device_mappings {\n")
+		b.WriteString("    device_name = \"/dev/sda1\"\n")
+		b.WriteString("    ebs {\n")
+		fmt.Fprintf(&b, "      volume_size           = %d\n", p.RootDiskGB)
+		b.WriteString("      volume_type           = \"gp3\"\n")
+		b.WriteString("      delete_on_termination = true\n")
+		b.WriteString("    }\n")
+		b.WriteString("  }\n")
+	}
+	if p.UserData != "" {
+		fmt.Fprintf(&b, "  user_data = base64encode(%s)\n", vmHeredoc(p.UserData))
+	}
 	b.WriteString("  tag_specifications {\n")
 	b.WriteString("    resource_type = \"instance\"\n")
 	fmt.Fprintf(&b, "    tags = { Name = %q, pyxcloud = \"true\" }\n", p.GroupName)

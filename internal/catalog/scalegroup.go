@@ -38,6 +38,15 @@ type ScaleGroupSpec struct {
 	// (load-balancer health). Empty defaults to ec2.
 	Health string
 
+	// UserData is the cloud-init/bootstrap script baked into the launch template
+	// (e.g. the native-binary pull + systemd unit). Provider-neutral plaintext.
+	UserData string
+	// InstanceProfile is the IAM instance-profile/service-account name to attach
+	// (wired from a sibling iam component).
+	InstanceProfile string
+	// RootDiskGB overrides the root volume size in GiB (0 = provider default).
+	RootDiskGB int
+
 	// Placement wiring (from the other components). Names are canonical and
 	// resolved to provider references by the renderer. Subnets is the set of
 	// canonical subnet names the group spreads across (multi-AZ); empty falls
@@ -68,6 +77,10 @@ type ScaleGroupPlan struct {
 	Max     int    `json:"max"`     // maximum instances
 	Desired int    `json:"desired"` // desired instances
 	Health  string `json:"health"`  // ec2 | elb
+
+	UserData        string `json:"user_data"`        // cloud-init/bootstrap (provider-neutral plaintext)
+	InstanceProfile string `json:"instance_profile"` // IAM instance-profile/service-account name (optional)
+	RootDiskGB      int    `json:"root_disk_gb"`     // root volume size GiB (0 = provider default)
 
 	// Zones are the concrete AZs/zones the group spreads across (multi-AZ),
 	// derived from the region catalog. Empty for DigitalOcean.
@@ -201,14 +214,17 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		OSName:        osName,
 		OSVersion:     osVersion,
 		Image:         img.Image,
-		Min:           min,
-		Max:           max,
-		Desired:       desired,
-		Health:        health,
-		Zones:         zones,
-		NetworkName:   spec.Network,
-		SubnetNames:   subnets,
-		SecurityGroup: spec.SecurityGroup,
+		Min:             min,
+		Max:             max,
+		Desired:         desired,
+		Health:          health,
+		UserData:        spec.UserData,
+		InstanceProfile: spec.InstanceProfile,
+		RootDiskGB:      spec.RootDiskGB,
+		Zones:           zones,
+		NetworkName:     spec.Network,
+		SubnetNames:     subnets,
+		SecurityGroup:   spec.SecurityGroup,
 	}
 
 	switch provider {
