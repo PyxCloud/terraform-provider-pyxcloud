@@ -44,6 +44,7 @@ type environmentModel struct {
 	Name                            types.String        `tfsdk:"name"`
 	Provider                        types.String        `tfsdk:"cloud"`
 	Region                          types.String        `tfsdk:"region"`
+	Expose                          []types.Int64       `tfsdk:"expose"`
 	PyxVPC                          []envComponentModel `tfsdk:"pyx_vpc"`
 	PyxNetworkRule                  []envComponentModel `tfsdk:"pyx_network_rule"`
 	PyxAccessPolicy                 []envComponentModel `tfsdk:"pyx_access_policy"`
@@ -382,6 +383,11 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Required:            true,
 				MarkdownDescription: "Abstract pyx region_name (e.g. `Dublin`); the backend resolves it to a concrete cspRegion.",
 			},
+			"expose": schema.ListAttribute{
+				Optional:            true,
+				ElementType:         types.Int64Type,
+				MarkdownDescription: "TCP ports to expose on the environment security group when VM or autoscale VM group components are present.",
+			},
 			"account_binding": schema.StringAttribute{
 				Optional: true,
 				MarkdownDescription: "Selects the credential source. **Omit** for Mode A (default): the apply runs " +
@@ -611,6 +617,9 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		Name:     m.Name.ValueString(),
 		Provider: m.Provider.ValueString(),
 		Region:   m.Region.ValueString(),
+	}
+	for _, p := range m.Expose {
+		in.Expose = append(in.Expose, int(p.ValueInt64()))
 	}
 	for _, typed := range environmentComponentsFromModel(m) {
 		cm := typed.model
