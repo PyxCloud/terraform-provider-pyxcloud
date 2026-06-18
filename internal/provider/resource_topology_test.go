@@ -6,8 +6,69 @@ import (
 
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 
+	fwresource "github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+func TestTopologyComponentsSchemaIsFlat(t *testing.T) {
+	t.Parallel()
+	r := NewTopologyResource()
+	resp := &fwresource.SchemaResponse{}
+	r.Schema(context.Background(), fwresource.SchemaRequest{}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("topology schema diagnostics: %+v", resp.Diagnostics)
+	}
+
+	components, ok := resp.Schema.Attributes["components"].(schema.ListNestedAttribute)
+	if !ok {
+		t.Fatalf("components schema = %T, want schema.ListNestedAttribute", resp.Schema.Attributes["components"])
+	}
+	attrs := components.NestedObject.Attributes
+	for _, name := range []string{"path", "name", "type", "count", "architecture", "cpu", "ram", "os_name", "min", "max", "desired", "health"} {
+		if _, ok := attrs[name]; !ok {
+			t.Errorf("expected flat component attribute %q", name)
+		}
+	}
+	if _, ok := attrs["vm"]; ok {
+		t.Error("component schema must not expose nested vm block")
+	}
+	if _, ok := attrs["scale_group"]; ok {
+		t.Error("component schema must not expose nested scale_group block")
+	}
+}
+
+func TestTopologyModelToTopologyUsesFlatComponentFields(t *testing.T) {
+	t.Parallel()
+	topo := modelToTopology(topologyModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Dublin"),
+		Components: []componentModel{{
+			Path:         types.StringValue("/0/Europe/0/Web-Net/0/app"),
+			Name:         types.StringValue("app"),
+			Type:         types.StringValue("virtual-machine-scale-group"),
+			Count:        types.Int64Value(3),
+			Architecture: types.StringValue("x86_64"),
+			CPU:          types.StringValue("2"),
+			RAM:          types.StringValue("4"),
+			OSName:       types.StringValue("ubuntu"),
+		}},
+	})
+	if len(topo.Components) != 1 {
+		t.Fatalf("components = %d, want 1", len(topo.Components))
+	}
+	comp := topo.Components[0]
+	if comp.Path != "/0/Europe/0/Web-Net/0/app" {
+		t.Errorf("path = %q", comp.Path)
+	}
+	if comp.VM == nil {
+		t.Fatal("expected flat VM fields to populate client VM")
+	}
+	if comp.VM.Architecture != "x86_64" || comp.VM.CPU != "2" || comp.VM.RAM != "4" || comp.VM.OS != "ubuntu" {
+		t.Errorf("vm = %+v", comp.VM)
+	}
+}
 
 // TestResourceTranslateNetwork exercises the resource's network translation
 // wiring end-to-end through the embedded catalog.

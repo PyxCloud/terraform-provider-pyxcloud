@@ -43,10 +43,18 @@ type vmTypeModel struct {
 
 // componentModel maps one canonical topology component.
 type componentModel struct {
-	Name  types.String `tfsdk:"name"`
-	Type  types.String `tfsdk:"type"`
-	Count types.Int64  `tfsdk:"count"`
-	VM    *vmTypeModel `tfsdk:"vm"`
+	Path         types.String `tfsdk:"path"`
+	Name         types.String `tfsdk:"name"`
+	Type         types.String `tfsdk:"type"`
+	Count        types.Int64  `tfsdk:"count"`
+	Architecture types.String `tfsdk:"architecture"`
+	CPU          types.String `tfsdk:"cpu"`
+	RAM          types.String `tfsdk:"ram"`
+	OSName       types.String `tfsdk:"os_name"`
+	Min          types.Int64  `tfsdk:"min"`
+	Max          types.Int64  `tfsdk:"max"`
+	Desired      types.Int64  `tfsdk:"desired"`
+	Health       types.String `tfsdk:"health"`
 }
 
 // networkModel maps the abstract `network` block of a place: the canonical
@@ -408,6 +416,10 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				MarkdownDescription: "Canonical components that make up the topology.",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
+						"path": schema.StringAttribute{
+							Optional:            true,
+							MarkdownDescription: "Canonical topology path for this component, e.g. `/0/Europe/0/Web-Net/0/app`.",
+						},
 						"name": schema.StringAttribute{
 							Required:            true,
 							MarkdownDescription: "Component name, unique within the topology.",
@@ -425,28 +437,26 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 							MarkdownDescription: "Number of instances of this component " +
 								"(defaults to 1).",
 						},
-						"vm": schema.SingleNestedAttribute{
+						"architecture": schema.StringAttribute{
 							Optional:            true,
-							MarkdownDescription: "Sizing for virtual-machine components.",
-							Attributes: map[string]schema.Attribute{
-								"architecture": schema.StringAttribute{
-									Optional:            true,
-									MarkdownDescription: "CPU architecture, e.g. `x86_64`, `arm64`.",
-								},
-								"cpu": schema.StringAttribute{
-									Optional:            true,
-									MarkdownDescription: "vCPU count, e.g. `2`.",
-								},
-								"ram": schema.StringAttribute{
-									Optional:            true,
-									MarkdownDescription: "RAM in GiB, e.g. `4`.",
-								},
-								"os_name": schema.StringAttribute{
-									Optional:            true,
-									MarkdownDescription: "Operating system, e.g. `ubuntu`.",
-								},
-							},
+							MarkdownDescription: "CPU architecture, e.g. `x86_64`, `arm64`.",
 						},
+						"cpu": schema.StringAttribute{
+							Optional:            true,
+							MarkdownDescription: "vCPU count, e.g. `2`.",
+						},
+						"ram": schema.StringAttribute{
+							Optional:            true,
+							MarkdownDescription: "RAM in GiB, e.g. `4`.",
+						},
+						"os_name": schema.StringAttribute{
+							Optional:            true,
+							MarkdownDescription: "Operating system, e.g. `ubuntu`.",
+						},
+						"min":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Minimum instances for scale-group components."},
+						"max":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Maximum instances for scale-group components."},
+						"desired": schema.Int64Attribute{Optional: true, MarkdownDescription: "Desired instances for scale-group components."},
+						"health":  schema.StringAttribute{Optional: true, MarkdownDescription: "Health check kind for scale-group components: `ec2` | `elb`."},
 					},
 				},
 			},
@@ -1992,16 +2002,25 @@ func modelToTopology(m topologyModel) client.Topology {
 			count = 1
 		}
 		comp := client.Component{
-			Name:  cm.Name.ValueString(),
-			Type:  cm.Type.ValueString(),
-			Count: count,
+			Path:         cm.Path.ValueString(),
+			Name:         cm.Name.ValueString(),
+			Type:         cm.Type.ValueString(),
+			Count:        count,
+			Architecture: cm.Architecture.ValueString(),
+			CPU:          cm.CPU.ValueString(),
+			RAM:          cm.RAM.ValueString(),
+			OSName:       cm.OSName.ValueString(),
+			Min:          int(cm.Min.ValueInt64()),
+			Max:          int(cm.Max.ValueInt64()),
+			Desired:      int(cm.Desired.ValueInt64()),
+			Health:       cm.Health.ValueString(),
 		}
-		if cm.VM != nil {
+		if hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
 			comp.VM = &client.VMType{
-				Architecture: cm.VM.Architecture.ValueString(),
-				CPU:          cm.VM.CPU.ValueString(),
-				RAM:          cm.VM.RAM.ValueString(),
-				OS:           cm.VM.OS.ValueString(),
+				Architecture: cm.Architecture.ValueString(),
+				CPU:          cm.CPU.ValueString(),
+				RAM:          cm.RAM.ValueString(),
+				OS:           cm.OSName.ValueString(),
 			}
 		}
 		comps = append(comps, comp)
@@ -2020,17 +2039,24 @@ func topologyToModel(t client.Topology) topologyModel {
 	comps := make([]componentModel, 0, len(t.Components))
 	for _, c := range t.Components {
 		cm := componentModel{
-			Name:  types.StringValue(c.Name),
-			Type:  types.StringValue(c.Type),
-			Count: types.Int64Value(int64(c.Count)),
+			Path:         stringValueOrNull(c.Path),
+			Name:         types.StringValue(c.Name),
+			Type:         types.StringValue(c.Type),
+			Count:        types.Int64Value(int64(c.Count)),
+			Architecture: stringValueOrNull(c.Architecture),
+			CPU:          stringValueOrNull(c.CPU),
+			RAM:          stringValueOrNull(c.RAM),
+			OSName:       stringValueOrNull(c.OSName),
+			Min:          int64ValueOrNull(c.Min),
+			Max:          int64ValueOrNull(c.Max),
+			Desired:      int64ValueOrNull(c.Desired),
+			Health:       stringValueOrNull(c.Health),
 		}
 		if c.VM != nil {
-			cm.VM = &vmTypeModel{
-				Architecture: types.StringValue(c.VM.Architecture),
-				CPU:          types.StringValue(c.VM.CPU),
-				RAM:          types.StringValue(c.VM.RAM),
-				OS:           types.StringValue(c.VM.OS),
-			}
+			cm.Architecture = stringValueOrNull(c.VM.Architecture)
+			cm.CPU = stringValueOrNull(c.VM.CPU)
+			cm.RAM = stringValueOrNull(c.VM.RAM)
+			cm.OSName = stringValueOrNull(c.VM.OS)
 		}
 		comps = append(comps, cm)
 	}
@@ -2041,4 +2067,26 @@ func topologyToModel(t client.Topology) topologyModel {
 		Region:     types.StringValue(t.Region),
 		Components: comps,
 	}
+}
+
+func hasFlatVM(architecture, cpu, ram, osName types.String) bool {
+	return nonEmptyString(architecture) || nonEmptyString(cpu) || nonEmptyString(ram) || nonEmptyString(osName)
+}
+
+func nonEmptyString(v types.String) bool {
+	return !v.IsNull() && !v.IsUnknown() && v.ValueString() != ""
+}
+
+func stringValueOrNull(v string) types.String {
+	if v == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(v)
+}
+
+func int64ValueOrNull(v int) types.Int64 {
+	if v == 0 {
+		return types.Int64Null()
+	}
+	return types.Int64Value(int64(v))
 }

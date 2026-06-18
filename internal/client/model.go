@@ -44,10 +44,19 @@ type VMType struct {
 // type (see TopologyInspector / PricingRanker). Count is how many instances of
 // this component the topology declares (1 for a single VM, N for a scale group).
 type Component struct {
-	Name  string  `json:"name"`
-	Type  string  `json:"type"`
-	Count int     `json:"count"`
-	VM    *VMType `json:"vm,omitempty"` // populated for virtual-machine* components
+	Path         string  `json:"path,omitempty"`
+	Name         string  `json:"name"`
+	Type         string  `json:"type"`
+	Count        int     `json:"count"`
+	Architecture string  `json:"architecture,omitempty"`
+	CPU          string  `json:"cpu,omitempty"`
+	RAM          string  `json:"ram,omitempty"`
+	OSName       string  `json:"os_name,omitempty"`
+	Min          int     `json:"min,omitempty"`
+	Max          int     `json:"max,omitempty"`
+	Desired      int     `json:"desired,omitempty"`
+	Health       string  `json:"health,omitempty"`
+	VM           *VMType `json:"vm,omitempty"` // legacy/internal compatibility for virtual-machine* components
 }
 
 // Topology is the canonical, provider-independent stack description. Provider

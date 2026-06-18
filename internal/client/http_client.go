@@ -17,8 +17,8 @@ import (
 // (TfProviderResource: /api/topology, /api/compare), authenticating with the
 // SSO/OAuth bearer token. It replaces StubClient once a token is configured.
 //
-// Shape mapping (the crux): the provider models a component flatly
-// (Component{Type, VM{Architecture,CPU,RAM,OS}}), while the backend canonical
+// Shape mapping (the crux): the provider models component properties flatly
+// (Component{architecture,cpu,ram,os_name,...}), while the backend canonical
 // topology the engine reads is the nested node shape
 // (properties.virtual-machine.type.{architecture,cpu,ram} + .os.osName, the same
 // shape PricingRanker.collectSpecs and CspTemplateResolver consume). This client
@@ -264,19 +264,31 @@ func componentsToCanonical(comps []Component) []map[string]any {
 			"name": comp.Name,
 			"type": comp.Type,
 		}
+		if comp.Path != "" {
+			node["path"] = comp.Path
+		}
 		if comp.Count > 0 {
 			node["count"] = comp.Count
 		}
 		props := map[string]any{}
-		if comp.VM != nil {
+		vm := comp.VM
+		if vm == nil && (comp.Architecture != "" || comp.CPU != "" || comp.RAM != "" || comp.OSName != "") {
+			vm = &VMType{
+				Architecture: comp.Architecture,
+				CPU:          comp.CPU,
+				RAM:          comp.RAM,
+				OS:           comp.OSName,
+			}
+		}
+		if vm != nil {
 			props["virtual-machine"] = map[string]any{
 				"type": map[string]any{
-					"architecture": comp.VM.Architecture,
-					"cpu":          comp.VM.CPU,
-					"ram":          comp.VM.RAM,
+					"architecture": vm.Architecture,
+					"cpu":          vm.CPU,
+					"ram":          vm.RAM,
 				},
 				"os": map[string]any{
-					"osName": comp.VM.OS,
+					"osName": vm.OS,
 				},
 			}
 		}
@@ -292,6 +304,7 @@ func canonicalToComponents(nodes []map[string]any) []Component {
 	out := make([]Component, 0, len(nodes))
 	for _, n := range nodes {
 		comp := Component{
+			Path: asString(n["path"]),
 			Name: asString(n["name"]),
 			Type: asString(n["type"]),
 		}
@@ -308,6 +321,10 @@ func canonicalToComponents(nodes []map[string]any) []Component {
 					vm.OS = asString(osm["osName"])
 				}
 				comp.VM = vm
+				comp.Architecture = vm.Architecture
+				comp.CPU = vm.CPU
+				comp.RAM = vm.RAM
+				comp.OSName = vm.OS
 			}
 		}
 		out = append(out, comp)

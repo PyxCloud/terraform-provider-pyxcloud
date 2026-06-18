@@ -74,6 +74,7 @@ type AssembleIAM struct {
 
 // AssembleComponent is one canonical component in the environment.
 type AssembleComponent struct {
+	Path                string
 	Name                string
 	Type                string
 	Count               int
@@ -82,23 +83,23 @@ type AssembleComponent struct {
 	AttachToExistingALB *AssembleAttachToExistingALB
 	IAM                 *AssembleIAM
 	Monitoring          *AssembleMonitoring
-	DNS           *AssembleDNS
-	ObjectStorage *AssembleObjectStorage
-	Secrets       *AssembleSecrets
-	MDB           *AssembleMDB
-	Queue         *AssembleQueue
-	Stream        *AssembleStream
-	Serverless    *AssembleServerless
-	KMS           *AssembleKMS
-	Cache         *AssembleCache
-	CDN           *AssembleCDN
-	WAF           *AssembleWAF
-	K8s           *AssembleK8s
-	LB            *AssembleLB
-	Email         *AssembleEmail
-	BlockStorage  *AssembleBlockStorage
-	PrefixList    *AssemblePrefixList
-	Synthetics    *AssembleSynthetics
+	DNS                 *AssembleDNS
+	ObjectStorage       *AssembleObjectStorage
+	Secrets             *AssembleSecrets
+	MDB                 *AssembleMDB
+	Queue               *AssembleQueue
+	Stream              *AssembleStream
+	Serverless          *AssembleServerless
+	KMS                 *AssembleKMS
+	Cache               *AssembleCache
+	CDN                 *AssembleCDN
+	WAF                 *AssembleWAF
+	K8s                 *AssembleK8s
+	LB                  *AssembleLB
+	Email               *AssembleEmail
+	BlockStorage        *AssembleBlockStorage
+	PrefixList          *AssemblePrefixList
+	Synthetics          *AssembleSynthetics
 }
 
 // AssembleSynthetics is the config for a `synthetics` / `uptime-check` component.

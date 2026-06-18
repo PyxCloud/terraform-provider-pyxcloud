@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
@@ -52,31 +53,82 @@ type environmentModel struct {
 // shared topology componentModel so env-only blocks like iam don't churn the
 // topology/compare schemas). VM sizing reuses the shared vmTypeModel.
 type envComponentModel struct {
-	Name          types.String           `tfsdk:"name"`
-	Type          types.String           `tfsdk:"type"`
-	Count         types.Int64            `tfsdk:"count"`
-	VM                  *vmTypeModel                 `tfsdk:"vm"`
-	ScaleGroup          *envScaleGroupModel          `tfsdk:"scale_group"`
-	AttachToExistingALB *envAttachToExistingALBModel `tfsdk:"attach_to_existing_alb"`
-	IAM                 *envIAMModel                 `tfsdk:"iam"`
-	Monitoring          *envMonitoringModel          `tfsdk:"monitoring"`
-	DNS                 *envDNSModel                 `tfsdk:"dns"`
-	ObjectStorage       *envObjectStorageModel       `tfsdk:"object_storage"`
-	Secrets             *envSecretsModel             `tfsdk:"secrets"`
-	MDB                 *envMDBModel                 `tfsdk:"managed_database"`
-	Queue               *envQueueModel               `tfsdk:"queue"`
-	Stream              *envStreamModel              `tfsdk:"stream"`
-	Serverless          *envServerlessModel          `tfsdk:"serverless"`
-	KMS                 *envKMSModel                 `tfsdk:"kms"`
-	Cache               *envCacheModel               `tfsdk:"cache"`
-	CDN                 *envCDNModel                 `tfsdk:"cdn"`
-	WAF                 *envWAFModel                 `tfsdk:"waf"`
-	K8s                 *envK8sModel                 `tfsdk:"kubernetes"`
-	LB                  *envLBModel                  `tfsdk:"load_balancer"`
-	Email               *envEmailModel               `tfsdk:"email"`
-	BlockStorage        *envBlockStorageModel        `tfsdk:"block_storage"`
-	PrefixList          *envPrefixListModel          `tfsdk:"prefix_list"`
-	Synthetics          *envSyntheticsModel          `tfsdk:"synthetics"`
+	Path                     types.String          `tfsdk:"path"`
+	Name                     types.String          `tfsdk:"name"`
+	Type                     types.String          `tfsdk:"type"`
+	Count                    types.Int64           `tfsdk:"count"`
+	Architecture             types.String          `tfsdk:"architecture"`
+	CPU                      types.String          `tfsdk:"cpu"`
+	RAM                      types.String          `tfsdk:"ram"`
+	OSName                   types.String          `tfsdk:"os_name"`
+	Min                      types.Int64           `tfsdk:"min"`
+	Max                      types.Int64           `tfsdk:"max"`
+	Desired                  types.Int64           `tfsdk:"desired"`
+	Health                   types.String          `tfsdk:"health"`
+	UserData                 types.String          `tfsdk:"user_data"`
+	InstanceProfileName      types.String          `tfsdk:"instance_profile"`
+	RootDiskGB               types.Int64           `tfsdk:"root_disk_gb"`
+	ALBListenerARN           types.String          `tfsdk:"alb_listener_arn"`
+	HostHeader               types.String          `tfsdk:"host_header"`
+	Port                     types.Int64           `tfsdk:"port"`
+	Protocol                 types.String          `tfsdk:"protocol"`
+	HealthCheckPath          types.String          `tfsdk:"health_check_path"`
+	HealthCheckPortString    types.String          `tfsdk:"health_check_port"`
+	ScaleGroupName           types.String          `tfsdk:"scale_group"`
+	Priority                 types.Int64           `tfsdk:"priority"`
+	AssumeService            types.String          `tfsdk:"assume_service"`
+	InlinePolicies           []envIAMPolicyModel   `tfsdk:"inline_policies"`
+	ManagedPolicyARNs        []types.String        `tfsdk:"managed_policy_arns"`
+	LogGroups                []envLogGroupModel    `tfsdk:"log_groups"`
+	Alarms                   []envAlarmModel       `tfsdk:"alarms"`
+	ZoneID                   types.String          `tfsdk:"zone_id"`
+	Records                  []envDNSRecordModel   `tfsdk:"records"`
+	Versioning               types.Bool            `tfsdk:"versioning"`
+	Public                   types.Bool            `tfsdk:"public"`
+	Description              types.String          `tfsdk:"description"`
+	RotationDays             types.Int64           `tfsdk:"rotation_days"`
+	Engine                   types.String          `tfsdk:"engine"`
+	Version                  types.String          `tfsdk:"version"`
+	StorageGB                types.Int64           `tfsdk:"storage_gb"`
+	HA                       types.Bool            `tfsdk:"ha"`
+	Encrypted                types.Bool            `tfsdk:"encrypted"`
+	FIFO                     types.Bool            `tfsdk:"fifo"`
+	VisibilityTimeoutSeconds types.Int64           `tfsdk:"visibility_timeout_seconds"`
+	MaxReceiveCount          types.Int64           `tfsdk:"max_receive_count"`
+	Shards                   types.Int64           `tfsdk:"shards"`
+	RetentionHours           types.Int64           `tfsdk:"retention_hours"`
+	Runtime                  types.String          `tfsdk:"runtime"`
+	RuntimeVersion           types.String          `tfsdk:"runtime_version"`
+	Handler                  types.String          `tfsdk:"handler"`
+	MemoryMB                 types.Int64           `tfsdk:"memory_mb"`
+	TimeoutSeconds           types.Int64           `tfsdk:"timeout_seconds"`
+	SourceArtifact           types.String          `tfsdk:"source_artifact"`
+	DeletionWindowDays       types.Int64           `tfsdk:"deletion_window_days"`
+	MemoryGB                 types.Int64           `tfsdk:"memory_gb"`
+	OriginKind               types.String          `tfsdk:"origin_kind"`
+	OriginName               types.String          `tfsdk:"origin_name"`
+	Scope                    types.String          `tfsdk:"scope"`
+	AssociateName            types.String          `tfsdk:"associate_name"`
+	NodeCPU                  types.Int64           `tfsdk:"node_cpu"`
+	NodeRAM                  types.Int64           `tfsdk:"node_ram"`
+	MinNodes                 types.Int64           `tfsdk:"min_nodes"`
+	MaxNodes                 types.Int64           `tfsdk:"max_nodes"`
+	DesiredNodes             types.Int64           `tfsdk:"desired_nodes"`
+	Listeners                []envLBListenerModel  `tfsdk:"listeners"`
+	HealthProtocol           types.String          `tfsdk:"health_protocol"`
+	Stickiness               types.Bool            `tfsdk:"stickiness"`
+	TargetKind               types.String          `tfsdk:"target_kind"`
+	TargetName               types.String          `tfsdk:"target_name"`
+	Domain                   types.String          `tfsdk:"domain"`
+	SizeGB                   types.Int64           `tfsdk:"size_gb"`
+	VolumeType               types.String          `tfsdk:"volume_type"`
+	DeviceName               types.String          `tfsdk:"device_name"`
+	TargetVM                 types.String          `tfsdk:"target_vm"`
+	Entries                  []envPrefixEntryModel `tfsdk:"entries"`
+	TargetURL                types.String          `tfsdk:"target_url"`
+	ScheduleExpr             types.String          `tfsdk:"schedule_expr"`
+	ArtifactBucket           types.String          `tfsdk:"artifact_bucket"`
+	ExecRoleARN              types.String          `tfsdk:"exec_role_arn"`
 }
 
 type envScaleGroupModel struct {
@@ -317,292 +369,9 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"components": schema.ListNestedAttribute{
 				Required:            true,
-				MarkdownDescription: "Canonical components that make up the environment.",
+				MarkdownDescription: "Canonical components that make up the environment. Component properties are flat at this level; nested type-specific blocks are not exposed.",
 				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{Required: true, MarkdownDescription: "Component name."},
-						"type": schema.StringAttribute{Required: true, MarkdownDescription: "Canonical component type, e.g. `virtual-machine`, `managed-database`, `load-balancer`, `object-storage`."},
-						"count": schema.Int64Attribute{
-							Optional:            true,
-							Computed:            true,
-							MarkdownDescription: "Instance count (defaults to 1).",
-						},
-						"vm": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Sizing for virtual-machine components.",
-							Attributes: map[string]schema.Attribute{
-								"architecture": schema.StringAttribute{Optional: true, MarkdownDescription: "CPU architecture, e.g. `x86_64`, `arm64`."},
-								"cpu":          schema.StringAttribute{Optional: true, MarkdownDescription: "vCPU count, e.g. `2`."},
-								"ram":          schema.StringAttribute{Optional: true, MarkdownDescription: "RAM in GiB, e.g. `4`."},
-								"os_name":      schema.StringAttribute{Optional: true, MarkdownDescription: "OS, e.g. `ubuntu`."},
-							},
-						},
-						"scale_group": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `virtual-machine-scale-group` components (a real ASG: launch template + autoscaling group).",
-							Attributes: map[string]schema.Attribute{
-								"architecture":     schema.StringAttribute{Optional: true, MarkdownDescription: "CPU architecture, e.g. `x86_64`."},
-								"cpu":              schema.StringAttribute{Optional: true, MarkdownDescription: "vCPU count, e.g. `2`."},
-								"ram":              schema.StringAttribute{Optional: true, MarkdownDescription: "RAM in GiB, e.g. `8`."},
-								"os_name":          schema.StringAttribute{Optional: true, MarkdownDescription: "OS, e.g. `ubuntu`."},
-								"min":              schema.Int64Attribute{Optional: true, MarkdownDescription: "Minimum instances."},
-								"max":              schema.Int64Attribute{Optional: true, MarkdownDescription: "Maximum instances."},
-								"desired":          schema.Int64Attribute{Optional: true, MarkdownDescription: "Desired instances."},
-								"health":           schema.StringAttribute{Optional: true, MarkdownDescription: "Health check kind: `ec2` | `elb`."},
-								"user_data":        schema.StringAttribute{Optional: true, MarkdownDescription: "cloud-init/bootstrap baked into the launch template (e.g. the native-binary pull)."},
-								"instance_profile": schema.StringAttribute{Optional: true, MarkdownDescription: "IAM instance-profile name to attach (from a sibling `iam` component)."},
-								"root_disk_gb":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Root EBS volume size in GiB (0 = default)."},
-							},
-						},
-						"attach_to_existing_alb": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for attaching a scale group to an existing ALB listener.",
-							Attributes: map[string]schema.Attribute{
-								"alb_listener_arn":  schema.StringAttribute{Required: true, MarkdownDescription: "ARN of the existing ALB listener."},
-								"host_header":       schema.StringAttribute{Required: true, MarkdownDescription: "Host header rule to match."},
-								"port":              schema.Int64Attribute{Required: true, MarkdownDescription: "Port the target group forwards traffic to."},
-								"protocol":          schema.StringAttribute{Optional: true, MarkdownDescription: "Protocol (default `http`)."},
-								"health_check_path": schema.StringAttribute{Optional: true, MarkdownDescription: "Health check path (default `/`)."},
-								"health_check_port": schema.StringAttribute{Optional: true, MarkdownDescription: "Health check port (default is target group port)."},
-								"scale_group":       schema.StringAttribute{Required: true, MarkdownDescription: "Name of the sibling scale-group component to attach."},
-								"priority":          schema.Int64Attribute{Required: true, MarkdownDescription: "Unique priority for the listener rule."},
-							},
-						},
-						"iam": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "IAM identity config for `iam` components (role + policies + instance profile).",
-							Attributes: map[string]schema.Attribute{
-								"assume_service":      schema.StringAttribute{Optional: true, MarkdownDescription: "Principal allowed to assume the role (default `ec2.amazonaws.com`)."},
-								"managed_policy_arns": schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Managed policy ARNs to attach."},
-								"instance_profile":    schema.BoolAttribute{Optional: true, MarkdownDescription: "Also emit an instance profile (EC2 attach)."},
-								"inline_policies": schema.ListNestedAttribute{
-									Optional:            true,
-									MarkdownDescription: "Inline policies (raw IAM JSON documents).",
-									NestedObject: schema.NestedAttributeObject{
-										Attributes: map[string]schema.Attribute{
-											"name":     schema.StringAttribute{Required: true},
-											"document": schema.StringAttribute{Required: true, MarkdownDescription: "Raw IAM policy JSON."},
-										},
-									},
-								},
-							},
-						},
-						"monitoring": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Monitoring config for `monitoring` components (CloudWatch log groups + metric alarms).",
-							Attributes: map[string]schema.Attribute{
-								"log_groups": schema.ListNestedAttribute{
-									Optional: true,
-									NestedObject: schema.NestedAttributeObject{
-										Attributes: map[string]schema.Attribute{
-											"name":           schema.StringAttribute{Required: true},
-											"retention_days": schema.Int64Attribute{Optional: true, MarkdownDescription: "0 = never expire."},
-										},
-									},
-								},
-								"alarms": schema.ListNestedAttribute{
-									Optional: true,
-									NestedObject: schema.NestedAttributeObject{
-										Attributes: map[string]schema.Attribute{
-											"name":                schema.StringAttribute{Required: true},
-											"namespace":           schema.StringAttribute{Required: true},
-											"metric_name":         schema.StringAttribute{Required: true},
-											"comparison_operator": schema.StringAttribute{Required: true},
-											"threshold":           schema.Float64Attribute{Required: true},
-											"evaluation_periods":  schema.Int64Attribute{Optional: true},
-											"period_seconds":      schema.Int64Attribute{Optional: true},
-											"statistic":           schema.StringAttribute{Optional: true},
-										},
-									},
-								},
-							},
-						},
-						"dns": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Cloudflare DNS config for `dns` components (cross-cutting; cloudflare_dns_record).",
-							Attributes: map[string]schema.Attribute{
-								"zone_id": schema.StringAttribute{Optional: true, MarkdownDescription: "Cloudflare zone id (else supplied via the cloudflare_zone_id tf var)."},
-								"records": schema.ListNestedAttribute{
-									Required: true,
-									NestedObject: schema.NestedAttributeObject{
-										Attributes: map[string]schema.Attribute{
-											"name":    schema.StringAttribute{Required: true},
-											"type":    schema.StringAttribute{Required: true, MarkdownDescription: "A | AAAA | CNAME | TXT | MX | ..."},
-											"content": schema.StringAttribute{Required: true},
-											"ttl":     schema.Int64Attribute{Optional: true, MarkdownDescription: "seconds; 1 = automatic."},
-											"proxied": schema.BoolAttribute{Optional: true},
-										},
-									},
-								},
-							},
-						},
-						"object_storage": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `object-storage` / `blob-storage` components.",
-							Attributes: map[string]schema.Attribute{
-								"versioning": schema.BoolAttribute{Optional: true},
-								"public":     schema.BoolAttribute{Optional: true, MarkdownDescription: "PUBLIC read (default false; opt-in only)."},
-							},
-						},
-						"secrets": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `secrets-manager` components (the secret VALUE is set out of band, never here).",
-							Attributes: map[string]schema.Attribute{
-								"description":   schema.StringAttribute{Optional: true},
-								"rotation_days": schema.Int64Attribute{Optional: true, MarkdownDescription: "0 = no automatic rotation."},
-							},
-						},
-						"managed_database": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `managed-database` components (RDS/Cloud SQL/DO DB).",
-							Attributes: map[string]schema.Attribute{
-								"engine":     schema.StringAttribute{Optional: true, MarkdownDescription: "postgres | mysql."},
-								"version":    schema.StringAttribute{Optional: true},
-								"cpu":        schema.Int64Attribute{Optional: true},
-								"ram":        schema.Int64Attribute{Optional: true},
-								"storage_gb": schema.Int64Attribute{Optional: true},
-								"ha":         schema.BoolAttribute{Optional: true},
-								"encrypted":  schema.BoolAttribute{Optional: true},
-							},
-						},
-						"queue": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `managed-queue` / `message-queue` components (SQS).",
-							Attributes: map[string]schema.Attribute{
-								"fifo":                       schema.BoolAttribute{Optional: true},
-								"visibility_timeout_seconds": schema.Int64Attribute{Optional: true},
-								"max_receive_count":          schema.Int64Attribute{Optional: true},
-							},
-						},
-						"stream": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `event-streaming` / `event-bus` components (Kinesis).",
-							Attributes: map[string]schema.Attribute{
-								"shards":          schema.Int64Attribute{Optional: true},
-								"retention_hours": schema.Int64Attribute{Optional: true},
-							},
-						},
-						"serverless": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `serverless-function` components (Lambda).",
-							Attributes: map[string]schema.Attribute{
-								"runtime":         schema.StringAttribute{Optional: true},
-								"runtime_version": schema.StringAttribute{Optional: true},
-								"handler":         schema.StringAttribute{Optional: true},
-								"memory_mb":       schema.Int64Attribute{Optional: true},
-								"timeout_seconds": schema.Int64Attribute{Optional: true},
-								"source_artifact": schema.StringAttribute{Optional: true},
-							},
-						},
-						"kms": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `kms` / `encryption-key` components.",
-							Attributes: map[string]schema.Attribute{
-								"description":          schema.StringAttribute{Optional: true},
-								"rotation_days":        schema.Int64Attribute{Optional: true},
-								"deletion_window_days": schema.Int64Attribute{Optional: true},
-							},
-						},
-						"cache": schema.SingleNestedAttribute{
-							Optional: true,
-							Attributes: map[string]schema.Attribute{
-								"engine":    schema.StringAttribute{Optional: true},
-								"version":   schema.StringAttribute{Optional: true},
-								"memory_gb": schema.Int64Attribute{Optional: true},
-								"ha":        schema.BoolAttribute{Optional: true},
-							},
-						},
-						"cdn": schema.SingleNestedAttribute{
-							Optional: true,
-							Attributes: map[string]schema.Attribute{
-								"origin_kind": schema.StringAttribute{Optional: true},
-								"origin_name": schema.StringAttribute{Optional: true},
-							},
-						},
-						"waf": schema.SingleNestedAttribute{
-							Optional: true,
-							Attributes: map[string]schema.Attribute{
-								"scope":          schema.StringAttribute{Optional: true},
-								"associate_name": schema.StringAttribute{Optional: true},
-							},
-						},
-						"kubernetes": schema.SingleNestedAttribute{
-							Optional: true,
-							Attributes: map[string]schema.Attribute{
-								"version":       schema.StringAttribute{Optional: true},
-								"architecture":  schema.StringAttribute{Optional: true},
-								"node_cpu":      schema.Int64Attribute{Optional: true},
-								"node_ram":      schema.Int64Attribute{Optional: true},
-								"min_nodes":     schema.Int64Attribute{Optional: true},
-								"max_nodes":     schema.Int64Attribute{Optional: true},
-								"desired_nodes": schema.Int64Attribute{Optional: true},
-							},
-						},
-						"load_balancer": schema.SingleNestedAttribute{
-							Optional: true,
-							Attributes: map[string]schema.Attribute{
-								"listeners": schema.ListNestedAttribute{
-									Optional: true,
-									NestedObject: schema.NestedAttributeObject{
-										Attributes: map[string]schema.Attribute{
-											"port":     schema.Int64Attribute{Required: true},
-											"protocol": schema.StringAttribute{Required: true, MarkdownDescription: "http | https | tcp."},
-										},
-									},
-								},
-								"health_check_path": schema.StringAttribute{Optional: true},
-								"health_check_port": schema.Int64Attribute{Optional: true},
-								"health_protocol":   schema.StringAttribute{Optional: true},
-								"stickiness":        schema.BoolAttribute{Optional: true},
-								"target_kind":       schema.StringAttribute{Optional: true, MarkdownDescription: "vm | scale-group."},
-								"target_name":       schema.StringAttribute{Optional: true},
-							},
-						},
-						"email": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `email` / `email-service` components (AWS SES).",
-							Attributes: map[string]schema.Attribute{
-								"domain": schema.StringAttribute{Optional: true, MarkdownDescription: "Sending domain to verify."},
-							},
-						},
-						"block_storage": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `block-storage` components (EBS/PD/Volume attached to a VM).",
-							Attributes: map[string]schema.Attribute{
-								"size_gb":     schema.Int64Attribute{Required: true},
-								"volume_type": schema.StringAttribute{Optional: true},
-								"device_name": schema.StringAttribute{Optional: true},
-								"target_vm":   schema.StringAttribute{Required: true, MarkdownDescription: "VM component to attach to."},
-							},
-						},
-						"prefix_list": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `prefix-list` components (AWS managed prefix list).",
-							Attributes: map[string]schema.Attribute{
-								"entries": schema.ListNestedAttribute{
-									Required: true,
-									NestedObject: schema.NestedAttributeObject{
-										Attributes: map[string]schema.Attribute{
-											"cidr":        schema.StringAttribute{Required: true},
-											"description": schema.StringAttribute{Optional: true},
-										},
-									},
-								},
-							},
-						},
-						"synthetics": schema.SingleNestedAttribute{
-							Optional:            true,
-							MarkdownDescription: "Config for `synthetics` / `uptime-check` components.",
-							Attributes: map[string]schema.Attribute{
-								"target_url":      schema.StringAttribute{Optional: true},
-								"runtime":         schema.StringAttribute{Optional: true},
-								"handler":         schema.StringAttribute{Optional: true},
-								"schedule_expr":   schema.StringAttribute{Optional: true},
-								"artifact_bucket": schema.StringAttribute{Optional: true},
-								"exec_role_arn":   schema.StringAttribute{Optional: true},
-							},
-						},
-					},
+					Attributes: flatEnvironmentComponentAttributes(),
 				},
 			},
 			"work_dir": schema.StringAttribute{
@@ -618,6 +387,159 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				MarkdownDescription: "Terraform outputs from the applied environment.",
 			},
 		},
+	}
+}
+
+func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"path":         schema.StringAttribute{Optional: true, MarkdownDescription: "Canonical topology path for this component, e.g. `/0/Europe/0/Web-Net/0/app`."},
+		"name":         schema.StringAttribute{Required: true, MarkdownDescription: "Component name."},
+		"type":         schema.StringAttribute{Required: true, MarkdownDescription: "Canonical component type, e.g. `virtual-machine`, `managed-database`, `load-balancer`, `object-storage`."},
+		"count":        schema.Int64Attribute{Optional: true, Computed: true, MarkdownDescription: "Instance count (defaults to 1)."},
+		"architecture": schema.StringAttribute{Optional: true, MarkdownDescription: "CPU architecture, e.g. `x86_64`, `arm64`."},
+		"cpu":          schema.StringAttribute{Optional: true, MarkdownDescription: "vCPU count, e.g. `2`."},
+		"ram":          schema.StringAttribute{Optional: true, MarkdownDescription: "RAM in GiB, e.g. `4`."},
+		"os_name":      schema.StringAttribute{Optional: true, MarkdownDescription: "OS, e.g. `ubuntu`."},
+		"min":          schema.Int64Attribute{Optional: true, MarkdownDescription: "Minimum instances."},
+		"max":          schema.Int64Attribute{Optional: true, MarkdownDescription: "Maximum instances."},
+		"desired":      schema.Int64Attribute{Optional: true, MarkdownDescription: "Desired instances."},
+		"health":       schema.StringAttribute{Optional: true, MarkdownDescription: "Health check kind: `ec2` | `elb`."},
+		"user_data":    schema.StringAttribute{Optional: true, MarkdownDescription: "cloud-init/bootstrap baked into the launch template."},
+		"instance_profile": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "IAM instance-profile name to attach.",
+		},
+		"root_disk_gb":               schema.Int64Attribute{Optional: true, MarkdownDescription: "Root disk size in GiB (0 = default)."},
+		"alb_listener_arn":           schema.StringAttribute{Optional: true, MarkdownDescription: "ARN of an existing ALB listener."},
+		"host_header":                schema.StringAttribute{Optional: true, MarkdownDescription: "Host header rule to match."},
+		"port":                       schema.Int64Attribute{Optional: true, MarkdownDescription: "Target/listener port."},
+		"protocol":                   schema.StringAttribute{Optional: true, MarkdownDescription: "Protocol, e.g. `http`, `https`, or `tcp`."},
+		"health_check_path":          schema.StringAttribute{Optional: true},
+		"health_check_port":          schema.StringAttribute{Optional: true, MarkdownDescription: "Health check port; defaults to the target port where supported."},
+		"scale_group":                schema.StringAttribute{Optional: true, MarkdownDescription: "Name of the sibling scale-group component to attach."},
+		"priority":                   schema.Int64Attribute{Optional: true, MarkdownDescription: "Listener rule priority."},
+		"assume_service":             schema.StringAttribute{Optional: true, MarkdownDescription: "Principal allowed to assume an IAM role."},
+		"managed_policy_arns":        schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Managed policy ARNs to attach."},
+		"inline_policies":            inlinePolicyAttribute(),
+		"log_groups":                 logGroupsAttribute(),
+		"alarms":                     alarmsAttribute(),
+		"zone_id":                    schema.StringAttribute{Optional: true, MarkdownDescription: "Cloudflare zone id."},
+		"records":                    dnsRecordsAttribute(),
+		"versioning":                 schema.BoolAttribute{Optional: true},
+		"public":                     schema.BoolAttribute{Optional: true, MarkdownDescription: "PUBLIC read (default false; opt-in only)."},
+		"description":                schema.StringAttribute{Optional: true},
+		"rotation_days":              schema.Int64Attribute{Optional: true, MarkdownDescription: "0 = no automatic rotation."},
+		"engine":                     schema.StringAttribute{Optional: true, MarkdownDescription: "postgres | mysql, or cache engine."},
+		"version":                    schema.StringAttribute{Optional: true},
+		"storage_gb":                 schema.Int64Attribute{Optional: true},
+		"ha":                         schema.BoolAttribute{Optional: true},
+		"encrypted":                  schema.BoolAttribute{Optional: true},
+		"fifo":                       schema.BoolAttribute{Optional: true},
+		"visibility_timeout_seconds": schema.Int64Attribute{Optional: true},
+		"max_receive_count":          schema.Int64Attribute{Optional: true},
+		"shards":                     schema.Int64Attribute{Optional: true},
+		"retention_hours":            schema.Int64Attribute{Optional: true},
+		"runtime":                    schema.StringAttribute{Optional: true},
+		"runtime_version":            schema.StringAttribute{Optional: true},
+		"handler":                    schema.StringAttribute{Optional: true},
+		"memory_mb":                  schema.Int64Attribute{Optional: true},
+		"timeout_seconds":            schema.Int64Attribute{Optional: true},
+		"source_artifact":            schema.StringAttribute{Optional: true},
+		"deletion_window_days":       schema.Int64Attribute{Optional: true},
+		"memory_gb":                  schema.Int64Attribute{Optional: true},
+		"origin_kind":                schema.StringAttribute{Optional: true},
+		"origin_name":                schema.StringAttribute{Optional: true},
+		"scope":                      schema.StringAttribute{Optional: true},
+		"associate_name":             schema.StringAttribute{Optional: true},
+		"node_cpu":                   schema.Int64Attribute{Optional: true},
+		"node_ram":                   schema.Int64Attribute{Optional: true},
+		"min_nodes":                  schema.Int64Attribute{Optional: true},
+		"max_nodes":                  schema.Int64Attribute{Optional: true},
+		"desired_nodes":              schema.Int64Attribute{Optional: true},
+		"listeners":                  lbListenersAttribute(),
+		"health_protocol":            schema.StringAttribute{Optional: true},
+		"stickiness":                 schema.BoolAttribute{Optional: true},
+		"target_kind":                schema.StringAttribute{Optional: true, MarkdownDescription: "vm | scale-group."},
+		"target_name":                schema.StringAttribute{Optional: true},
+		"domain":                     schema.StringAttribute{Optional: true, MarkdownDescription: "Sending domain to verify."},
+		"size_gb":                    schema.Int64Attribute{Optional: true},
+		"volume_type":                schema.StringAttribute{Optional: true},
+		"device_name":                schema.StringAttribute{Optional: true},
+		"target_vm":                  schema.StringAttribute{Optional: true, MarkdownDescription: "VM component to attach to."},
+		"entries":                    prefixEntriesAttribute(),
+		"target_url":                 schema.StringAttribute{Optional: true},
+		"schedule_expr":              schema.StringAttribute{Optional: true},
+		"artifact_bucket":            schema.StringAttribute{Optional: true},
+		"exec_role_arn":              schema.StringAttribute{Optional: true},
+	}
+}
+
+func inlinePolicyAttribute() schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional: true,
+		NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+			"name":     schema.StringAttribute{Required: true},
+			"document": schema.StringAttribute{Required: true, MarkdownDescription: "Raw IAM policy JSON."},
+		}},
+	}
+}
+
+func logGroupsAttribute() schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional: true,
+		NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+			"name":           schema.StringAttribute{Required: true},
+			"retention_days": schema.Int64Attribute{Optional: true, MarkdownDescription: "0 = never expire."},
+		}},
+	}
+}
+
+func alarmsAttribute() schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional: true,
+		NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+			"name":                schema.StringAttribute{Required: true},
+			"namespace":           schema.StringAttribute{Required: true},
+			"metric_name":         schema.StringAttribute{Required: true},
+			"comparison_operator": schema.StringAttribute{Required: true},
+			"threshold":           schema.Float64Attribute{Required: true},
+			"evaluation_periods":  schema.Int64Attribute{Optional: true},
+			"period_seconds":      schema.Int64Attribute{Optional: true},
+			"statistic":           schema.StringAttribute{Optional: true},
+		}},
+	}
+}
+
+func dnsRecordsAttribute() schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional: true,
+		NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+			"name":    schema.StringAttribute{Required: true},
+			"type":    schema.StringAttribute{Required: true, MarkdownDescription: "A | AAAA | CNAME | TXT | MX | ..."},
+			"content": schema.StringAttribute{Required: true},
+			"ttl":     schema.Int64Attribute{Optional: true, MarkdownDescription: "seconds; 1 = automatic."},
+			"proxied": schema.BoolAttribute{Optional: true},
+		}},
+	}
+}
+
+func lbListenersAttribute() schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional: true,
+		NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+			"port":     schema.Int64Attribute{Required: true},
+			"protocol": schema.StringAttribute{Required: true, MarkdownDescription: "http | https | tcp."},
+		}},
+	}
+}
+
+func prefixEntriesAttribute() schema.ListNestedAttribute {
+	return schema.ListNestedAttribute{
+		Optional: true,
+		NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+			"cidr":        schema.StringAttribute{Required: true},
+			"description": schema.StringAttribute{Optional: true},
+		}},
 	}
 }
 
@@ -648,166 +570,158 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		if count <= 0 {
 			count = 1
 		}
-		comp := catalog.AssembleComponent{Name: cm.Name.ValueString(), Type: cm.Type.ValueString(), Count: count}
-		if cm.VM != nil {
+		comp := catalog.AssembleComponent{Path: cm.Path.ValueString(), Name: cm.Name.ValueString(), Type: cm.Type.ValueString(), Count: count}
+
+		if cm.Type.ValueString() == "virtual-machine" || hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
 			comp.VM = &catalog.AssembleVM{
-				Architecture: cm.VM.Architecture.ValueString(),
-				CPU:          cm.VM.CPU.ValueString(),
-				RAM:          cm.VM.RAM.ValueString(),
-				OS:           cm.VM.OS.ValueString(),
+				Architecture:    cm.Architecture.ValueString(),
+				CPU:             cm.CPU.ValueString(),
+				RAM:             cm.RAM.ValueString(),
+				OS:              cm.OSName.ValueString(),
+				UserData:        cm.UserData.ValueString(),
+				InstanceProfile: cm.InstanceProfileName.ValueString(),
 			}
 		}
-		if cm.ScaleGroup != nil {
+		if cm.Type.ValueString() == "virtual-machine-scale-group" || hasScaleGroupFields(cm) {
 			comp.ScaleGroup = &catalog.AssembleScaleGroup{
-				Architecture:    cm.ScaleGroup.Architecture.ValueString(),
-				CPU:             cm.ScaleGroup.CPU.ValueString(),
-				RAM:             cm.ScaleGroup.RAM.ValueString(),
-				OS:              cm.ScaleGroup.OSName.ValueString(),
-				Min:             int(cm.ScaleGroup.Min.ValueInt64()),
-				Max:             int(cm.ScaleGroup.Max.ValueInt64()),
-				Desired:         int(cm.ScaleGroup.Desired.ValueInt64()),
-				Health:          cm.ScaleGroup.Health.ValueString(),
-				UserData:        cm.ScaleGroup.UserData.ValueString(),
-				InstanceProfile: cm.ScaleGroup.InstanceProfile.ValueString(),
-				RootDiskGB:      int(cm.ScaleGroup.RootDiskGB.ValueInt64()),
+				Architecture:    cm.Architecture.ValueString(),
+				CPU:             cm.CPU.ValueString(),
+				RAM:             cm.RAM.ValueString(),
+				OS:              cm.OSName.ValueString(),
+				Min:             int(cm.Min.ValueInt64()),
+				Max:             int(cm.Max.ValueInt64()),
+				Desired:         int(cm.Desired.ValueInt64()),
+				Health:          cm.Health.ValueString(),
+				UserData:        cm.UserData.ValueString(),
+				InstanceProfile: cm.InstanceProfileName.ValueString(),
+				RootDiskGB:      int(cm.RootDiskGB.ValueInt64()),
 			}
 		}
-		if cm.AttachToExistingALB != nil {
+		if cm.Type.ValueString() == "attach-to-existing-alb" || nonEmptyString(cm.ALBListenerARN) || nonEmptyString(cm.HostHeader) || nonEmptyString(cm.ScaleGroupName) {
 			comp.AttachToExistingALB = &catalog.AssembleAttachToExistingALB{
-				ALBListenerARN:  cm.AttachToExistingALB.ALBListenerARN.ValueString(),
-				HostHeader:      cm.AttachToExistingALB.HostHeader.ValueString(),
-				Port:            int(cm.AttachToExistingALB.Port.ValueInt64()),
-				Protocol:        cm.AttachToExistingALB.Protocol.ValueString(),
-				HealthCheckPath: cm.AttachToExistingALB.HealthCheckPath.ValueString(),
-				HealthCheckPort: cm.AttachToExistingALB.HealthCheckPort.ValueString(),
-				ScaleGroup:      cm.AttachToExistingALB.ScaleGroup.ValueString(),
-				Priority:        int(cm.AttachToExistingALB.Priority.ValueInt64()),
+				ALBListenerARN:  cm.ALBListenerARN.ValueString(),
+				HostHeader:      cm.HostHeader.ValueString(),
+				Port:            int(cm.Port.ValueInt64()),
+				Protocol:        cm.Protocol.ValueString(),
+				HealthCheckPath: cm.HealthCheckPath.ValueString(),
+				HealthCheckPort: cm.HealthCheckPortString.ValueString(),
+				ScaleGroup:      cm.ScaleGroupName.ValueString(),
+				Priority:        int(cm.Priority.ValueInt64()),
 			}
 		}
-		if cm.IAM != nil {
-			iam := &catalog.AssembleIAM{
-				AssumeService:   cm.IAM.AssumeService.ValueString(),
-				InstanceProfile: cm.IAM.InstanceProfile.ValueBool(),
-			}
-			for _, arn := range cm.IAM.ManagedPolicyARNs {
+		if cm.Type.ValueString() == "iam" || nonEmptyString(cm.AssumeService) || len(cm.ManagedPolicyARNs) > 0 || len(cm.InlinePolicies) > 0 {
+			iam := &catalog.AssembleIAM{AssumeService: cm.AssumeService.ValueString()}
+			for _, arn := range cm.ManagedPolicyARNs {
 				iam.ManagedPolicyARNs = append(iam.ManagedPolicyARNs, arn.ValueString())
 			}
-			for _, p := range cm.IAM.InlinePolicies {
-				iam.InlinePolicies = append(iam.InlinePolicies, catalog.IAMPolicy{
-					Name: p.Name.ValueString(), Document: p.Document.ValueString(),
-				})
+			for _, p := range cm.InlinePolicies {
+				iam.InlinePolicies = append(iam.InlinePolicies, catalog.IAMPolicy{Name: p.Name.ValueString(), Document: p.Document.ValueString()})
 			}
 			comp.IAM = iam
 		}
-		if cm.Monitoring != nil {
+		if cm.Type.ValueString() == "monitoring" || len(cm.LogGroups) > 0 || len(cm.Alarms) > 0 {
 			mon := &catalog.AssembleMonitoring{}
-			for _, lg := range cm.Monitoring.LogGroups {
-				mon.LogGroups = append(mon.LogGroups, catalog.LogGroup{
-					Name: lg.Name.ValueString(), RetentionDays: int(lg.RetentionDays.ValueInt64()),
-				})
+			for _, lg := range cm.LogGroups {
+				mon.LogGroups = append(mon.LogGroups, catalog.LogGroup{Name: lg.Name.ValueString(), RetentionDays: int(lg.RetentionDays.ValueInt64())})
 			}
-			for _, a := range cm.Monitoring.Alarms {
-				mon.Alarms = append(mon.Alarms, catalog.MetricAlarm{
-					Name: a.Name.ValueString(), Namespace: a.Namespace.ValueString(),
-					MetricName: a.MetricName.ValueString(), ComparisonOperator: a.ComparisonOperator.ValueString(),
-					Threshold: a.Threshold.ValueFloat64(), EvaluationPeriods: int(a.EvaluationPeriods.ValueInt64()),
-					PeriodSeconds: int(a.PeriodSeconds.ValueInt64()), Statistic: a.Statistic.ValueString(),
-				})
+			for _, a := range cm.Alarms {
+				mon.Alarms = append(mon.Alarms, catalog.MetricAlarm{Name: a.Name.ValueString(), Namespace: a.Namespace.ValueString(), MetricName: a.MetricName.ValueString(), ComparisonOperator: a.ComparisonOperator.ValueString(), Threshold: a.Threshold.ValueFloat64(), EvaluationPeriods: int(a.EvaluationPeriods.ValueInt64()), PeriodSeconds: int(a.PeriodSeconds.ValueInt64()), Statistic: a.Statistic.ValueString()})
 			}
 			comp.Monitoring = mon
 		}
-		if cm.DNS != nil {
-			dns := &catalog.AssembleDNS{ZoneID: cm.DNS.ZoneID.ValueString()}
-			for _, r := range cm.DNS.Records {
-				dns.Records = append(dns.Records, catalog.DNSRecord{
-					Name: r.Name.ValueString(), Type: r.Type.ValueString(), Content: r.Content.ValueString(),
-					TTL: int(r.TTL.ValueInt64()), Proxied: r.Proxied.ValueBool(),
-				})
+		if cm.Type.ValueString() == "dns" || nonEmptyString(cm.ZoneID) || len(cm.Records) > 0 {
+			dns := &catalog.AssembleDNS{ZoneID: cm.ZoneID.ValueString()}
+			for _, r := range cm.Records {
+				dns.Records = append(dns.Records, catalog.DNSRecord{Name: r.Name.ValueString(), Type: r.Type.ValueString(), Content: r.Content.ValueString(), TTL: int(r.TTL.ValueInt64()), Proxied: r.Proxied.ValueBool()})
 			}
 			comp.DNS = dns
 		}
-		if cm.ObjectStorage != nil {
-			comp.ObjectStorage = &catalog.AssembleObjectStorage{
-				Versioning: cm.ObjectStorage.Versioning.ValueBool(),
-				Public:     cm.ObjectStorage.Public.ValueBool(),
-			}
+		if cm.Type.ValueString() == "object-storage" || cm.Type.ValueString() == "blob-storage" || boolSet(cm.Versioning) || boolSet(cm.Public) {
+			comp.ObjectStorage = &catalog.AssembleObjectStorage{Versioning: cm.Versioning.ValueBool(), Public: cm.Public.ValueBool()}
 		}
-		if cm.Secrets != nil {
-			comp.Secrets = &catalog.AssembleSecrets{
-				Description:  cm.Secrets.Description.ValueString(),
-				RotationDays: int(cm.Secrets.RotationDays.ValueInt64()),
-			}
+		if cm.Type.ValueString() == "secrets-manager" || nonEmptyString(cm.Description) || intSet(cm.RotationDays) {
+			comp.Secrets = &catalog.AssembleSecrets{Description: cm.Description.ValueString(), RotationDays: int(cm.RotationDays.ValueInt64())}
 		}
-		if cm.MDB != nil {
-			comp.MDB = &catalog.AssembleMDB{
-				Engine: cm.MDB.Engine.ValueString(), Version: cm.MDB.Version.ValueString(),
-				CPU: int(cm.MDB.CPU.ValueInt64()), RAM: int(cm.MDB.RAM.ValueInt64()),
-				StorageGB: int(cm.MDB.StorageGB.ValueInt64()), HA: cm.MDB.HA.ValueBool(),
-				Encrypted: cm.MDB.Encrypted.ValueBool(),
-			}
+		if cm.Type.ValueString() == "managed-database" || hasDatabaseFields(cm) {
+			comp.MDB = &catalog.AssembleMDB{Engine: cm.Engine.ValueString(), Version: cm.Version.ValueString(), CPU: intFromString(cm.CPU), RAM: intFromString(cm.RAM), StorageGB: int(cm.StorageGB.ValueInt64()), HA: cm.HA.ValueBool(), Encrypted: cm.Encrypted.ValueBool()}
 		}
-		if cm.Queue != nil {
-			comp.Queue = &catalog.AssembleQueue{
-				FIFO: cm.Queue.FIFO.ValueBool(), VisibilityTimeoutSeconds: int(cm.Queue.VisibilityTimeoutSeconds.ValueInt64()),
-				MaxReceiveCount: int(cm.Queue.MaxReceiveCount.ValueInt64()),
-			}
+		if cm.Type.ValueString() == "managed-queue" || cm.Type.ValueString() == "message-queue" || boolSet(cm.FIFO) || intSet(cm.VisibilityTimeoutSeconds) || intSet(cm.MaxReceiveCount) {
+			comp.Queue = &catalog.AssembleQueue{FIFO: cm.FIFO.ValueBool(), VisibilityTimeoutSeconds: int(cm.VisibilityTimeoutSeconds.ValueInt64()), MaxReceiveCount: int(cm.MaxReceiveCount.ValueInt64())}
 		}
-		if cm.Stream != nil {
-			comp.Stream = &catalog.AssembleStream{
-				Shards: int(cm.Stream.Shards.ValueInt64()), RetentionHours: int(cm.Stream.RetentionHours.ValueInt64()),
-			}
+		if cm.Type.ValueString() == "event-streaming" || cm.Type.ValueString() == "event-bus" || intSet(cm.Shards) || intSet(cm.RetentionHours) {
+			comp.Stream = &catalog.AssembleStream{Shards: int(cm.Shards.ValueInt64()), RetentionHours: int(cm.RetentionHours.ValueInt64())}
 		}
-		if cm.Serverless != nil {
-			comp.Serverless = &catalog.AssembleServerless{
-				Runtime: cm.Serverless.Runtime.ValueString(), RuntimeVersion: cm.Serverless.RuntimeVersion.ValueString(),
-				Handler: cm.Serverless.Handler.ValueString(), MemoryMB: int(cm.Serverless.MemoryMB.ValueInt64()),
-				TimeoutSeconds: int(cm.Serverless.TimeoutSeconds.ValueInt64()), SourceArtifact: cm.Serverless.SourceArtifact.ValueString(),
+		if cm.Type.ValueString() == "serverless-function" || nonEmptyString(cm.Runtime) || nonEmptyString(cm.Handler) || nonEmptyString(cm.SourceArtifact) {
+			comp.Serverless = &catalog.AssembleServerless{Runtime: cm.Runtime.ValueString(), RuntimeVersion: cm.RuntimeVersion.ValueString(), Handler: cm.Handler.ValueString(), MemoryMB: int(cm.MemoryMB.ValueInt64()), TimeoutSeconds: int(cm.TimeoutSeconds.ValueInt64()), SourceArtifact: cm.SourceArtifact.ValueString()}
+		}
+		if cm.Type.ValueString() == "kms" || cm.Type.ValueString() == "encryption-key" || intSet(cm.DeletionWindowDays) {
+			comp.KMS = &catalog.AssembleKMS{Description: cm.Description.ValueString(), RotationDays: int(cm.RotationDays.ValueInt64()), DeletionWindowDays: int(cm.DeletionWindowDays.ValueInt64())}
+		}
+		if cm.Type.ValueString() == "cache" || intSet(cm.MemoryGB) {
+			comp.Cache = &catalog.AssembleCache{Engine: cm.Engine.ValueString(), Version: cm.Version.ValueString(), MemoryGB: int(cm.MemoryGB.ValueInt64()), HA: cm.HA.ValueBool()}
+		}
+		if cm.Type.ValueString() == "cdn" || cm.Type.ValueString() == "cdn-service" || nonEmptyString(cm.OriginKind) || nonEmptyString(cm.OriginName) {
+			comp.CDN = &catalog.AssembleCDN{OriginKind: cm.OriginKind.ValueString(), OriginName: cm.OriginName.ValueString()}
+		}
+		if cm.Type.ValueString() == "waf" || nonEmptyString(cm.Scope) || nonEmptyString(cm.AssociateName) {
+			comp.WAF = &catalog.AssembleWAF{Scope: cm.Scope.ValueString(), AssociateName: cm.AssociateName.ValueString()}
+		}
+		if cm.Type.ValueString() == "kubernetes" || intSet(cm.NodeCPU) || intSet(cm.MinNodes) {
+			comp.K8s = &catalog.AssembleK8s{Version: cm.Version.ValueString(), Architecture: cm.Architecture.ValueString(), NodeCPU: int(cm.NodeCPU.ValueInt64()), NodeRAM: int(cm.NodeRAM.ValueInt64()), MinNodes: int(cm.MinNodes.ValueInt64()), MaxNodes: int(cm.MaxNodes.ValueInt64()), DesiredNodes: int(cm.DesiredNodes.ValueInt64())}
+		}
+		if cm.Type.ValueString() == "load-balancer" || len(cm.Listeners) > 0 || nonEmptyString(cm.TargetKind) || nonEmptyString(cm.TargetName) {
+			lb := &catalog.AssembleLB{HealthCheckPath: cm.HealthCheckPath.ValueString(), HealthCheckPort: intFromString(cm.HealthCheckPortString), HealthProtocol: cm.HealthProtocol.ValueString(), Stickiness: cm.Stickiness.ValueBool(), TargetKind: cm.TargetKind.ValueString(), TargetName: cm.TargetName.ValueString()}
+			for _, l := range cm.Listeners {
+				lb.Listeners = append(lb.Listeners, catalog.AssembleLBListener{Port: int(l.Port.ValueInt64()), Protocol: l.Protocol.ValueString()})
 			}
-			if cm.KMS != nil {
-				comp.KMS = &catalog.AssembleKMS{
-					Description: cm.KMS.Description.ValueString(), RotationDays: int(cm.KMS.RotationDays.ValueInt64()),
-					DeletionWindowDays: int(cm.KMS.DeletionWindowDays.ValueInt64()),
-				}
+			comp.LB = lb
+		}
+		if cm.Type.ValueString() == "email" || cm.Type.ValueString() == "email-service" || nonEmptyString(cm.Domain) {
+			comp.Email = &catalog.AssembleEmail{Domain: cm.Domain.ValueString()}
+		}
+		if cm.Type.ValueString() == "block-storage" || intSet(cm.SizeGB) || nonEmptyString(cm.TargetVM) {
+			comp.BlockStorage = &catalog.AssembleBlockStorage{SizeGB: int(cm.SizeGB.ValueInt64()), VolumeType: cm.VolumeType.ValueString(), DeviceName: cm.DeviceName.ValueString(), TargetVM: cm.TargetVM.ValueString()}
+		}
+		if cm.Type.ValueString() == "prefix-list" || len(cm.Entries) > 0 {
+			pl := &catalog.AssemblePrefixList{}
+			for _, e := range cm.Entries {
+				pl.Entries = append(pl.Entries, catalog.PrefixEntry{CIDR: e.CIDR.ValueString(), Description: e.Description.ValueString()})
 			}
-			if cm.Cache != nil {
-				comp.Cache = &catalog.AssembleCache{Engine: cm.Cache.Engine.ValueString(), Version: cm.Cache.Version.ValueString(), MemoryGB: int(cm.Cache.MemoryGB.ValueInt64()), HA: cm.Cache.HA.ValueBool()}
-			}
-			if cm.CDN != nil {
-				comp.CDN = &catalog.AssembleCDN{OriginKind: cm.CDN.OriginKind.ValueString(), OriginName: cm.CDN.OriginName.ValueString()}
-			}
-			if cm.WAF != nil {
-				comp.WAF = &catalog.AssembleWAF{Scope: cm.WAF.Scope.ValueString(), AssociateName: cm.WAF.AssociateName.ValueString()}
-			}
-			if cm.K8s != nil {
-				comp.K8s = &catalog.AssembleK8s{Version: cm.K8s.Version.ValueString(), Architecture: cm.K8s.Architecture.ValueString(), NodeCPU: int(cm.K8s.NodeCPU.ValueInt64()), NodeRAM: int(cm.K8s.NodeRAM.ValueInt64()), MinNodes: int(cm.K8s.MinNodes.ValueInt64()), MaxNodes: int(cm.K8s.MaxNodes.ValueInt64()), DesiredNodes: int(cm.K8s.DesiredNodes.ValueInt64())}
-			}
-			if cm.LB != nil {
-				lb := &catalog.AssembleLB{HealthCheckPath: cm.LB.HealthCheckPath.ValueString(), HealthCheckPort: int(cm.LB.HealthCheckPort.ValueInt64()), HealthProtocol: cm.LB.HealthProtocol.ValueString(), Stickiness: cm.LB.Stickiness.ValueBool(), TargetKind: cm.LB.TargetKind.ValueString(), TargetName: cm.LB.TargetName.ValueString()}
-				for _, l := range cm.LB.Listeners {
-					lb.Listeners = append(lb.Listeners, catalog.AssembleLBListener{Port: int(l.Port.ValueInt64()), Protocol: l.Protocol.ValueString()})
-				}
-				comp.LB = lb
-			}
-			if cm.Email != nil {
-				comp.Email = &catalog.AssembleEmail{Domain: cm.Email.Domain.ValueString()}
-			}
-			if cm.BlockStorage != nil {
-				comp.BlockStorage = &catalog.AssembleBlockStorage{SizeGB: int(cm.BlockStorage.SizeGB.ValueInt64()), VolumeType: cm.BlockStorage.VolumeType.ValueString(), DeviceName: cm.BlockStorage.DeviceName.ValueString(), TargetVM: cm.BlockStorage.TargetVM.ValueString()}
-			}
-			if cm.PrefixList != nil {
-				pl := &catalog.AssemblePrefixList{}
-				for _, e := range cm.PrefixList.Entries {
-					pl.Entries = append(pl.Entries, catalog.PrefixEntry{CIDR: e.CIDR.ValueString(), Description: e.Description.ValueString()})
-				}
-				comp.PrefixList = pl
-			}
-			if cm.Synthetics != nil {
-				comp.Synthetics = &catalog.AssembleSynthetics{TargetURL: cm.Synthetics.TargetURL.ValueString(), Runtime: cm.Synthetics.Runtime.ValueString(), Handler: cm.Synthetics.Handler.ValueString(), ScheduleExpr: cm.Synthetics.ScheduleExpr.ValueString(), ArtifactBucket: cm.Synthetics.ArtifactBucket.ValueString(), ExecRoleARN: cm.Synthetics.ExecRoleARN.ValueString()}
-			}
+			comp.PrefixList = pl
+		}
+		if cm.Type.ValueString() == "synthetics" || cm.Type.ValueString() == "uptime-check" || nonEmptyString(cm.TargetURL) || nonEmptyString(cm.ScheduleExpr) {
+			comp.Synthetics = &catalog.AssembleSynthetics{TargetURL: cm.TargetURL.ValueString(), Runtime: cm.Runtime.ValueString(), Handler: cm.Handler.ValueString(), ScheduleExpr: cm.ScheduleExpr.ValueString(), ArtifactBucket: cm.ArtifactBucket.ValueString(), ExecRoleARN: cm.ExecRoleARN.ValueString()}
 		}
 		in.Components = append(in.Components, comp)
 	}
 	return in
+}
+
+func hasScaleGroupFields(cm envComponentModel) bool {
+	return intSet(cm.Min) || intSet(cm.Max) || intSet(cm.Desired) || nonEmptyString(cm.Health) || nonEmptyString(cm.UserData) || nonEmptyString(cm.InstanceProfileName) || intSet(cm.RootDiskGB)
+}
+
+func hasDatabaseFields(cm envComponentModel) bool {
+	return nonEmptyString(cm.Engine) || nonEmptyString(cm.Version) || intSet(cm.StorageGB) || boolSet(cm.HA) || boolSet(cm.Encrypted)
+}
+
+func intSet(v types.Int64) bool {
+	return !v.IsNull() && !v.IsUnknown() && v.ValueInt64() != 0
+}
+
+func boolSet(v types.Bool) bool {
+	return !v.IsNull() && !v.IsUnknown() && v.ValueBool()
+}
+
+func intFromString(v types.String) int {
+	if !nonEmptyString(v) {
+		return 0
+	}
+	n, err := strconv.Atoi(v.ValueString())
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (r *environmentResource) resolveWorkDir(m *environmentModel) (string, error) {

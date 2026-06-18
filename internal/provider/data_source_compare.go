@@ -74,21 +74,24 @@ func (d *compareDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 					"pyxcloud_topology resource).",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
+						"path": schema.StringAttribute{
+							Optional:            true,
+							MarkdownDescription: "Canonical topology path for this component, e.g. `/0/Europe/0/Web-Net/0/app`.",
+						},
 						"name": schema.StringAttribute{Required: true},
 						"type": schema.StringAttribute{Required: true},
 						"count": schema.Int64Attribute{
 							Optional:            true,
 							MarkdownDescription: "Instance count (defaults to 1).",
 						},
-						"vm": schema.SingleNestedAttribute{
-							Optional: true,
-							Attributes: map[string]schema.Attribute{
-								"architecture": schema.StringAttribute{Optional: true},
-								"cpu":          schema.StringAttribute{Optional: true},
-								"ram":          schema.StringAttribute{Optional: true},
-								"os_name":      schema.StringAttribute{Optional: true},
-							},
-						},
+						"architecture": schema.StringAttribute{Optional: true},
+						"cpu":          schema.StringAttribute{Optional: true},
+						"ram":          schema.StringAttribute{Optional: true},
+						"os_name":      schema.StringAttribute{Optional: true},
+						"min":          schema.Int64Attribute{Optional: true},
+						"max":          schema.Int64Attribute{Optional: true},
+						"desired":      schema.Int64Attribute{Optional: true},
+						"health":       schema.StringAttribute{Optional: true},
 					},
 				},
 			},
@@ -169,16 +172,25 @@ func (d *compareDataSource) Read(ctx context.Context, req datasource.ReadRequest
 			count = 1
 		}
 		comp := client.Component{
-			Name:  cm.Name.ValueString(),
-			Type:  cm.Type.ValueString(),
-			Count: count,
+			Path:         cm.Path.ValueString(),
+			Name:         cm.Name.ValueString(),
+			Type:         cm.Type.ValueString(),
+			Count:        count,
+			Architecture: cm.Architecture.ValueString(),
+			CPU:          cm.CPU.ValueString(),
+			RAM:          cm.RAM.ValueString(),
+			OSName:       cm.OSName.ValueString(),
+			Min:          int(cm.Min.ValueInt64()),
+			Max:          int(cm.Max.ValueInt64()),
+			Desired:      int(cm.Desired.ValueInt64()),
+			Health:       cm.Health.ValueString(),
 		}
-		if cm.VM != nil {
+		if hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
 			comp.VM = &client.VMType{
-				Architecture: cm.VM.Architecture.ValueString(),
-				CPU:          cm.VM.CPU.ValueString(),
-				RAM:          cm.VM.RAM.ValueString(),
-				OS:           cm.VM.OS.ValueString(),
+				Architecture: cm.Architecture.ValueString(),
+				CPU:          cm.CPU.ValueString(),
+				RAM:          cm.RAM.ValueString(),
+				OS:           cm.OSName.ValueString(),
 			}
 		}
 		topo.Components = append(topo.Components, comp)
