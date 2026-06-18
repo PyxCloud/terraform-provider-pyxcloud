@@ -41,7 +41,15 @@ type Client interface {
 // Config holds the provider-level connection settings.
 type Config struct {
 	Endpoint string // PyxCloud API base, e.g. "https://passo.build"
-	Token    string // OAuth/SSO-issued bearer token (PYXCLOUD_TOKEN)
+	Token    string // Static pre-issued bearer (PYXCLOUD_TOKEN) — tests / break-glass.
+
+	// Machine auth (preferred): OAuth 2.1 client_credentials with the provider's
+	// own confidential client, so the provider execution authenticates itself with
+	// no human login. When ClientID+ClientSecret+TokenURL are set they take
+	// precedence over a static Token.
+	ClientID     string
+	ClientSecret string
+	TokenURL     string // passobuild realm token endpoint
 }
 
 // DefaultEndpoint is the PyxCloud API base used when none is configured.
