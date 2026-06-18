@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"sort"
@@ -36,6 +37,13 @@ type Client interface {
 	// (RegionResolver + CspTemplateResolver). This is the authoritative,
 	// catalog-driven translation — the source of truth the resource plan reflects.
 	Translate(ctx context.Context, t Topology) (TranslateResult, error)
+
+	// ImportDiscovery inspects a backend-held account binding for importable
+	// resources. It is read-only and observability-only.
+	ImportDiscovery(ctx context.Context, req ImportDiscoveryRequest) (ImportDiscoveryResponse, error)
+	// ImportTopology asks the backend to canonicalize selected discovered
+	// resources. Deployable topology output may be gated by a migration fee.
+	ImportTopology(ctx context.Context, req ImportTopologyRequest) (ImportTopologyResponse, error)
 }
 
 // Config holds the provider-level connection settings.
@@ -148,6 +156,37 @@ func (c *StubClient) Translate(_ context.Context, t Topology) (TranslateResult, 
 			comp.Name, comp.Type, t.Provider, t.Region))
 	}
 	return TranslateResult{Terraform: tf, Provider: t.Provider, Region: t.Region}, nil
+}
+
+func (c *StubClient) ImportDiscovery(_ context.Context, req ImportDiscoveryRequest) (ImportDiscoveryResponse, error) {
+	resources := fmt.Sprintf(`[{"account_binding":%q,"cloud":%q,"region":%q,"stub":true}]`,
+		req.AccountBinding, req.Cloud, req.Region)
+	return ImportDiscoveryResponse{
+		Resources:         []byte(resources),
+		ObservabilityOnly: true,
+	}, nil
+}
+
+func (c *StubClient) ImportTopology(_ context.Context, req ImportTopologyRequest) (ImportTopologyResponse, error) {
+	canonical := fmt.Sprintf(`{"account_binding":%q,"intent":%q,"selected_resource_ids":%s,"stub":true}`,
+		req.AccountBinding, req.Intent, stringListJSON(req.SelectedResourceIDs))
+	return ImportTopologyResponse{
+		CanonicalTopology: []byte(canonical),
+		RenderedTerraform: []byte(`{}`),
+		FeeRequired:       false,
+		FeePaid:           req.Intent == ImportIntentDeployableTopology && req.MigrationFeeToken != "",
+	}, nil
+}
+
+func stringListJSON(values []string) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // syntheticHourly produces a deterministic, plausible hourly price from the

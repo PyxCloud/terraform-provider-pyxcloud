@@ -239,6 +239,56 @@ func (c *HTTPClient) Translate(ctx context.Context, t Topology) (TranslateResult
 	return out, nil
 }
 
+func (c *HTTPClient) ImportDiscovery(ctx context.Context, req ImportDiscoveryRequest) (ImportDiscoveryResponse, error) {
+	resp, data, err := c.do(ctx, http.MethodPost, "/api/import/discovery", req)
+	if err != nil {
+		return ImportDiscoveryResponse{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ImportDiscoveryResponse{}, apiError("import discovery", resp.StatusCode, data)
+	}
+	var out ImportDiscoveryResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		return ImportDiscoveryResponse{}, fmt.Errorf("decoding import discovery response: %w", err)
+	}
+	return out, nil
+}
+
+func (c *HTTPClient) ImportTopology(ctx context.Context, req ImportTopologyRequest) (ImportTopologyResponse, error) {
+	resp, data, err := c.do(ctx, http.MethodPost, "/api/import/topology", req)
+	if err != nil {
+		return ImportTopologyResponse{}, err
+	}
+	var out ImportTopologyResponse
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &out); err != nil {
+			return ImportTopologyResponse{}, fmt.Errorf("decoding import topology response: %w", err)
+		}
+	}
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return out, newFeeRequiredError(resp.StatusCode, out)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return ImportTopologyResponse{}, apiError("import topology", resp.StatusCode, data)
+	}
+	if out.FeeRequired && !out.FeePaid {
+		return out, newFeeRequiredError(resp.StatusCode, out)
+	}
+	return out, nil
+}
+
+func newFeeRequiredError(status int, out ImportTopologyResponse) *FeeRequiredError {
+	reason := out.FeeReason
+	if reason == "" {
+		reason = "deployable import requires a migration fee"
+	}
+	return &FeeRequiredError{
+		StatusCode:  status,
+		ReasonText:  reason,
+		CheckoutURL: out.CheckoutURL,
+	}
+}
+
 func apiError(op string, status int, body []byte) error {
 	msg := strings.TrimSpace(string(body))
 	// Surface the backend's {"error":"..."} message when present.

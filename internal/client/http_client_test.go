@@ -155,3 +155,116 @@ func TestHTTPClientGetNotFound(t *testing.T) {
 		t.Error("expected found=false on 404")
 	}
 }
+
+func TestHTTPClientImportDiscovery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/import/discovery" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body ImportDiscoveryRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body.AccountBinding != "acct-prod" || body.Cloud != "aws" || body.Region != "eu-west-1" {
+			t.Fatalf("request binding/cloud/region not mapped: %+v", body)
+		}
+		if len(body.ResourceTypes) != 1 || body.ResourceTypes[0] != "aws_instance" {
+			t.Fatalf("resource types not mapped: %+v", body.ResourceTypes)
+		}
+		if _, ok := body.Filters["tag:env"]; !ok {
+			t.Fatalf("filters not mapped: %+v", body.Filters)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"resources":          []map[string]any{{"id": "i-123", "type": "aws_instance"}},
+			"observability_only": true,
+		})
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(Config{Endpoint: srv.URL, Token: "t"})
+	out, err := c.ImportDiscovery(context.Background(), ImportDiscoveryRequest{
+		AccountBinding: "acct-prod",
+		Cloud:          "aws",
+		Region:         "eu-west-1",
+		Filters:        map[string]string{"tag:env": "prod"},
+		ResourceTypes:  []string{"aws_instance"},
+	})
+	if err != nil {
+		t.Fatalf("ImportDiscovery: %v", err)
+	}
+	if !out.ObservabilityOnly || !strings.Contains(out.ResourcesJSON(), `"i-123"`) {
+		t.Fatalf("discovery response not mapped: %+v resources=%s", out, out.ResourcesJSON())
+	}
+}
+
+func TestHTTPClientImportTopologyFeeRequired(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/import/topology" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body ImportTopologyRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body.Intent != ImportIntentDeployableTopology || body.MigrationFeeToken != "" {
+			t.Fatalf("request intent/token not mapped as expected: %+v", body)
+		}
+		w.WriteHeader(http.StatusPaymentRequired)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"fee_required": true,
+			"fee_paid":     false,
+			"fee_reason":   "deployable import requires a migration fee",
+			"checkout_url": "https://checkout.example/session",
+		})
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(Config{Endpoint: srv.URL, Token: "t"})
+	out, err := c.ImportTopology(context.Background(), ImportTopologyRequest{
+		AccountBinding:      "acct-prod",
+		Intent:              ImportIntentDeployableTopology,
+		SourceCloud:         "aws",
+		SourceRegion:        "eu-west-1",
+		TargetCloud:         "gcp",
+		TargetRegion:        "EU West",
+		SelectedResourceIDs: []string{"i-123"},
+	})
+	if err == nil {
+		t.Fatal("expected fee-required error")
+	}
+	feeErr, ok := err.(*FeeRequiredError)
+	if !ok {
+		t.Fatalf("error = %T %v, want *FeeRequiredError", err, err)
+	}
+	if !out.FeeRequired || out.FeePaid || out.CheckoutURL == "" || !strings.Contains(feeErr.Error(), "migration fee") {
+		t.Fatalf("fee response/error not mapped: out=%+v err=%v", out, err)
+	}
+}
+
+func TestHTTPClientImportTopologyMapsJSONOutputs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"canonical_topology": map[string]any{"components": []map[string]any{{"name": "app"}}},
+			"rendered_terraform": map[string]any{"resource": map[string]any{"aws_instance": map[string]any{"app": map[string]any{}}}},
+			"fee_required":       false,
+			"fee_paid":           true,
+		})
+	}))
+	defer srv.Close()
+
+	c := NewHTTP(Config{Endpoint: srv.URL, Token: "t"})
+	out, err := c.ImportTopology(context.Background(), ImportTopologyRequest{
+		AccountBinding: "acct-prod",
+		Intent:         ImportIntentDeployableTopology,
+		SourceCloud:    "aws",
+		TargetCloud:    "aws",
+	})
+	if err != nil {
+		t.Fatalf("ImportTopology: %v", err)
+	}
+	if !strings.Contains(out.CanonicalTopologyJSON(), `"components"`) ||
+		!strings.Contains(out.RenderedTerraformJSON(), `"aws_instance"`) ||
+		out.FeeRequired || !out.FeePaid {
+		t.Fatalf("topology response not mapped: %+v canonical=%s rendered=%s", out, out.CanonicalTopologyJSON(), out.RenderedTerraformJSON())
+	}
+}

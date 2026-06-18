@@ -84,16 +84,18 @@ func TestDataSourceSchema(t *testing.T) {
 func TestProviderInterfaces(t *testing.T) {
 	t.Parallel()
 	p := New("test")()
-	if got := len(p.Resources(context.Background())); got != 3 {
-		t.Errorf("expected 3 resources (topology, migration, environment), got %d", got)
+	if got := len(p.Resources(context.Background())); got != 4 {
+		t.Errorf("expected 4 resources (topology, migration, environment, import topology), got %d", got)
 	}
-	if got := len(p.DataSources(context.Background())); got != 1 {
-		t.Errorf("expected 1 data source, got %d", got)
+	if got := len(p.DataSources(context.Background())); got != 2 {
+		t.Errorf("expected 2 data sources (compare, import discovery), got %d", got)
 	}
 
 	var _ fwresource.Resource = NewTopologyResource()
 	var _ fwresource.Resource = NewMigrationResource()
+	var _ fwresource.Resource = NewImportTopologyResource()
 	var _ fwdatasource.DataSource = NewCompareDataSource()
+	var _ fwdatasource.DataSource = NewImportDiscoveryDataSource()
 }
 
 // TestStubCompareRanksCheapestFirst exercises the stub client's pricing path
