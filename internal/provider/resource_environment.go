@@ -56,6 +56,7 @@ type envComponentModel struct {
 	Type          types.String           `tfsdk:"type"`
 	Count         types.Int64            `tfsdk:"count"`
 	VM            *vmTypeModel           `tfsdk:"vm"`
+	ScaleGroup    *envScaleGroupModel    `tfsdk:"scale_group"`
 	IAM           *envIAMModel           `tfsdk:"iam"`
 	Monitoring    *envMonitoringModel    `tfsdk:"monitoring"`
 	DNS           *envDNSModel           `tfsdk:"dns"`
@@ -75,6 +76,20 @@ type envComponentModel struct {
 	BlockStorage  *envBlockStorageModel  `tfsdk:"block_storage"`
 	PrefixList    *envPrefixListModel    `tfsdk:"prefix_list"`
 	Synthetics    *envSyntheticsModel    `tfsdk:"synthetics"`
+}
+
+type envScaleGroupModel struct {
+	Architecture    types.String `tfsdk:"architecture"`
+	CPU             types.String `tfsdk:"cpu"`
+	RAM             types.String `tfsdk:"ram"`
+	OSName          types.String `tfsdk:"os_name"`
+	Min             types.Int64  `tfsdk:"min"`
+	Max             types.Int64  `tfsdk:"max"`
+	Desired         types.Int64  `tfsdk:"desired"`
+	Health          types.String `tfsdk:"health"`
+	UserData        types.String `tfsdk:"user_data"`
+	InstanceProfile types.String `tfsdk:"instance_profile"`
+	RootDiskGB      types.Int64  `tfsdk:"root_disk_gb"`
 }
 
 type envSyntheticsModel struct {
@@ -308,6 +323,23 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 								"cpu":          schema.StringAttribute{Optional: true, MarkdownDescription: "vCPU count, e.g. `2`."},
 								"ram":          schema.StringAttribute{Optional: true, MarkdownDescription: "RAM in GiB, e.g. `4`."},
 								"os_name":      schema.StringAttribute{Optional: true, MarkdownDescription: "OS, e.g. `ubuntu`."},
+							},
+						},
+						"scale_group": schema.SingleNestedAttribute{
+							Optional:            true,
+							MarkdownDescription: "Config for `virtual-machine-scale-group` components (a real ASG: launch template + autoscaling group).",
+							Attributes: map[string]schema.Attribute{
+								"architecture":     schema.StringAttribute{Optional: true, MarkdownDescription: "CPU architecture, e.g. `x86_64`."},
+								"cpu":              schema.StringAttribute{Optional: true, MarkdownDescription: "vCPU count, e.g. `2`."},
+								"ram":              schema.StringAttribute{Optional: true, MarkdownDescription: "RAM in GiB, e.g. `8`."},
+								"os_name":          schema.StringAttribute{Optional: true, MarkdownDescription: "OS, e.g. `ubuntu`."},
+								"min":              schema.Int64Attribute{Optional: true, MarkdownDescription: "Minimum instances."},
+								"max":              schema.Int64Attribute{Optional: true, MarkdownDescription: "Maximum instances."},
+								"desired":          schema.Int64Attribute{Optional: true, MarkdownDescription: "Desired instances."},
+								"health":           schema.StringAttribute{Optional: true, MarkdownDescription: "Health check kind: `ec2` | `elb`."},
+								"user_data":        schema.StringAttribute{Optional: true, MarkdownDescription: "cloud-init/bootstrap baked into the launch template (e.g. the native-binary pull)."},
+								"instance_profile": schema.StringAttribute{Optional: true, MarkdownDescription: "IAM instance-profile name to attach (from a sibling `iam` component)."},
+								"root_disk_gb":     schema.Int64Attribute{Optional: true, MarkdownDescription: "Root EBS volume size in GiB (0 = default)."},
 							},
 						},
 						"iam": schema.SingleNestedAttribute{
@@ -597,6 +629,21 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				CPU:          cm.VM.CPU.ValueString(),
 				RAM:          cm.VM.RAM.ValueString(),
 				OS:           cm.VM.OS.ValueString(),
+			}
+		}
+		if cm.ScaleGroup != nil {
+			comp.ScaleGroup = &catalog.AssembleScaleGroup{
+				Architecture:    cm.ScaleGroup.Architecture.ValueString(),
+				CPU:             cm.ScaleGroup.CPU.ValueString(),
+				RAM:             cm.ScaleGroup.RAM.ValueString(),
+				OS:              cm.ScaleGroup.OSName.ValueString(),
+				Min:             int(cm.ScaleGroup.Min.ValueInt64()),
+				Max:             int(cm.ScaleGroup.Max.ValueInt64()),
+				Desired:         int(cm.ScaleGroup.Desired.ValueInt64()),
+				Health:          cm.ScaleGroup.Health.ValueString(),
+				UserData:        cm.ScaleGroup.UserData.ValueString(),
+				InstanceProfile: cm.ScaleGroup.InstanceProfile.ValueString(),
+				RootDiskGB:      int(cm.ScaleGroup.RootDiskGB.ValueInt64()),
 			}
 		}
 		if cm.IAM != nil {

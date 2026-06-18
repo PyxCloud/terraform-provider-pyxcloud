@@ -33,6 +33,25 @@ type AssembleVM struct {
 	InstanceProfile string
 }
 
+// AssembleScaleGroup is the canonical config for a `virtual-machine-scale-group`
+// component — VM sizing plus autoscale bounds, health, and the launch-template
+// bootstrap (user_data) + instance-profile. Renders to a real ASG (launch template
+// + autoscaling group), not a single instance.
+type AssembleScaleGroup struct {
+	Architecture    string
+	CPU             string
+	RAM             string
+	OS              string
+	OSVersion       string
+	Min             int
+	Max             int
+	Desired         int
+	Health          string // ec2 | elb
+	UserData        string
+	InstanceProfile string
+	RootDiskGB      int
+}
+
 // AssembleIAM is the canonical IAM config for an `iam` component.
 type AssembleIAM struct {
 	AssumeService     string
@@ -47,6 +66,7 @@ type AssembleComponent struct {
 	Type          string
 	Count         int
 	VM            *AssembleVM
+	ScaleGroup    *AssembleScaleGroup
 	IAM           *AssembleIAM
 	Monitoring    *AssembleMonitoring
 	DNS           *AssembleDNS
@@ -315,7 +335,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			continue
 		}
 		switch c.Type {
-		case "virtual-machine", "virtual-machine-scale-group":
+		case "virtual-machine":
 			if c.VM == nil {
 				return nil, fmt.Errorf("component %q (%s): vm sizing is required", c.Name, c.Type)
 			}
@@ -334,6 +354,27 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, vmHCL)
+		case "virtual-machine-scale-group":
+			if c.ScaleGroup == nil {
+				return nil, fmt.Errorf("component %q (%s): scale_group config is required", c.Name, c.Type)
+			}
+			sg := c.ScaleGroup
+			sgPlan, err := TranslateScaleGroup(ctx, cat, ScaleGroupSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider,
+				Architecture: sg.Architecture, CPU: atoiOrZero(sg.CPU), RAM: atoiOrZero(sg.RAM),
+				OS: sg.OS, OSVersion: sg.OSVersion,
+				Min: sg.Min, Max: sg.Max, Desired: sg.Desired, Health: sg.Health,
+				UserData: sg.UserData, InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
+				Network: netName, SecurityGroup: vmSG,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			sgHCL, err := RenderScaleGroupHCL(sgPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, sgHCL)
 		case "iam":
 			iamSpec := IAMSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.IAM != nil {

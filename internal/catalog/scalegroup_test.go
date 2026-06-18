@@ -346,3 +346,35 @@ func TestRenderScaleGroupGCPNoAutohealOnEC2(t *testing.T) {
 		t.Errorf("ec2 health should not emit auto_healing_policies:\n%s", hcl)
 	}
 }
+
+func TestRenderASGAWSUserDataProfileEBS(t *testing.T) {
+	p := ScaleGroupPlan{
+		Provider: ProviderAWS, CSP: "aws", CSPRegion: "eu-west-1", GroupName: "api",
+		InstanceType: "t3.large", Image: "ami-1", Min: 1, Max: 1, Desired: 1, Health: HealthELB,
+		SubnetNames: []string{"net-a"}, NetworkName: "net", SecurityGroup: "api-sg",
+		UserData: "#!/bin/bash\npull-native-binary\n", InstanceProfile: "api-profile", RootDiskGB: 50,
+	}
+	hcl, err := RenderScaleGroupHCL(p)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		"resource \"aws_launch_template\"", "resource \"aws_autoscaling_group\"",
+		"iam_instance_profile {", "name = \"api-profile\"",
+		"user_data = base64encode(<<-PYXUSERDATA", "pull-native-binary",
+		"volume_size           = 50", "health_check_type   = \"ELB\"",
+	} {
+		if !sgTestContains(hcl, want) {
+			t.Errorf("ASG HCL missing %q\n---\n%s", want, hcl)
+		}
+	}
+}
+
+func sgTestContains(h, n string) bool {
+	for i := 0; i+len(n) <= len(h); i++ {
+		if h[i:i+len(n)] == n {
+			return true
+		}
+	}
+	return false
+}
