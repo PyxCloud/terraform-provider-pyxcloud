@@ -149,7 +149,7 @@ func TestAssembleHCLLoadBalancer(t *testing.T) {
 		Components: []AssembleComponent{
 			{Name: "web", Type: "virtual-machine", Count: 1, VM: &AssembleVM{Architecture: "x86_64", CPU: "2", RAM: "4", OS: "ubuntu"}},
 			{Name: "web-lb", Type: "load-balancer", LB: &AssembleLB{
-				Listeners: []AssembleLBListener{{Port: 80, Protocol: "http"}},
+				Listeners:  []AssembleLBListener{{Port: 80, Protocol: "http"}},
 				TargetKind: "vm", TargetName: "web", HealthCheckPath: "/",
 			}},
 		},
@@ -313,6 +313,76 @@ func TestAssembleHCLAttachToExistingALB(t *testing.T) {
 		"values = [\"api.pyxcloud.local\"]",
 		"autoscaling_group_name = aws_autoscaling_group.api-asg_asg.name",
 		"target_group_arn = aws_lb_target_group.api-attach_tg.arn",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %q\n---\n%s", want, all)
+		}
+	}
+}
+
+func TestAssembleHCLNetworkRulesWireEnvironmentSG(t *testing.T) {
+	cat, err := NewEmbedded()
+	if err != nil {
+		t.Fatalf("embedded catalog: %v", err)
+	}
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name:     "beta-api",
+		Provider: "aws",
+		Region:   "Dublin",
+		Components: []AssembleComponent{
+			{
+				Name: "api",
+				Type: "virtual-machine-scale-group",
+				ScaleGroup: &AssembleScaleGroup{
+					Architecture: "x86_64",
+					CPU:          "2",
+					RAM:          "8",
+					OS:           "ubuntu",
+					Min:          1,
+					Max:          1,
+					Desired:      1,
+				},
+			},
+			{
+				Name: "alb-to-api",
+				Type: "network-rule",
+				NetworkRule: &AssembleNetworkRule{
+					Direction:             "ingress",
+					Protocol:              "tcp",
+					Port:                  8080,
+					SourceSecurityGroupID: "sg-alb",
+					TargetSG:              "beta-api-sg",
+				},
+			},
+			{
+				Name: "api-to-rds",
+				Type: "network-rule",
+				NetworkRule: &AssembleNetworkRule{
+					Direction:             "ingress",
+					Protocol:              "tcp",
+					Port:                  5432,
+					SourceSG:              "beta-api-sg",
+					TargetSecurityGroupID: "sg-rds",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL network-rule: %v", err)
+	}
+
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`resource "aws_security_group" "beta-api-sg"`,
+		`vpc_security_group_ids = [aws_security_group.beta-api-sg.id]`,
+		`resource "aws_security_group_rule" "alb-to-api"`,
+		`security_group_id = aws_security_group.beta-api-sg.id`,
+		`source_security_group_id = "sg-alb"`,
+		`from_port         = 8080`,
+		`resource "aws_security_group_rule" "api-to-rds"`,
+		`security_group_id = "sg-rds"`,
+		`source_security_group_id = aws_security_group.beta-api-sg.id`,
+		`from_port         = 5432`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("missing %q\n---\n%s", want, all)

@@ -69,6 +69,9 @@ type environmentModel struct {
 	PyxALBAttachment                []envComponentModel `tfsdk:"pyx_alb_attachment"`
 	AccountBinding                  types.String        `tfsdk:"account_binding"`
 	WorkDir                         types.String        `tfsdk:"work_dir"`
+	BackendS3Bucket                 types.String        `tfsdk:"backend_s3_bucket"`
+	BackendS3Key                    types.String        `tfsdk:"backend_s3_key"`
+	BackendS3Region                 types.String        `tfsdk:"backend_s3_region"`
 	Outputs                         types.Map           `tfsdk:"outputs"`
 }
 
@@ -93,7 +96,15 @@ type envComponentModel struct {
 	ALBListenerARN           types.String          `tfsdk:"alb_listener_arn"`
 	HostHeader               types.String          `tfsdk:"host_header"`
 	Port                     types.Int64           `tfsdk:"port"`
+	FromPort                 types.Int64           `tfsdk:"from_port"`
+	ToPort                   types.Int64           `tfsdk:"to_port"`
 	Protocol                 types.String          `tfsdk:"protocol"`
+	Direction                types.String          `tfsdk:"direction"`
+	CIDRs                    []types.String        `tfsdk:"cidrs"`
+	SourceSG                 types.String          `tfsdk:"source_sg"`
+	SourceSecurityGroupID    types.String          `tfsdk:"source_security_group_id"`
+	TargetSG                 types.String          `tfsdk:"target_sg"`
+	TargetSecurityGroupID    types.String          `tfsdk:"target_security_group_id"`
 	HealthCheckPath          types.String          `tfsdk:"health_check_path"`
 	HealthCheckPortString    types.String          `tfsdk:"health_check_port"`
 	ScaleGroupName           types.String          `tfsdk:"scale_group"`
@@ -420,6 +431,18 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"Must be stable for the resource lifecycle; defaults to `${cwd}/.pyxcloud/environments/<name>`.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
+			"backend_s3_bucket": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Optional S3 bucket for the translated child Terraform state. Set with backend_s3_key/backend_s3_region for durable CI applies.",
+			},
+			"backend_s3_key": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Optional S3 key for the translated child Terraform state.",
+			},
+			"backend_s3_region": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Optional AWS region for the translated child Terraform S3 backend.",
+			},
 			"outputs": schema.MapAttribute{
 				Computed:            true,
 				ElementType:         types.StringType,
@@ -459,7 +482,15 @@ func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 		"alb_listener_arn":           schema.StringAttribute{Optional: true, MarkdownDescription: "ARN of an existing ALB listener."},
 		"host_header":                schema.StringAttribute{Optional: true, MarkdownDescription: "Host header rule to match."},
 		"port":                       schema.Int64Attribute{Optional: true, MarkdownDescription: "Target/listener port."},
+		"from_port":                  schema.Int64Attribute{Optional: true, MarkdownDescription: "Network-rule start port."},
+		"to_port":                    schema.Int64Attribute{Optional: true, MarkdownDescription: "Network-rule end port."},
 		"protocol":                   schema.StringAttribute{Optional: true, MarkdownDescription: "Protocol, e.g. `http`, `https`, or `tcp`."},
+		"direction":                  schema.StringAttribute{Optional: true, MarkdownDescription: "Network-rule direction: ingress or egress."},
+		"cidrs":                      schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Network-rule CIDR scopes."},
+		"source_sg":                  schema.StringAttribute{Optional: true, MarkdownDescription: "Source security group name produced by this environment."},
+		"source_security_group_id":   schema.StringAttribute{Optional: true, MarkdownDescription: "Existing source security group id."},
+		"target_sg":                  schema.StringAttribute{Optional: true, MarkdownDescription: "Target security group name produced by this environment."},
+		"target_security_group_id":   schema.StringAttribute{Optional: true, MarkdownDescription: "Existing target security group id."},
 		"health_check_path":          schema.StringAttribute{Optional: true},
 		"health_check_port":          schema.StringAttribute{Optional: true, MarkdownDescription: "Health check port; defaults to the target port where supported."},
 		"scale_group":                schema.StringAttribute{Optional: true, MarkdownDescription: "Name of the sibling scale-group component to attach."},
@@ -656,6 +687,24 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				Priority:        int(cm.Priority.ValueInt64()),
 			}
 		}
+		if typed.canonicalType == "network-rule" || hasNetworkRuleFields(cm) {
+			rule := &catalog.AssembleNetworkRule{
+				Direction:             cm.Direction.ValueString(),
+				Protocol:              cm.Protocol.ValueString(),
+				Port:                  int(cm.Port.ValueInt64()),
+				FromPort:              int(cm.FromPort.ValueInt64()),
+				ToPort:                int(cm.ToPort.ValueInt64()),
+				SourceSG:              cm.SourceSG.ValueString(),
+				SourceSecurityGroupID: cm.SourceSecurityGroupID.ValueString(),
+				TargetSG:              cm.TargetSG.ValueString(),
+				TargetSecurityGroupID: cm.TargetSecurityGroupID.ValueString(),
+				Description:           cm.Description.ValueString(),
+			}
+			for _, cidr := range cm.CIDRs {
+				rule.CIDRs = append(rule.CIDRs, cidr.ValueString())
+			}
+			comp.NetworkRule = rule
+		}
 		if typed.canonicalType == "access-policy" || nonEmptyString(cm.AssumeService) || len(cm.ManagedPolicyARNs) > 0 || len(cm.InlinePolicies) > 0 {
 			iam := &catalog.AssembleIAM{AssumeService: cm.AssumeService.ValueString()}
 			for _, arn := range cm.ManagedPolicyARNs {
@@ -748,6 +797,10 @@ func hasScaleGroupFields(cm envComponentModel) bool {
 	return intSet(cm.Min) || intSet(cm.Max) || intSet(cm.Desired) || nonEmptyString(cm.Health) || nonEmptyString(cm.UserData) || nonEmptyString(cm.InstanceProfileName) || intSet(cm.RootDiskGB)
 }
 
+func hasNetworkRuleFields(cm envComponentModel) bool {
+	return nonEmptyString(cm.Direction) || intSet(cm.FromPort) || intSet(cm.ToPort) || len(cm.CIDRs) > 0 || nonEmptyString(cm.SourceSG) || nonEmptyString(cm.SourceSecurityGroupID) || nonEmptyString(cm.TargetSG) || nonEmptyString(cm.TargetSecurityGroupID)
+}
+
 type typedEnvComponentModel struct {
 	canonicalType string
 	model         envComponentModel
@@ -810,6 +863,40 @@ func intFromString(v types.String) int {
 	return n
 }
 
+func normalizeEnvironmentComputedDefaults(m *environmentModel) {
+	normalizeComponentCounts := func(models []envComponentModel) {
+		for i := range models {
+			if models[i].Count.IsNull() || models[i].Count.IsUnknown() || models[i].Count.ValueInt64() <= 0 {
+				models[i].Count = types.Int64Value(1)
+			}
+		}
+	}
+	normalizeComponentCounts(m.PyxVPC)
+	normalizeComponentCounts(m.PyxNetworkRule)
+	normalizeComponentCounts(m.PyxAccessPolicy)
+	normalizeComponentCounts(m.PyxMonitoring)
+	normalizeComponentCounts(m.PyxDNS)
+	normalizeComponentCounts(m.PyxVirtualMachine)
+	normalizeComponentCounts(m.PyxAutoscaleVirtualMachineGroup)
+	normalizeComponentCounts(m.PyxDatabase)
+	normalizeComponentCounts(m.PyxLoadBalancer)
+	normalizeComponentCounts(m.PyxCache)
+	normalizeComponentCounts(m.PyxObjectStorage)
+	normalizeComponentCounts(m.PyxSecret)
+	normalizeComponentCounts(m.PyxQueue)
+	normalizeComponentCounts(m.PyxStream)
+	normalizeComponentCounts(m.PyxServerlessFunction)
+	normalizeComponentCounts(m.PyxKMS)
+	normalizeComponentCounts(m.PyxCDN)
+	normalizeComponentCounts(m.PyxWAF)
+	normalizeComponentCounts(m.PyxKubernetes)
+	normalizeComponentCounts(m.PyxEmail)
+	normalizeComponentCounts(m.PyxBlockStorage)
+	normalizeComponentCounts(m.PyxPrefixList)
+	normalizeComponentCounts(m.PyxSynthetics)
+	normalizeComponentCounts(m.PyxALBAttachment)
+}
+
 func (r *environmentResource) resolveWorkDir(m *environmentModel) (string, error) {
 	if !m.WorkDir.IsNull() && !m.WorkDir.IsUnknown() && m.WorkDir.ValueString() != "" {
 		return m.WorkDir.ValueString(), nil
@@ -819,6 +906,24 @@ func (r *environmentResource) resolveWorkDir(m *environmentModel) (string, error
 		return "", err
 	}
 	return filepath.Join(cwd, ".pyxcloud", "environments", m.Name.ValueString()), nil
+}
+
+func environmentBackendDoc(m environmentModel) string {
+	if !nonEmptyString(m.BackendS3Bucket) && !nonEmptyString(m.BackendS3Key) && !nonEmptyString(m.BackendS3Region) {
+		return ""
+	}
+	if !nonEmptyString(m.BackendS3Bucket) || !nonEmptyString(m.BackendS3Key) || !nonEmptyString(m.BackendS3Region) {
+		return ""
+	}
+	return fmt.Sprintf(`terraform {
+  backend "s3" {
+    bucket  = %q
+    key     = %q
+    region  = %q
+    encrypt = true
+  }
+}
+`, m.BackendS3Bucket.ValueString(), m.BackendS3Key.ValueString(), m.BackendS3Region.ValueString())
 }
 
 // errModeBNotEnabled is returned when the managed-account path is selected before
@@ -845,6 +950,9 @@ func (r *environmentResource) translateAndApply(ctx context.Context, m *environm
 	}
 	if len(docs) == 0 {
 		return nil, "", fmt.Errorf("translation produced no terraform for this topology")
+	}
+	if backendDoc := environmentBackendDoc(*m); backendDoc != "" {
+		docs = append([]string{backendDoc}, docs...)
 	}
 	workDir, err := r.resolveWorkDir(m)
 	if err != nil {
@@ -879,6 +987,7 @@ func (r *environmentResource) Create(ctx context.Context, req resource.CreateReq
 	outMap, diags := types.MapValueFrom(ctx, types.StringType, outputs)
 	resp.Diagnostics.Append(diags...)
 	plan.Outputs = outMap
+	normalizeEnvironmentComputedDefaults(&plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -925,6 +1034,7 @@ func (r *environmentResource) Update(ctx context.Context, req resource.UpdateReq
 	outMap, diags := types.MapValueFrom(ctx, types.StringType, outputs)
 	resp.Diagnostics.Append(diags...)
 	plan.Outputs = outMap
+	normalizeEnvironmentComputedDefaults(&plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 

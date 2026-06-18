@@ -64,6 +64,23 @@ type AssembleAttachToExistingALB struct {
 	Priority        int
 }
 
+// AssembleNetworkRule is the config for a network-rule component. Target/source
+// may point either at a security group produced in this environment by name, or
+// at an existing provider security group id.
+type AssembleNetworkRule struct {
+	Direction             string
+	Protocol              string
+	FromPort              int
+	ToPort                int
+	Port                  int
+	CIDRs                 []string
+	SourceSG              string
+	SourceSecurityGroupID string
+	TargetSG              string
+	TargetSecurityGroupID string
+	Description           string
+}
+
 // AssembleIAM is the canonical IAM config for an `iam` component.
 type AssembleIAM struct {
 	AssumeService     string
@@ -81,6 +98,7 @@ type AssembleComponent struct {
 	VM                  *AssembleVM
 	ScaleGroup          *AssembleScaleGroup
 	AttachToExistingALB *AssembleAttachToExistingALB
+	NetworkRule         *AssembleNetworkRule
 	IAM                 *AssembleIAM
 	Monitoring          *AssembleMonitoring
 	DNS                 *AssembleDNS
@@ -318,22 +336,39 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		}
 	}
 
-	// 2. Security group — only when VMs are present AND ports are exposed. A SG with
-	//    no rule is rejected by the translator, so with no expose we skip it and the
-	//    VMs fall back to the VPC default SG. vmSG is the name to wire onto VMs ("" = none).
-	if hasVM && len(in.Expose) > 0 {
+	envRuleNeedsSG := false
+	for _, c := range in.Components {
+		if c.Type == "network-rule" && c.NetworkRule != nil && networkRuleReferencesEnvSG(c.NetworkRule, sgName) {
+			envRuleNeedsSG = true
+			break
+		}
+	}
+
+	// 2. Security group — when VMs are present and either ports are exposed or a
+	//    network-rule targets/references the environment SG. With only env-rule
+	//    references, emit the empty SG directly because TranslateSecurityGroup
+	//    intentionally rejects a rule-less SG.
+	if hasVM && (len(in.Expose) > 0 || envRuleNeedsSG) {
 		sgPlan, err := TranslateSecurityGroup(ctx, cat, SecurityGroupSpec{
 			Name: sgName, Network: netName, Region: in.Region, Provider: in.Provider,
 			Description: in.Name + " environment", Expose: in.Expose,
 		})
-		if err != nil {
+		if err != nil && len(in.Expose) > 0 {
 			return nil, fmt.Errorf("security-group: %w", err)
 		}
-		sgHCL, err := RenderSGHCL(sgPlan)
-		if err != nil {
-			return nil, fmt.Errorf("security-group render: %w", err)
+		if len(in.Expose) > 0 {
+			sgHCL, err := RenderSGHCL(sgPlan)
+			if err != nil {
+				return nil, fmt.Errorf("security-group render: %w", err)
+			}
+			docs = append(docs, sgHCL)
+		} else {
+			sgHCL, err := renderEnvironmentSecurityGroupHCL(in.Provider, sgName, netName, in.Name+" environment")
+			if err != nil {
+				return nil, fmt.Errorf("security-group render: %w", err)
+			}
+			docs = append(docs, sgHCL)
 		}
-		docs = append(docs, sgHCL)
 		vmSG = sgName
 	}
 
@@ -416,6 +451,15 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, attHCL)
+		case "network-rule":
+			if c.NetworkRule == nil {
+				return nil, fmt.Errorf("component %q (network-rule): config is required", c.Name)
+			}
+			ruleHCL, err := renderNetworkRuleHCL(in.Provider, c.Name, c.NetworkRule)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, ruleHCL)
 		case "iam":
 			iamSpec := IAMSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.IAM != nil {
@@ -765,6 +809,92 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		docs = append([]string{rp}, docs...)
 	}
 	return docs, nil
+}
+
+func networkRuleReferencesEnvSG(r *AssembleNetworkRule, envSG string) bool {
+	return r.TargetSG == envSG || r.SourceSG == envSG
+}
+
+func renderEnvironmentSecurityGroupHCL(provider, name, network, description string) (string, error) {
+	if strings.ToLower(provider) != ProviderAWS {
+		return "", fmt.Errorf("network-rule-created environment security groups are only supported on AWS for now")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"aws_security_group\" %q {\n", tfName(name))
+	fmt.Fprintf(&b, "  name        = %q\n", name)
+	fmt.Fprintf(&b, "  description = %q\n", asciiOnly(description))
+	fmt.Fprintf(&b, "  vpc_id      = data.aws_vpc.default.id\n")
+	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", name)
+	b.WriteString("}\n")
+	_ = network
+	return b.String(), nil
+}
+
+func renderNetworkRuleHCL(provider, name string, rule *AssembleNetworkRule) (string, error) {
+	if strings.ToLower(provider) != ProviderAWS {
+		return "", fmt.Errorf("network-rule is only supported on AWS for now")
+	}
+	direction := strings.ToLower(strings.TrimSpace(rule.Direction))
+	if direction == "" {
+		direction = DirIngress
+	}
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol == "" {
+		protocol = ProtoTCP
+	}
+	fromPort, toPort := rule.FromPort, rule.ToPort
+	if rule.Port > 0 {
+		fromPort, toPort = rule.Port, rule.Port
+	}
+	if toPort == 0 {
+		toPort = fromPort
+	}
+	if fromPort <= 0 || toPort <= 0 {
+		return "", fmt.Errorf("network-rule requires port or from_port/to_port")
+	}
+	target := securityGroupRef(rule.TargetSG, rule.TargetSecurityGroupID)
+	if target == "" {
+		return "", fmt.Errorf("network-rule requires target_sg or target_security_group_id")
+	}
+	source := securityGroupRef(rule.SourceSG, rule.SourceSecurityGroupID)
+	cidrs := rule.CIDRs
+	if source == "" && len(cidrs) == 0 {
+		return "", fmt.Errorf("network-rule requires source_sg, source_security_group_id, or cidrs")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"aws_security_group_rule\" %q {\n", tfName(name))
+	fmt.Fprintf(&b, "  type              = %q\n", direction)
+	fmt.Fprintf(&b, "  security_group_id = %s\n", target)
+	fmt.Fprintf(&b, "  protocol          = %q\n", awsProto(protocol))
+	fmt.Fprintf(&b, "  from_port         = %d\n", fromPort)
+	fmt.Fprintf(&b, "  to_port           = %d\n", toPort)
+	if source != "" {
+		fmt.Fprintf(&b, "  source_security_group_id = %s\n", source)
+	} else {
+		v4, v6 := splitCIDRs(cidrs)
+		if len(v4) > 0 {
+			fmt.Fprintf(&b, "  cidr_blocks       = %s\n", hclCIDRList(v4))
+		}
+		if len(v6) > 0 {
+			fmt.Fprintf(&b, "  ipv6_cidr_blocks  = %s\n", hclCIDRList(v6))
+		}
+	}
+	if rule.Description != "" {
+		fmt.Fprintf(&b, "  description       = %q\n", asciiOnly(rule.Description))
+	}
+	b.WriteString("}\n")
+	return b.String(), nil
+}
+
+func securityGroupRef(name, id string) string {
+	if id != "" {
+		return fmt.Sprintf("%q", id)
+	}
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf("aws_security_group.%s.id", tfName(name))
 }
 
 // cloudProviderSource maps a provider to its (local-name, registry-source) for a
