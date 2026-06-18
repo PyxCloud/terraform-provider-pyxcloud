@@ -117,7 +117,7 @@ func RenderAttachToExistingALBHCL(p AttachToExistingALBPlan) (string, error) {
 	fmt.Fprintf(&b, "  protocol    = %q\n", strings.ToUpper(p.Protocol))
 	b.WriteString("  target_type = \"instance\"\n")
 	if p.NetworkName != "" {
-		fmt.Fprintf(&b, "  vpc_id      = aws_vpc.%s.id\n", tfName(p.NetworkName))
+		fmt.Fprintf(&b, "  vpc_id      = data.aws_vpc.default.id\n")
 	}
 	b.WriteString("  health_check {\n")
 	fmt.Fprintf(&b, "    protocol            = %q\n", strings.ToUpper(p.Protocol))

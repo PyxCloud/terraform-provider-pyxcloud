@@ -331,7 +331,7 @@ func renderDNSAWS(p DNSZonePlan) string {
 	fmt.Fprintf(&b, "  name = %q\n", p.Domain)
 	if p.Private && p.NetworkName != "" {
 		b.WriteString("  vpc {\n")
-		fmt.Fprintf(&b, "    vpc_id = aws_vpc.%s.id\n", tfName(p.NetworkName))
+		fmt.Fprintf(&b, "    vpc_id = data.aws_vpc.default.id\n")
 		b.WriteString("  }\n")
 	}
 	fmt.Fprintf(&b, "  tags = { pyxcloud = \"true\" }\n")

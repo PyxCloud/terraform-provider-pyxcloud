@@ -62,17 +62,12 @@ func tfName(s string) string {
 func renderAWS(p NetworkPlan) string {
 	name := tfName(p.VPCName)
 	var b strings.Builder
-	fmt.Fprintf(&b, "resource \"aws_vpc\" %q {\n", name)
-	fmt.Fprintf(&b, "  cidr_block = %q\n", p.CIDR)
-	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.VPCName)
-	b.WriteString("}\n")
-	for i, s := range p.Subnets {
+	b.WriteString("data \"aws_vpc\" \"default\" { default = true }\n")
+	b.WriteString("data \"aws_subnets\" \"default\" {\n  filter {\n    name   = \"vpc-id\"\n    values = [data.aws_vpc.default.id]\n  }\n}\n")
+	for i, _ := range p.Subnets {
 		sn := fmt.Sprintf("%s_%d", name, i+1)
-		fmt.Fprintf(&b, "\nresource \"aws_subnet\" %q {\n", sn)
-		fmt.Fprintf(&b, "  vpc_id            = aws_vpc.%s.id\n", name)
-		fmt.Fprintf(&b, "  cidr_block        = %q\n", s.CIDR)
-		fmt.Fprintf(&b, "  availability_zone = %q\n", s.Zone)
-		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", s.Name)
+		fmt.Fprintf(&b, "\ndata \"aws_subnet\" %q {\n", sn)
+		fmt.Fprintf(&b, "  id = tolist(data.aws_subnets.default.ids)[%d]\n", i)
 		b.WriteString("}\n")
 	}
 	return b.String()
@@ -173,9 +168,7 @@ func renderSGAWS(p SecurityGroupPlan) string {
 	fmt.Fprintf(&b, "resource \"aws_security_group\" %q {\n", name)
 	fmt.Fprintf(&b, "  name        = %q\n", p.SGName)
 	fmt.Fprintf(&b, "  description = %q\n", desc)
-	if p.NetworkName != "" {
-		fmt.Fprintf(&b, "  vpc_id      = aws_vpc.%s.id\n", tfName(p.NetworkName))
-	}
+	fmt.Fprintf(&b, "  vpc_id      = data.aws_vpc.default.id\n")
 	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.SGName)
 	b.WriteString("}\n")
 
@@ -348,7 +341,7 @@ func renderVMAWS(p VMPlan) string {
 		fmt.Fprintf(&b, "  ami           = %q\n", p.Image)
 		fmt.Fprintf(&b, "  instance_type = %q\n", p.InstanceType)
 		if p.SubnetName != "" {
-			fmt.Fprintf(&b, "  subnet_id     = aws_subnet.%s.id\n", subnetLabel)
+			fmt.Fprintf(&b, "  subnet_id     = data.aws_subnet.%s.id\n", subnetLabel)
 		}
 		if p.SecurityGroup != "" {
 			fmt.Fprintf(&b, "  vpc_security_group_ids = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
@@ -534,7 +527,7 @@ func renderASGAWS(p ScaleGroupPlan) string {
 	if len(p.SubnetNames) > 0 {
 		labels := make([]string, 0, len(p.SubnetNames))
 		for _, s := range p.SubnetNames {
-			labels = append(labels, fmt.Sprintf("aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
+			labels = append(labels, fmt.Sprintf("data.aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
 		}
 		fmt.Fprintf(&b, "  vpc_zone_identifier = [%s]\n", strings.Join(labels, ", "))
 	}
@@ -725,12 +718,12 @@ func renderLBAWS(p LoadBalancerPlan) string {
 		igwName := tfName(p.LBName) + "_igw"
 		rtName := tfName(p.LBName) + "_rt"
 		fmt.Fprintf(&b, "resource \"aws_internet_gateway\" %q {\n", igwName)
-		fmt.Fprintf(&b, "  vpc_id = aws_vpc.%s.id\n", tfName(p.NetworkName))
+		fmt.Fprintf(&b, "  vpc_id = data.aws_vpc.default.id\n")
 		fmt.Fprintf(&b, "  tags = { Name = \"%s-igw\", pyxcloud = \"true\" }\n", tfName(p.LBName))
 		b.WriteString("}\n\n")
 
 		fmt.Fprintf(&b, "resource \"aws_route_table\" %q {\n", rtName)
-		fmt.Fprintf(&b, "  vpc_id = aws_vpc.%s.id\n", tfName(p.NetworkName))
+		fmt.Fprintf(&b, "  vpc_id = data.aws_vpc.default.id\n")
 		b.WriteString("  route {\n")
 		b.WriteString("    cidr_block = \"0.0.0.0/0\"\n")
 		fmt.Fprintf(&b, "    gateway_id = aws_internet_gateway.%s.id\n", igwName)
@@ -741,7 +734,7 @@ func renderLBAWS(p LoadBalancerPlan) string {
 		for i, s := range p.SubnetNames {
 			assocName := fmt.Sprintf("%s_rta_%d", tfName(p.LBName), i+1)
 			fmt.Fprintf(&b, "resource \"aws_route_table_association\" %q {\n", assocName)
-			fmt.Fprintf(&b, "  subnet_id      = aws_subnet.%s.id\n", subnetResourceLabel(p.NetworkName, s))
+			fmt.Fprintf(&b, "  subnet_id      = data.aws_subnet.%s.id\n", subnetResourceLabel(p.NetworkName, s))
 			fmt.Fprintf(&b, "  route_table_id = aws_route_table.%s.id\n", rtName)
 			b.WriteString("}\n\n")
 		}
@@ -759,7 +752,7 @@ func renderLBAWS(p LoadBalancerPlan) string {
 	if len(p.SubnetNames) > 0 {
 		labels := make([]string, 0, len(p.SubnetNames))
 		for _, s := range p.SubnetNames {
-			labels = append(labels, fmt.Sprintf("aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
+			labels = append(labels, fmt.Sprintf("data.aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
 		}
 		fmt.Fprintf(&b, "  subnets            = [%s]\n", strings.Join(labels, ", "))
 	}
@@ -781,7 +774,7 @@ func renderLBAWS(p LoadBalancerPlan) string {
 	fmt.Fprintf(&b, "  protocol    = %q\n", lbAWSTargetGroupProto(hc.Protocol))
 	b.WriteString("  target_type = \"instance\"\n")
 	if p.NetworkName != "" {
-		fmt.Fprintf(&b, "  vpc_id      = aws_vpc.%s.id\n", tfName(p.NetworkName))
+		fmt.Fprintf(&b, "  vpc_id      = data.aws_vpc.default.id\n")
 	}
 	b.WriteString("  health_check {\n")
 	fmt.Fprintf(&b, "    protocol            = %q\n", lbAWSProto(hc.Protocol))
@@ -1052,7 +1045,7 @@ func renderMDBAWS(p ManagedDatabasePlan) string {
 		fmt.Fprintf(&b, "  name       = \"%s-subnets\"\n", name)
 		labels := make([]string, 0, len(p.SubnetNames))
 		for _, s := range p.SubnetNames {
-			labels = append(labels, fmt.Sprintf("aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
+			labels = append(labels, fmt.Sprintf("data.aws_subnet.%s.id", subnetResourceLabel(p.NetworkName, s)))
 		}
 		fmt.Fprintf(&b, "  subnet_ids = [%s]\n", strings.Join(labels, ", "))
 		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.DBName)
