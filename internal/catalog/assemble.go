@@ -378,7 +378,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				OS: sg.OS, OSVersion: sg.OSVersion,
 				Min: sg.Min, Max: sg.Max, Desired: sg.Desired, Health: sg.Health,
 				UserData: sg.UserData, InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
-				Network: netName, SecurityGroup: vmSG,
+				Network: netName, SecurityGroup: vmSG, Subnets: subnetNames,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
