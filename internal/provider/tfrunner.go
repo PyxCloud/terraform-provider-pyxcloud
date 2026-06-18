@@ -188,10 +188,15 @@ func discoverAWSImportCandidates(ctx context.Context, docs []string) []importCan
 		add("aws_cloudwatch_log_group."+m[1], m[2])
 	}
 	if defaultVPCID := awsDefaultVPCID(ctx); defaultVPCID != "" {
+		sgIDs := map[string]string{}
 		for _, m := range resourceNameRE("aws_security_group").FindAllStringSubmatch(all, -1) {
 			if id := awsSecurityGroupID(ctx, m[2], defaultVPCID); id != "" {
+				sgIDs[m[1]] = id
 				add("aws_security_group."+m[1], id)
 			}
+		}
+		for _, candidate := range awsSecurityGroupRuleImportCandidates(all, sgIDs) {
+			add(candidate.Address, candidate.ID)
 		}
 	}
 	for _, m := range resourceNameRE("aws_autoscaling_group").FindAllStringSubmatch(all, -1) {
@@ -218,6 +223,50 @@ func discoverAWSImportCandidates(ctx context.Context, docs []string) []importCan
 	return candidates
 }
 
+func awsSecurityGroupRuleImportCandidates(hcl string, sgIDs map[string]string) []importCandidate {
+	type sgRuleSpec struct {
+		address   string
+		sgName    string
+		ruleType  string
+		protocol  string
+		fromPort  string
+		toPort    string
+		cidrBlock string
+	}
+	var candidates []importCandidate
+	for _, m := range awsSGRuleRE.FindAllStringSubmatch(hcl, -1) {
+		spec := sgRuleSpec{address: "aws_security_group_rule." + m[1]}
+		body := m[2]
+		if sg := awsSGRuleSGRefRE.FindStringSubmatch(body); len(sg) == 2 {
+			spec.sgName = sg[1]
+		}
+		if cidr := awsSGRuleCIDRRE.FindStringSubmatch(body); len(cidr) == 2 {
+			spec.cidrBlock = cidr[1]
+		}
+		for _, attr := range hclStringAttrRE.FindAllStringSubmatch(body, -1) {
+			switch attr[1] {
+			case "type":
+				spec.ruleType = attr[2]
+			case "protocol":
+				spec.protocol = attr[2]
+			}
+		}
+		spec.fromPort = hclNumberAttr(body, "from_port")
+		spec.toPort = hclNumberAttr(body, "to_port")
+		sgID := sgIDs[spec.sgName]
+		if sgID == "" || spec.ruleType == "" || spec.protocol == "" || spec.fromPort == "" || spec.toPort == "" || spec.cidrBlock == "" {
+			continue
+		}
+		proto := spec.protocol
+		if proto == "-1" {
+			proto = "all"
+		}
+		id := strings.Join([]string{sgID, spec.ruleType, proto, spec.fromPort, spec.toPort, spec.cidrBlock}, "_")
+		candidates = append(candidates, importCandidate{Address: spec.address, ID: id})
+	}
+	return candidates
+}
+
 func resourceNameRE(resourceType string) *regexp.Regexp {
 	return regexp.MustCompile(`(?s)resource\s+"` + regexp.QuoteMeta(resourceType) + `"\s+"([^"]+)"\s+\{.*?\n\s+name\s+=\s+"([^"]+)"`)
 }
@@ -226,7 +275,20 @@ var (
 	iamRolePolicyRE           = regexp.MustCompile(`(?s)resource\s+"aws_iam_role_policy"\s+"([^"]+)"\s+\{.*?\n\s+name\s+=\s+"([^"]+)".*?\n\s+role\s+=\s+aws_iam_role\.([A-Za-z0-9_-]+)\.id`)
 	iamRolePolicyAttachmentRE = regexp.MustCompile(`(?s)resource\s+"aws_iam_role_policy_attachment"\s+"([^"]+)"\s+\{.*?\n\s+role\s+=\s+aws_iam_role\.([A-Za-z0-9_-]+)\.name.*?\n\s+policy_arn\s+=\s+"([^"]+)"`)
 	lbListenerRuleRE          = regexp.MustCompile(`(?s)resource\s+"aws_lb_listener_rule"\s+"([^"]+)"\s+\{.*?\n\s+listener_arn\s+=\s+"([^"]+)".*?\n\s+priority\s+=\s+([0-9]+)`)
+	awsSGRuleRE               = regexp.MustCompile(`(?s)resource\s+"aws_security_group_rule"\s+"([^"]+)"\s+\{(.*?)\n\}`)
+	awsSGRuleSGRefRE          = regexp.MustCompile(`security_group_id\s+=\s+aws_security_group\.([A-Za-z0-9_-]+)\.id`)
+	awsSGRuleCIDRRE           = regexp.MustCompile(`cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
+	hclStringAttrRE           = regexp.MustCompile(`(?m)^\s+([a-zA-Z_]+)\s+=\s+"([^"]*)"`)
 )
+
+func hclNumberAttr(body, name string) string {
+	re := regexp.MustCompile(`(?m)^\s+` + regexp.QuoteMeta(name) + `\s+=\s+(-?\d+)`)
+	m := re.FindStringSubmatch(body)
+	if len(m) != 2 {
+		return ""
+	}
+	return m[1]
+}
 
 func awsOutput(ctx context.Context, args ...string) string {
 	if _, err := exec.LookPath("aws"); err != nil {

@@ -111,3 +111,27 @@ resource "aws_lb_target_group" "beta-api-attach_tg" {
 		t.Fatalf("target group should be skipped when ARN cannot be resolved, got %#v", got)
 	}
 }
+
+func TestAWSSecurityGroupRuleImportCandidates(t *testing.T) {
+	hcl := `
+resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
+  type              = "ingress"
+  security_group_id = aws_security_group.beta-api-sg.id
+  protocol          = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  cidr_blocks       = ["0.0.0.0/0"]
+}
+`
+	got := awsSecurityGroupRuleImportCandidates(hcl, map[string]string{"beta-api-sg": "sg-090dcaa930a166d99"})
+	if len(got) != 1 {
+		t.Fatalf("expected one candidate, got %#v", got)
+	}
+	want := importCandidate{
+		Address: "aws_security_group_rule.beta-api-sg_ingress_0",
+		ID:      "sg-090dcaa930a166d99_ingress_tcp_8080_8080_0.0.0.0/0",
+	}
+	if got[0] != want {
+		t.Fatalf("candidate = %#v, want %#v", got[0], want)
+	}
+}
