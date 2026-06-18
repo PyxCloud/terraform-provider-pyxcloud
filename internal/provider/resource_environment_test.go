@@ -146,6 +146,35 @@ func TestEnvironmentAccessPolicyCanRequestInstanceProfile(t *testing.T) {
 	}
 }
 
+func TestNormalizeEnvironmentComputedValuesFillsUnknownCounts(t *testing.T) {
+	m := environmentModel{
+		PyxAccessPolicy: []envComponentModel{{
+			Name:  types.StringValue("role"),
+			Count: types.Int64Unknown(),
+		}},
+		PyxMonitoring: []envComponentModel{{
+			Name:  types.StringValue("obs"),
+			Count: types.Int64Null(),
+		}},
+		PyxDNS: []envComponentModel{{
+			Name:  types.StringValue("dns"),
+			Count: types.Int64Value(2),
+		}},
+	}
+
+	normalizeEnvironmentComputedValues(&m)
+
+	if got := m.PyxAccessPolicy[0].Count.ValueInt64(); got != 1 {
+		t.Fatalf("unknown access-policy count = %d, want 1", got)
+	}
+	if got := m.PyxMonitoring[0].Count.ValueInt64(); got != 1 {
+		t.Fatalf("null monitoring count = %d, want 1", got)
+	}
+	if got := m.PyxDNS[0].Count.ValueInt64(); got != 2 {
+		t.Fatalf("explicit dns count = %d, want 2", got)
+	}
+}
+
 func TestEnvironmentModeSelector(t *testing.T) {
 	t.Parallel()
 	// Mode A: no account_binding.

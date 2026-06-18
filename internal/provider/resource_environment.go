@@ -795,6 +795,40 @@ func hasDatabaseFields(cm envComponentModel) bool {
 	return nonEmptyString(cm.Engine) || nonEmptyString(cm.Version) || intSet(cm.StorageGB) || boolSet(cm.HA) || boolSet(cm.Encrypted)
 }
 
+func normalizeEnvironmentComputedValues(m *environmentModel) {
+	normalizeComponentCounts := func(components []envComponentModel) {
+		for i := range components {
+			if components[i].Count.IsNull() || components[i].Count.IsUnknown() || components[i].Count.ValueInt64() <= 0 {
+				components[i].Count = types.Int64Value(1)
+			}
+		}
+	}
+	normalizeComponentCounts(m.PyxVPC)
+	normalizeComponentCounts(m.PyxNetworkRule)
+	normalizeComponentCounts(m.PyxAccessPolicy)
+	normalizeComponentCounts(m.PyxMonitoring)
+	normalizeComponentCounts(m.PyxDNS)
+	normalizeComponentCounts(m.PyxVirtualMachine)
+	normalizeComponentCounts(m.PyxAutoscaleVirtualMachineGroup)
+	normalizeComponentCounts(m.PyxDatabase)
+	normalizeComponentCounts(m.PyxLoadBalancer)
+	normalizeComponentCounts(m.PyxCache)
+	normalizeComponentCounts(m.PyxObjectStorage)
+	normalizeComponentCounts(m.PyxSecret)
+	normalizeComponentCounts(m.PyxQueue)
+	normalizeComponentCounts(m.PyxStream)
+	normalizeComponentCounts(m.PyxServerlessFunction)
+	normalizeComponentCounts(m.PyxKMS)
+	normalizeComponentCounts(m.PyxCDN)
+	normalizeComponentCounts(m.PyxWAF)
+	normalizeComponentCounts(m.PyxKubernetes)
+	normalizeComponentCounts(m.PyxEmail)
+	normalizeComponentCounts(m.PyxBlockStorage)
+	normalizeComponentCounts(m.PyxPrefixList)
+	normalizeComponentCounts(m.PyxSynthetics)
+	normalizeComponentCounts(m.PyxALBAttachment)
+}
+
 func intSet(v types.Int64) bool {
 	return !v.IsNull() && !v.IsUnknown() && v.ValueInt64() != 0
 }
@@ -880,6 +914,7 @@ func (r *environmentResource) Create(ctx context.Context, req resource.CreateReq
 
 	plan.ID = types.StringValue(plan.Name.ValueString())
 	plan.WorkDir = types.StringValue(workDir)
+	normalizeEnvironmentComputedValues(&plan)
 	outMap, diags := types.MapValueFrom(ctx, types.StringType, outputs)
 	resp.Diagnostics.Append(diags...)
 	plan.Outputs = outMap
@@ -926,6 +961,7 @@ func (r *environmentResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 	plan.ID = types.StringValue(plan.Name.ValueString())
 	plan.WorkDir = types.StringValue(workDir)
+	normalizeEnvironmentComputedValues(&plan)
 	outMap, diags := types.MapValueFrom(ctx, types.StringType, outputs)
 	resp.Diagnostics.Append(diags...)
 	plan.Outputs = outMap
