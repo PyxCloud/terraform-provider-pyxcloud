@@ -80,26 +80,67 @@ func TestAssembleHCLIAMComponent(t *testing.T) {
 	}
 }
 
-func TestAssembleHCLAccessPolicyComponent(t *testing.T) {
-	cat, err := NewEmbedded()
-	if err != nil {
-		t.Fatal(err)
-	}
-	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
-		Name: "demo", Provider: "aws", Region: "Dublin",
-		Components: []AssembleComponent{
-			{Name: "app-role", Type: "access-policy", IAM: &AssembleIAM{
-				InstanceProfile:   true,
-				ManagedPolicyARNs: []string{"arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"},
-			}},
-		},
+func TestAssembleHCLAccessPolicyAWS(t *testing.T) {
+	docs, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
+		Name:     "demo",
+		Provider: "aws",
+		Region:   "Dublin",
+		Components: []AssembleComponent{{
+			Name: "app-policy",
+			Type: "access-policy",
+			IAM: &AssembleIAM{InlinePolicies: []IAMPolicy{{
+				Name:     "s3",
+				Document: `{"Version":"2012-10-17","Statement":[]}`,
+			}}},
+		}},
 	})
 	if err != nil {
-		t.Fatalf("AssembleHCL access-policy: %v", err)
+		t.Fatalf("AssembleHCL access-policy aws: %v", err)
 	}
 	all := strings.Join(docs, "\n")
-	if !strings.Contains(all, "resource \"aws_iam_role\" \"app-role\"") ||
-		!strings.Contains(all, "resource \"aws_iam_instance_profile\" \"app-role\"") {
-		t.Errorf("assembled access-policy HCL missing role/instance-profile:\n%s", all)
+	for _, want := range []string{
+		`resource "aws_iam_policy" "app-policy-s3"`,
+		`policy = <<-PYXIAMPOLICY`,
+		`"Version":"2012-10-17"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("AWS access-policy HCL missing %q\n%s", want, all)
+		}
+	}
+	if strings.Contains(all, "# pyxcloud mitigation:") {
+		t.Errorf("access-policy should not use VM mitigation:\n%s", all)
+	}
+}
+
+func TestAssembleHCLAccessPolicyPortable(t *testing.T) {
+	docs, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
+		Name:     "demo",
+		Provider: ProviderDigitalOcean,
+		Region:   "Frankfurt",
+		Components: []AssembleComponent{{
+			Name: "app-policy",
+			Type: "access-policy",
+			IAM: &AssembleIAM{InlinePolicies: []IAMPolicy{{
+				Name:     "s3",
+				Document: `{"Version":"2012-10-17","Statement":[]}`,
+			}}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL access-policy portable: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`resource "terraform_data" "app-policy-s3"`,
+		`provider = "digitalocean"`,
+		`document = <<-PYXIAMPOLICY`,
+		`"Version":"2012-10-17"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("portable access-policy HCL missing %q\n%s", want, all)
+		}
+	}
+	if strings.Contains(all, "# pyxcloud mitigation:") || strings.Contains(all, "resource \"digitalocean_droplet\"") {
+		t.Errorf("access-policy should not self-host on VM:\n%s", all)
 	}
 }

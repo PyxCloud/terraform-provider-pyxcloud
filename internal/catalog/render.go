@@ -1351,6 +1351,15 @@ func RenderIAMHCL(p IAMPlan) (string, error) {
 	}
 }
 
+func RenderAccessPolicyHCL(p AccessPolicyPlan) (string, error) {
+	switch p.Provider {
+	case ProviderAWS:
+		return renderAccessPolicyAWS(p), nil
+	default:
+		return renderAccessPolicyPortable(p), nil
+	}
+}
+
 // iamHeredoc wraps a raw policy JSON document as an HCL indented heredoc so the
 // JSON (quotes, $, braces) needs no escaping.
 func iamHeredoc(s string) string {
@@ -1398,6 +1407,46 @@ func renderIAMAWS(p IAMPlan) string {
 		fmt.Fprintf(&b, "resource \"aws_iam_instance_profile\" %q {\n", role)
 		fmt.Fprintf(&b, "  name = %q\n", p.Name)
 		fmt.Fprintf(&b, "  role = aws_iam_role.%s.name\n", role)
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderAccessPolicyAWS(p AccessPolicyPlan) string {
+	var b strings.Builder
+	for _, pol := range p.InlinePolicies {
+		pn := tfName(p.Name + "-" + pol.Name)
+		fmt.Fprintf(&b, "resource \"aws_iam_policy\" %q {\n", pn)
+		fmt.Fprintf(&b, "  name   = %q\n", p.Name+"-"+pol.Name)
+		fmt.Fprintf(&b, "  policy = %s\n", iamHeredoc(pol.Document))
+		b.WriteString("  tags = { pyxcloud = \"true\" }\n")
+		b.WriteString("}\n\n")
+	}
+	for i, arn := range p.ManagedPolicyARNs {
+		rn := tfName(fmt.Sprintf("%s-managed-%d", p.Name, i+1))
+		fmt.Fprintf(&b, "resource \"terraform_data\" %q {\n", rn)
+		fmt.Fprintf(&b, "  input = { policy_arn = %q }\n", arn)
+		b.WriteString("}\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderAccessPolicyPortable(p AccessPolicyPlan) string {
+	var b strings.Builder
+	for _, pol := range p.InlinePolicies {
+		pn := tfName(p.Name + "-" + pol.Name)
+		fmt.Fprintf(&b, "resource \"terraform_data\" %q {\n", pn)
+		b.WriteString("  input = {\n")
+		fmt.Fprintf(&b, "    provider = %q\n", p.Provider)
+		fmt.Fprintf(&b, "    name     = %q\n", pol.Name)
+		fmt.Fprintf(&b, "    document = %s\n", iamHeredoc(pol.Document))
+		b.WriteString("  }\n")
+		b.WriteString("}\n\n")
+	}
+	for i, arn := range p.ManagedPolicyARNs {
+		rn := tfName(fmt.Sprintf("%s-managed-%d", p.Name, i+1))
+		fmt.Fprintf(&b, "resource \"terraform_data\" %q {\n", rn)
+		fmt.Fprintf(&b, "  input = { provider = %q, policy_arn = %q }\n", p.Provider, arn)
 		b.WriteString("}\n\n")
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
