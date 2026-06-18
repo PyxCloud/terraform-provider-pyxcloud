@@ -374,6 +374,7 @@ func TestAssembleHCLNetworkRulesWireEnvironmentSG(t *testing.T) {
 	all := strings.Join(docs, "\n")
 	for _, want := range []string{
 		`resource "aws_security_group" "beta-api-sg"`,
+		`cidr_blocks = ["0.0.0.0/0"]`,
 		`vpc_security_group_ids = [aws_security_group.beta-api-sg.id]`,
 		`resource "aws_security_group_rule" "alb-to-api"`,
 		`security_group_id = aws_security_group.beta-api-sg.id`,
