@@ -17,7 +17,7 @@ func TestEnvironmentSchemaHasDualModeSelector(t *testing.T) {
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("environment schema diagnostics: %+v", resp.Diagnostics)
 	}
-	for _, attr := range []string{"id", "name", "cloud", "region", "pyx_virtual_machine", "account_binding", "work_dir", "outputs"} {
+	for _, attr := range []string{"id", "name", "cloud", "region", "expose", "pyx_virtual_machine", "account_binding", "work_dir", "outputs"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("expected '%s' attribute on pyxcloud_environment", attr)
 		}
@@ -79,6 +79,7 @@ func TestEnvironmentAssembleInputUsesFlatComponentFields(t *testing.T) {
 		Name:     types.StringValue("production"),
 		Provider: types.StringValue("aws"),
 		Region:   types.StringValue("Dublin"),
+		Expose:   []types.Int64{types.Int64Value(8080)},
 		PyxAutoscaleVirtualMachineGroup: []envComponentModel{{
 			Path:                types.StringValue("/0/Europe/0/Web-Net/0/app"),
 			Name:                types.StringValue("app"),
@@ -102,6 +103,9 @@ func TestEnvironmentAssembleInputUsesFlatComponentFields(t *testing.T) {
 	})
 	if len(in.Components) != 1 {
 		t.Fatalf("components = %d, want 1", len(in.Components))
+	}
+	if len(in.Expose) != 1 || in.Expose[0] != 8080 {
+		t.Fatalf("expose = %+v, want [8080]", in.Expose)
 	}
 	comp := in.Components[0]
 	if comp.Path != "/0/Europe/0/Web-Net/0/app" {
