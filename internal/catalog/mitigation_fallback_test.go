@@ -86,6 +86,8 @@ func TestAssembleHCLFallbackServicesSelfHostOnVM(t *testing.T) {
 				"# pyxcloud mitigation:",
 				tc.vmResource,
 				tc.image,
+				"user_data = <<-PYXUSERDATA",
+				"docker run -d --restart=always",
 			} {
 				if !strings.Contains(all, want) {
 					t.Fatalf("fallback HCL missing %q\n---\n%s", want, all)

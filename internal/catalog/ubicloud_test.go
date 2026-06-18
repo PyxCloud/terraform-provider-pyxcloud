@@ -165,6 +165,31 @@ func TestUbicloudVMRender(t *testing.T) {
 	}
 }
 
+func TestUbicloudVMRendersUserData(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateVM(context.Background(), MustEmbedded(), VMSpec{
+		Name: "bootstrap", Region: "Frankfurt", Provider: ProviderUbicloud,
+		Architecture: "x86_64", CPU: 2, RAM: 8, OS: "ubuntu",
+		Network: "production", UserData: "#!/bin/bash\necho pyxcloud\n",
+	})
+	if err != nil {
+		t.Fatalf("TranslateVM: %v", err)
+	}
+	hcl, err := RenderVMHCL(plan)
+	if err != nil {
+		t.Fatalf("RenderVMHCL: %v", err)
+	}
+	for _, want := range []string{
+		"user_data = <<-PYXUSERDATA",
+		"echo pyxcloud",
+		"PYXUSERDATA",
+	} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("ubicloud user_data HCL missing %q\n%s", want, hcl)
+		}
+	}
+}
+
 func TestUbicloudVMUnknownSizeIsCleanError(t *testing.T) {
 	t.Parallel()
 	// No standard-3 (3 vCPU) in the catalog -> hard error listing nearest sizes.
