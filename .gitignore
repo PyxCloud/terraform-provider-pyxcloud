@@ -4,9 +4,10 @@
 *.out
 /terraform-provider-pyxcloud
 /pyxnet-render
+/pyxenv-render
 
 # Terraform
-.terraform/
+**/.terraform/
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.*

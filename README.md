@@ -1,5 +1,19 @@
 # terraform-provider-pyxcloud
 
+## Legal
+
+This provider is open-source software licensed under the
+[Mozilla Public License 2.0](LICENSE).
+
+The PyxCloud platform — including its cloud abstraction engine, catalog-driven
+resource resolution, pricing comparison, and infrastructure translation
+technology — is proprietary and protected by one or more pending patent
+applications. This open-source license covers only the provider code in this
+repository and does not grant any rights under those patents except as they
+pertain to the provider source code itself.
+
+"PyxCloud" and the PyxCloud logo are trademarks of PyxCloud.
+
 A Terraform provider for the [PyxCloud](https://passo.build) platform, built on
 the modern [terraform-plugin-framework](https://github.com/hashicorp/terraform-plugin-framework).
 

@@ -1,157 +1,28 @@
-# PyxCloud Provider — Apply Path (how a topology becomes a real environment)
+# PyxCloud Provider — Topology Deployment Specification
 
-> Spec for how `terraform apply` of a `pyxcloud_topology` actually **provisions an
-> environment** — the apply half of "environment builds via the pyxcloud provider
-> instead of per-provider terraform". Spec-first, per the repo methodology
-> (SPEC.md). Status: **proposed**.
+This document describes how a `pyxcloud_topology` resource is provisioned into a real cloud environment during `terraform apply`.
 
-## 0. Two apply modes (DEFAULT = env-credential, no gate)
+## 1. Deployment Modes
 
-The cloud credentials decide the architecture. There are two modes; **mode A is the
-default** and is what replaces today's per-provider terraform scripts.
+The provider supports two primary deployment modes:
 
-### Mode A — env-credential, terraform-native (DEFAULT, no accountBinding, no gate)
+### Mode A: Provider-Native (Default)
+In this mode, the deployment is executed where the Terraform CLI is run (e.g., local workstation, runner, or CI pipeline).
+1. The provider sends the topology configuration to the PyxCloud API to translate it into concrete, provider-specific Terraform configuration files (`.tf`).
+2. The provider executes the translated configuration locally using an embedded Terraform runner.
+3. Credentials are resolved natively from the standard environment chain (e.g., `AWS_ACCESS_KEY_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, etc.).
+4. The deployment state is written directly back to the Terraform state.
 
-The apply runs **where the standard provider credentials already live** — the runner /
-CI / shell executing terraform — exactly like the per-provider scripts do today. The
-provider:
+### Mode B: Backend-Driven Deployment (Optional)
+For environments where local execution is restricted, the deployment can be delegated to the PyxCloud backend.
+1. The provider requests the backend to perform the deployment.
+2. The backend uses the credentials stored in the corresponding `account_binding` to provision the resources.
+3. The deployment is executed via secure server-side pipeline workers.
 
-1. calls the live backend `POST /api/translate` (the catalog-driven abstract→concrete
-   translation) to get the concrete provider `.tf` for the topology + `{provider,
-   region}`;
-2. **executes** that `.tf` itself via an embedded terraform run (`terraform-exec`) in a
-   work dir, letting the cloud providers resolve creds from the **standard env-var
-   chain** — AWS `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`/
-   `AWS_REGION` (or `AWS_PROFILE`), GCP `GOOGLE_APPLICATION_CREDENTIALS`/`GOOGLE_CREDENTIALS`,
-   DigitalOcean `DIGITALOCEAN_TOKEN`, etc.;
-3. records the terraform state/outputs on the resource.
+## 2. Security and Gateways
 
-**No `accountBinding`, no backend-side cloud credentials, no approval/step-up token, and
-no raw secrets ever sent to the API** (CLAUDE.md: secrets never echoed raw). Authorization
-is the cloud's own IAM via the ambient credentials — the same trust model the current
-scripts rely on. This is the path that makes `terraform apply` build a real environment
-out of the box.
+To protect infrastructure, deployments via Mode B require explicit authorization:
 
-`region` may be the abstract pyx `region_name` (translated to a cspRegion by the backend)
-or, when present, the standard provider region env (`AWS_REGION`) as the default.
-
-### Mode B — backend-driven deploy (OPTIONAL, accountBinding + gate)
-
-For users who want **PyxCloud** to drive the deploy server-side (no local terraform; the
-backend writes the `.tf` to a repo + a GitHub Actions pipeline applies it), the existing
-`VibeDeployService.deployDirect` path applies, which needs a stored `accountBinding` for
-cloud creds. That server-driven path is non-interactive and therefore needs the
-service-account deploy gate specified in §1–§5 below. **Mode B is opt-in; Mode A needs
-none of §1–§5.**
-
----
-
-## 1. The problem (Mode B only)
-
-The backend deploy path (`POST /vibe/deploy/direct` → `VibeDeployService.deployDirect`)
-already turns a canonical topology + `{provider, cspRegion, accountBindingId}` into a
-real environment (writes the translated `.tf` to a repo + a GitHub Actions pipeline
-applies it). But it is gated, deliberately, by **two human-interactive controls** that a
-non-interactive `terraform apply` cannot satisfy:
-
-1. **Step-up auth** — `@StepUpAuthRequired(audience="stepup")` requires a fresh
-   `X-StepUp-Token` (or ACR≥1 MFA), tied to the human subject/org
-   (`StepUpAuthFilter`).
-2. **Payload-bound approval token** — `X-Approval-Token`, an Ed25519-signed token whose
-   `subject = sha256(action + ":" + canonicalJson(request))` binds it to the **exact**
-   deploy payload (`verifyDeployApproval`). Issued by the **host** key for normal
-   deploys.
-
-We will NOT bypass either. Instead we add a **narrow, precedented** non-interactive
-path for an authorized **service principal**, preserving payload-binding integrity.
-
-## 2. Precedent we mirror: `pyx:automigrate`
-
-`verifyDeployApproval` already supports a **delegated-key** path for exactly one action:
-
-- `pyx:automigrate` tokens are signed by a **DELEGATED** Ed25519 key (`issuedBy:"automigrate"`,
-  `automigratePublicKey`), not the host key.
-- The token stays **payload-bound** (same `subject` hash rule).
-- A **policy check** gates validity: the token is honored only if backed by an active,
-  opted-in `PyxfileDeployment` (`minSavingsPct > 0`, not `DESTROYED`).
-- The delegated **private** key lives in Vault (`secret/system/automigrate/signing-key`);
-  only the public half is configured on the backend.
-
-This is the template: a delegated key + a policy check + payload binding = a scoped,
-auditable, non-interactive authorization that cannot be replayed against a different
-payload and cannot deploy anything the policy doesn't allow.
-
-## 3. Design
-
-### 3.1 Action + delegated key
-
-- New action **`pyx:deploy-provider`** (distinct from `pyx:deploy-direct`).
-- New **delegated Ed25519 key** `tf-deployer` (`issuedBy:"tf-deployer"`), private half in
-  Vault (`secret/system/tf-deployer/signing-key`), public half configured as
-  `pyx.tfdeployer.approval.public-key` (mirrors `automigratePublicKey`). Generated by the
-  same `infrastructure/scripts/gen-*-key.sh` pattern.
-
-### 3.2 Step-up exemption (StepUpAuthFilter)
-
-Add a **service-account exemption**, gated narrowly: if the caller is a service account
-(SSO `sub` prefixed `service-account-`) **and** holds the dedicated realm role
-**`tf-deployer`**, the step-up check is satisfied without an `X-StepUp-Token`. Mirrors the
-MCP service-account exemption (`auth.go authorizeMCPAccess`). Human callers are unchanged.
-
-### 3.3 Approval (verifyDeployApproval)
-
-Extend the delegated-key branch for `pyx:deploy-provider`:
-- verify with `tfdeployerPublicKey`, `expectedIssuer="tf-deployer"`;
-- keep the **payload-bound `subject`** check (no change to integrity);
-- **policy check**: the token's `accountBindingId` must belong to the calling service
-  principal's org/owner, and (optionally) the target `provider`/`region` must be on an
-  allow-list carried in the token payload (`allowedProviders`, `allowedRegions`). A
-  mismatch → `approval_policy_not_authorized`.
-
-### 3.4 Token issuance
-
-A backend signer (service, holding the Vault private key) issues a `pyx:deploy-provider`
-token for a specific canonical payload only after the policy passes — analogous to how the
-automigrate authorizer mints its token. The provider never sees the private key.
-
-### 3.5 Endpoint + provider wiring
-
-- Backend: `POST /api/topology/{id}/deploy` (SSO + `@StepUpAuthRequired(audience="stepup")`,
-  satisfied by the §3.2 exemption) → loads the owner-scoped stored topology, resolves
-  cspRegion (`RegionResolver`), verifies the `pyx:deploy-provider` approval (§3.3), calls
-  `VibeDeployService.deployDirect`, persists deployment state on `ProviderTopology`.
-- Provider: `pyxcloud_topology` Create/Update calls the deploy endpoint with the
-  service-principal bearer + the issued approval token; stores deploy outputs (commit sha,
-  status) in state. Delete → a teardown/destroy endpoint.
-- Provider config: an `account_binding` attribute (the cloud-creds binding id) — the
-  out-of-band-credential pattern the wave-1/OVH components already use for ARNs / DB
-  passwords; never in the canonical topology or state plaintext.
-
-## 4. What stays unchanged (the guardrails)
-
-- Payload-binding: every deploy token is still `subject = sha256(action+canonicalJson)`;
-  a tampered payload invalidates it.
-- Human deploys still require step-up + host-issued approval. The exemption is ONLY for a
-  service principal holding the dedicated `tf-deployer` role.
-- The delegated key is scoped to `pyx:deploy-provider` only; it cannot sign host actions.
-- Private keys never leave Vault; the provider/runner only ever holds short-lived tokens.
-
-## 5. Build order (each its own reviewable PR)
-
-### Mode A (DEFAULT — env-credential, ship this first; needs none of §1–§4)
-A1. Provider client: consume `POST /api/translate` (done — `client.Translate`).
-A2. `pyxcloud_topology` Create/Read/Update/Delete runs an embedded terraform
-    (`terraform-exec`) over the backend-translated `.tf` in a work dir, inheriting the
-    process env (so the cloud providers resolve creds from `AWS_*` / `GOOGLE_*` /
-    `DIGITALOCEAN_TOKEN`). State/outputs stored on the resource. No accountBinding.
-A3. Pilot: one repo's macro components end-to-end (plan → translate → apply → destroy)
-    against a test cloud account via env creds.
-
-### Mode B (OPTIONAL — backend-driven, needs the §1–§4 gate)
-B1. Delegated key: gen script + Vault path + `tfdeployerPublicKey` config.
-B2. `verifyDeployApproval`: `pyx:deploy-provider` delegated branch + policy check + tests.
-B3. `StepUpAuthFilter`: service-account `tf-deployer` exemption + tests.
-B4. SSO: realm role `tf-deployer` + service-account client (single-sign-on repo).
-B5. Backend `POST /api/topology/{id}/deploy` (server-driven deployDirect) + token issuer
-    + deployment-state persistence.
-B6. Provider: optional `account_binding` attribute selecting Mode B.
+- **Service Authorization**: Non-interactive deployments must use a service account with the appropriate deployment roles.
+- **Payload Integrity**: Every deployment request is cryptographically bound to the exact payload configuration. The backend verifies the signature and parameters before execution to prevent configuration tampering.
+- **Policy Enforcement**: Target providers and regions are checked against organizational policies and allowed configurations prior to provisioning.

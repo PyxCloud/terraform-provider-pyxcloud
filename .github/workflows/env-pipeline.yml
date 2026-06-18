@@ -44,10 +44,10 @@ jobs:
       EXAMPLE: ${{ github.event.inputs.example || 'environment' }}
       ACTION: ${{ github.event.inputs.action || 'plan' }}
       # Backend + machine auth (provider authenticates as its own OAuth2.1 client; no user login).
-      PYXCLOUD_ENDPOINT: ${{ vars.PYXCLOUD_ENDPOINT || 'https://beta-api.pyxcloud.io' }}
+      PYXCLOUD_ENDPOINT: ${{ vars.PYXCLOUD_ENDPOINT }}
       PYXCLOUD_CLIENT_ID: ${{ secrets.PYXCLOUD_CLIENT_ID }}
       PYXCLOUD_CLIENT_SECRET: ${{ secrets.PYXCLOUD_CLIENT_SECRET }}
-      PYXCLOUD_TOKEN_URL: ${{ vars.PYXCLOUD_TOKEN_URL || 'https://beta-auth.pyxcloud.io/realms/passobuild/protocol/openid-connect/token' }}
+      PYXCLOUD_TOKEN_URL: ${{ vars.PYXCLOUD_TOKEN_URL }}
       # Ambient cloud creds for the INNER terraform run (Mode A).
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
