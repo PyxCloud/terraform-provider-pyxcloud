@@ -14,9 +14,9 @@ provider "pyxcloud" {
 # A canonical topology: provider-independent pyx_* components + sizing, pinned to a
 # deployment provider and abstract macro-region.
 resource "pyxcloud_topology" "web" {
-  name     = "web-stack"
-  cloud    = "aws"
-  region   = "Frankfurt" # abstract pyx region_name; resolved to a csp_region via the catalog
+  name   = "web-stack"
+  cloud  = "aws"
+  region = "Frankfurt" # abstract pyx region_name; resolved to a csp_region via the catalog
 
   # Abstract network for the place (pd-TF-REGION-VPC): provider-neutral VPC CIDR
   # + subnet CIDRs. The provider resolves region -> csp_region from the catalog
@@ -39,22 +39,22 @@ resource "pyxcloud_topology" "web" {
     ]
   }
 
-  pyx_autoscale_virtual_machine_group {
-    name  = "app"
-    count = 3
+  pyx_autoscale_virtual_machine_group = [{
+    name         = "app"
+    count        = 3
     architecture = "x86_64"
     cpu          = "2"
     ram          = "4"
     os_name      = "ubuntu"
-  }
+  }]
 
-  pyx_load_balancer {
+  pyx_load_balancer = [{
     name = "edge"
-  }
+  }]
 
-  pyx_database {
+  pyx_database = [{
     name = "db"
-  }
+  }]
 }
 
 # Compare the equivalent topology priced across providers and regions — the
@@ -62,22 +62,22 @@ resource "pyxcloud_topology" "web" {
 data "pyxcloud_compare" "options" {
   name = "web-stack"
 
-  pyx_autoscale_virtual_machine_group {
-    name  = "app"
-    count = 3
+  pyx_autoscale_virtual_machine_group = [{
+    name         = "app"
+    count        = 3
     architecture = "x86_64"
     cpu          = "2"
     ram          = "4"
     os_name      = "ubuntu"
-  }
+  }]
 
-  pyx_load_balancer {
+  pyx_load_balancer = [{
     name = "edge"
-  }
+  }]
 
-  pyx_database {
+  pyx_database = [{
     name = "db"
-  }
+  }]
 
   candidates {
     provider = "aws"

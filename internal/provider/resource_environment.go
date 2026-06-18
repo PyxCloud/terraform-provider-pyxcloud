@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
@@ -658,6 +659,9 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		}
 		if typed.canonicalType == "access-policy" || nonEmptyString(cm.AssumeService) || len(cm.ManagedPolicyARNs) > 0 || len(cm.InlinePolicies) > 0 {
 			iam := &catalog.AssembleIAM{AssumeService: cm.AssumeService.ValueString()}
+			if typed.canonicalType == "access-policy" && strings.EqualFold(strings.TrimSpace(cm.InstanceProfileName.ValueString()), "true") {
+				iam.InstanceProfile = true
+			}
 			for _, arn := range cm.ManagedPolicyARNs {
 				iam.ManagedPolicyARNs = append(iam.ManagedPolicyARNs, arn.ValueString())
 			}

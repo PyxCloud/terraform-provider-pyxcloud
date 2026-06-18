@@ -121,6 +121,31 @@ func TestEnvironmentAssembleInputUsesFlatComponentFields(t *testing.T) {
 	}
 }
 
+func TestEnvironmentAccessPolicyCanRequestInstanceProfile(t *testing.T) {
+	t.Parallel()
+	r := &environmentResource{}
+	in := r.assembleInputFromModel(environmentModel{
+		Name:     types.StringValue("production"),
+		Provider: types.StringValue("aws"),
+		Region:   types.StringValue("Dublin"),
+		PyxAccessPolicy: []envComponentModel{{
+			Name:                types.StringValue("api-role"),
+			AssumeService:       types.StringValue("ec2.amazonaws.com"),
+			InstanceProfileName: types.StringValue("true"),
+		}},
+	})
+
+	if len(in.Components) != 1 {
+		t.Fatalf("components = %d, want 1", len(in.Components))
+	}
+	if in.Components[0].IAM == nil {
+		t.Fatal("expected access-policy to populate IAM")
+	}
+	if !in.Components[0].IAM.InstanceProfile {
+		t.Fatal("expected instance_profile=\"true\" to request an IAM instance profile")
+	}
+}
+
 func TestEnvironmentModeSelector(t *testing.T) {
 	t.Parallel()
 	// Mode A: no account_binding.
