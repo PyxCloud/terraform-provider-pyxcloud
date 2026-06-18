@@ -39,14 +39,17 @@ func NewEnvironmentResource() resource.Resource {
 
 // environmentModel maps the pyxcloud_environment resource.
 type environmentModel struct {
-	ID             types.String        `tfsdk:"id"`
-	Name           types.String        `tfsdk:"name"`
-	Provider       types.String        `tfsdk:"cloud"`
-	Region         types.String        `tfsdk:"region"`
-	Components     []envComponentModel `tfsdk:"components"`
-	AccountBinding types.String        `tfsdk:"account_binding"`
-	WorkDir        types.String        `tfsdk:"work_dir"`
-	Outputs        types.Map           `tfsdk:"outputs"`
+	ID              types.String        `tfsdk:"id"`
+	Name            types.String        `tfsdk:"name"`
+	Provider        types.String        `tfsdk:"cloud"`
+	Region          types.String        `tfsdk:"region"`
+	Components      []envComponentModel `tfsdk:"components"`
+	AccountBinding  types.String        `tfsdk:"account_binding"`
+	WorkDir         types.String        `tfsdk:"work_dir"`
+	BackendS3Bucket types.String        `tfsdk:"backend_s3_bucket"`
+	BackendS3Key    types.String        `tfsdk:"backend_s3_key"`
+	BackendS3Region types.String        `tfsdk:"backend_s3_region"`
+	Outputs         types.Map           `tfsdk:"outputs"`
 }
 
 // envComponentModel is the env-resource-specific component (decoupled from the
@@ -381,6 +384,18 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				MarkdownDescription: "Directory where the translated terraform runs and its state lives. " +
 					"Must be stable for the resource lifecycle; defaults to `${cwd}/.pyxcloud/environments/<name>`.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"backend_s3_bucket": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Optional S3 bucket for the translated child Terraform state. Set with backend_s3_key/backend_s3_region for durable CI applies.",
+			},
+			"backend_s3_key": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Optional S3 key for the translated child Terraform state.",
+			},
+			"backend_s3_region": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Optional AWS region for the translated child Terraform S3 backend.",
 			},
 			"outputs": schema.MapAttribute{
 				Computed:            true,
@@ -740,6 +755,24 @@ func (r *environmentResource) resolveWorkDir(m *environmentModel) (string, error
 	return filepath.Join(cwd, ".pyxcloud", "environments", m.Name.ValueString()), nil
 }
 
+func environmentBackendDoc(m environmentModel) string {
+	if !nonEmptyString(m.BackendS3Bucket) && !nonEmptyString(m.BackendS3Key) && !nonEmptyString(m.BackendS3Region) {
+		return ""
+	}
+	if !nonEmptyString(m.BackendS3Bucket) || !nonEmptyString(m.BackendS3Key) || !nonEmptyString(m.BackendS3Region) {
+		return ""
+	}
+	return fmt.Sprintf(`terraform {
+  backend "s3" {
+    bucket  = %q
+    key     = %q
+    region  = %q
+    encrypt = true
+  }
+}
+`, m.BackendS3Bucket.ValueString(), m.BackendS3Key.ValueString(), m.BackendS3Region.ValueString())
+}
+
 // errModeBNotEnabled is returned when the managed-account path is selected before
 // the server-side managed-deploy gate is available.
 var errModeBNotEnabled = fmt.Errorf("managed-account deploy (Mode B, account_binding set) is not yet enabled: " +
@@ -764,6 +797,9 @@ func (r *environmentResource) translateAndApply(ctx context.Context, m *environm
 	}
 	if len(docs) == 0 {
 		return nil, "", fmt.Errorf("translation produced no terraform for this topology")
+	}
+	if backendDoc := environmentBackendDoc(*m); backendDoc != "" {
+		docs = append([]string{backendDoc}, docs...)
 	}
 	workDir, err := r.resolveWorkDir(m)
 	if err != nil {

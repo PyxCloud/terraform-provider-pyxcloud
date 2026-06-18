@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	fwresource "github.com/hashicorp/terraform-plugin-framework/resource"
@@ -17,7 +18,7 @@ func TestEnvironmentSchemaHasDualModeSelector(t *testing.T) {
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("environment schema diagnostics: %+v", resp.Diagnostics)
 	}
-	for _, attr := range []string{"id", "name", "cloud", "region", "components", "account_binding", "work_dir", "outputs"} {
+	for _, attr := range []string{"id", "name", "cloud", "region", "components", "account_binding", "work_dir", "backend_s3_bucket", "backend_s3_key", "backend_s3_region", "outputs"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("expected '%s' attribute on pyxcloud_environment", attr)
 		}
@@ -26,6 +27,28 @@ func TestEnvironmentSchemaHasDualModeSelector(t *testing.T) {
 	r.Metadata(context.Background(), fwresource.MetadataRequest{ProviderTypeName: "pyxcloud"}, mresp)
 	if mresp.TypeName != "pyxcloud_environment" {
 		t.Errorf("type name = %s want pyxcloud_environment", mresp.TypeName)
+	}
+}
+
+func TestEnvironmentBackendS3Doc(t *testing.T) {
+	t.Parallel()
+	m := environmentModel{
+		BackendS3Bucket: types.StringValue("pyxcloud-terraform-state"),
+		BackendS3Key:    types.StringValue("pyxcloud-environments/beta-api/terraform.tfstate"),
+		BackendS3Region: types.StringValue("eu-west-1"),
+	}
+	doc := environmentBackendDoc(m)
+	for _, want := range []string{
+		`terraform {`,
+		`backend "s3" {`,
+		`bucket  = "pyxcloud-terraform-state"`,
+		`key     = "pyxcloud-environments/beta-api/terraform.tfstate"`,
+		`region  = "eu-west-1"`,
+		`encrypt = true`,
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("backend doc missing %q\n%s", want, doc)
+		}
 	}
 }
 
