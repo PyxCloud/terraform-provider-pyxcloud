@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-exec/tfexec"
@@ -25,6 +26,11 @@ import (
 type tfRunner struct {
 	workDir  string
 	execPath string
+}
+
+type importCandidate struct {
+	Address string
+	ID      string
 }
 
 // newTFRunner locates the terraform binary on PATH and prepares the work dir.
@@ -86,6 +92,7 @@ func (r *tfRunner) apply(ctx context.Context, docs []string) (map[string]string,
 	if err := tf.Init(ctx, tfexec.Upgrade(false)); err != nil {
 		return nil, fmt.Errorf("terraform init: %w", err)
 	}
+	r.adoptExistingAWSResources(ctx, tf, docs)
 	if err := tf.Apply(ctx); err != nil {
 		return nil, fmt.Errorf("terraform apply: %w", err)
 	}
@@ -141,4 +148,87 @@ func (r *tfRunner) outputs(ctx context.Context, tf *tfexec.Terraform) (map[strin
 		}
 	}
 	return out, nil
+}
+
+func (r *tfRunner) adoptExistingAWSResources(ctx context.Context, tf *tfexec.Terraform, docs []string) {
+	for _, candidate := range discoverAWSImportCandidates(ctx, docs) {
+		if candidate.Address == "" || candidate.ID == "" || candidate.ID == "None" {
+			continue
+		}
+		if err := tf.Import(ctx, candidate.Address, candidate.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "pyxcloud: skipped terraform import %s %s: %v\n", candidate.Address, candidate.ID, err)
+		}
+	}
+}
+
+func discoverAWSImportCandidates(ctx context.Context, docs []string) []importCandidate {
+	var candidates []importCandidate
+	seen := map[string]struct{}{}
+	add := func(address, id string) {
+		id = strings.TrimSpace(id)
+		if address == "" || id == "" || id == "None" {
+			return
+		}
+		key := address + "\x00" + id
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, importCandidate{Address: address, ID: id})
+	}
+
+	all := strings.Join(docs, "\n")
+	for _, m := range resourceNameRE("aws_iam_role").FindAllStringSubmatch(all, -1) {
+		add("aws_iam_role."+m[1], m[2])
+	}
+	for _, m := range resourceNameRE("aws_iam_instance_profile").FindAllStringSubmatch(all, -1) {
+		add("aws_iam_instance_profile."+m[1], m[2])
+	}
+	for _, m := range resourceNameRE("aws_cloudwatch_log_group").FindAllStringSubmatch(all, -1) {
+		add("aws_cloudwatch_log_group."+m[1], m[2])
+	}
+	for _, m := range resourceNameRE("aws_autoscaling_group").FindAllStringSubmatch(all, -1) {
+		add("aws_autoscaling_group."+m[1], m[2])
+	}
+	for _, m := range resourceNameRE("aws_lb_target_group").FindAllStringSubmatch(all, -1) {
+		if arn := awsOutput(ctx, "elbv2", "describe-target-groups", "--names", m[2], "--query", "TargetGroups[0].TargetGroupArn", "--output", "text"); arn != "" {
+			add("aws_lb_target_group."+m[1], arn)
+		}
+	}
+	for _, m := range iamRolePolicyRE.FindAllStringSubmatch(all, -1) {
+		add("aws_iam_role_policy."+m[1], m[3]+":"+m[2])
+	}
+	for _, m := range iamRolePolicyAttachmentRE.FindAllStringSubmatch(all, -1) {
+		add("aws_iam_role_policy_attachment."+m[1], m[2]+"/"+m[3])
+	}
+	for _, m := range lbListenerRuleRE.FindAllStringSubmatch(all, -1) {
+		query := fmt.Sprintf("Rules[?Priority=='%s'].RuleArn | [0]", m[3])
+		if arn := awsOutput(ctx, "elbv2", "describe-rules", "--listener-arn", m[2], "--query", query, "--output", "text"); arn != "" {
+			add("aws_lb_listener_rule."+m[1], arn)
+		}
+	}
+
+	return candidates
+}
+
+func resourceNameRE(resourceType string) *regexp.Regexp {
+	return regexp.MustCompile(`(?s)resource\s+"` + regexp.QuoteMeta(resourceType) + `"\s+"([^"]+)"\s+\{.*?\n\s+name\s+=\s+"([^"]+)"`)
+}
+
+var (
+	iamRolePolicyRE           = regexp.MustCompile(`(?s)resource\s+"aws_iam_role_policy"\s+"([^"]+)"\s+\{.*?\n\s+name\s+=\s+"([^"]+)".*?\n\s+role\s+=\s+aws_iam_role\.([A-Za-z0-9_-]+)\.id`)
+	iamRolePolicyAttachmentRE = regexp.MustCompile(`(?s)resource\s+"aws_iam_role_policy_attachment"\s+"([^"]+)"\s+\{.*?\n\s+role\s+=\s+aws_iam_role\.([A-Za-z0-9_-]+)\.name.*?\n\s+policy_arn\s+=\s+"([^"]+)"`)
+	lbListenerRuleRE          = regexp.MustCompile(`(?s)resource\s+"aws_lb_listener_rule"\s+"([^"]+)"\s+\{.*?\n\s+listener_arn\s+=\s+"([^"]+)".*?\n\s+priority\s+=\s+([0-9]+)`)
+)
+
+func awsOutput(ctx context.Context, args ...string) string {
+	if _, err := exec.LookPath("aws"); err != nil {
+		return ""
+	}
+	cmd := exec.CommandContext(ctx, "aws", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
