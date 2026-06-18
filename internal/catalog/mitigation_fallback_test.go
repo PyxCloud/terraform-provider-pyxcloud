@@ -68,6 +68,38 @@ func TestAssembleHCLFallbackServicesSelfHostOnVM(t *testing.T) {
 			vmResource: "resource \"ubicloud_vm\"",
 			image:      "prom/prometheus",
 		},
+		{
+			name:       "ubicloud managed-kubernetes uses k3s",
+			provider:   ProviderUbicloud,
+			region:     "Frankfurt",
+			component:  AssembleComponent{Name: "cluster", Type: "managed-kubernetes", K8s: &AssembleK8s{}},
+			vmResource: "resource \"ubicloud_vm\"",
+			image:      "rancher/k3s",
+		},
+		{
+			name:       "ubicloud load-balancer uses HAProxy",
+			provider:   ProviderUbicloud,
+			region:     "Frankfurt",
+			component:  AssembleComponent{Name: "edge", Type: "load-balancer", LB: &AssembleLB{}},
+			vmResource: "resource \"ubicloud_vm\"",
+			image:      "haproxy:2.9",
+		},
+		{
+			name:       "digitalocean email uses SMTP relay",
+			provider:   ProviderDigitalOcean,
+			region:     "Frankfurt",
+			component:  AssembleComponent{Name: "mail", Type: "email", Email: &AssembleEmail{Domain: "example.com"}},
+			vmResource: "resource \"digitalocean_droplet\"",
+			image:      "bytemark/smtp",
+		},
+		{
+			name:       "ubicloud block-storage uses NFS",
+			provider:   ProviderUbicloud,
+			region:     "Frankfurt",
+			component:  AssembleComponent{Name: "data", Type: "block-storage", BlockStorage: &AssembleBlockStorage{SizeGB: 100, TargetVM: "app"}},
+			vmResource: "resource \"ubicloud_vm\"",
+			image:      "itsthenetwork/nfs-server-alpine",
+		},
 	}
 
 	for _, tc := range tests {
@@ -137,6 +169,32 @@ func TestNativeSupportMatchesRendererSurface(t *testing.T) {
 				ProviderAWS, ProviderGCP, ProviderDigitalOcean, ProviderAzure, ProviderLinode,
 				ProviderUbicloud, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderOVH, ProviderStackIt,
 			},
+		},
+		{
+			component: "managed-kubernetes",
+			native: []string{
+				ProviderAWS, ProviderGCP, ProviderDigitalOcean, ProviderAzure, ProviderLinode,
+				ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderOVH, ProviderStackIt,
+			},
+			fallback: []string{ProviderUbicloud},
+		},
+		{
+			component: "load-balancer",
+			native: []string{
+				ProviderAWS, ProviderGCP, ProviderDigitalOcean, ProviderAzure, ProviderLinode,
+				ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderStackIt,
+			},
+			fallback: []string{ProviderUbicloud, ProviderOVH},
+		},
+		{
+			component: "email",
+			native:    []string{ProviderAWS},
+			fallback:  []string{ProviderGCP, ProviderDigitalOcean, ProviderAzure, ProviderLinode, ProviderUbicloud, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderOVH, ProviderStackIt},
+		},
+		{
+			component: "block-storage",
+			native:    []string{ProviderAWS, ProviderGCP, ProviderDigitalOcean},
+			fallback:  []string{ProviderAzure, ProviderLinode, ProviderUbicloud, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderOVH, ProviderStackIt},
 		},
 	}
 

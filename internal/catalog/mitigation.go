@@ -52,8 +52,14 @@ var selfHostRecipes = map[string]selfHostRecipe{
 	"waf-service":         {Image: "owasp/modsecurity-crs:nginx", Port: 80, CPU: 2, RAM: 4, envNote: "OWASP CRS / NGINX (waf-service)", degraded: true},
 	"waf":                 {Image: "owasp/modsecurity-crs:nginx", Port: 80, CPU: 2, RAM: 4, envNote: "OWASP CRS / NGINX (waf)", degraded: true},
 	"serverless-function": {Image: "quay.io/nuclio/dashboard:stable-amd64", Port: 8070, CPU: 2, RAM: 4, envNote: "Nuclio container FaaS (serverless-function)", degraded: true},
+	"managed-kubernetes":  {Image: "rancher/k3s:v1.30.6-k3s1", Port: 6443, CPU: 2, RAM: 8, envNote: "k3s (managed-kubernetes substitute)", degraded: true},
+	"container-service":   {Image: "rancher/k3s:v1.30.6-k3s1", Port: 6443, CPU: 2, RAM: 8, envNote: "k3s (container-service substitute)", degraded: true},
+	"load-balancer":       {Image: "haproxy:2.9", Port: 80, CPU: 1, RAM: 2, envNote: "HAProxy (load-balancer substitute)", degraded: true},
 	"cdn-service":         {Image: "varnish:7", Port: 80, CPU: 2, RAM: 4, envNote: "Varnish HTTP cache (cdn-service)", degraded: true},
 	"cdn":                 {Image: "varnish:7", Port: 80, CPU: 2, RAM: 4, envNote: "Varnish HTTP cache (cdn)", degraded: true},
+	"email-service":       {Image: "bytemark/smtp:latest", Port: 25, CPU: 1, RAM: 2, envNote: "SMTP relay (email-service substitute)", degraded: true},
+	"email":               {Image: "bytemark/smtp:latest", Port: 25, CPU: 1, RAM: 2, envNote: "SMTP relay (email substitute)", degraded: true},
+	"block-storage":       {Image: "itsthenetwork/nfs-server-alpine:latest", Port: 2049, CPU: 1, RAM: 2, envNote: "NFS server (block-storage substitute)", degraded: true},
 }
 
 // Mitigatable reports whether a component type has a VM-hosted substitute.
@@ -116,8 +122,17 @@ var nativeSupport = map[string]map[string]bool{
 	"waf-service":         {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
 	"waf":                 {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
 	"serverless-function": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
-	"cdn-service":         {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
-	"cdn":                 {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
+	"managed-kubernetes":  {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true},
+	"container-service":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true},
+	"load-balancer": {
+		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,
+		ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderStackIt: true,
+	},
+	"cdn-service":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
+	"cdn":           {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
+	"email-service": {ProviderAWS: true},
+	"email":         {ProviderAWS: true},
+	"block-storage": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 }
 
 // NativelySupported reports whether the provider offers a managed service for the
@@ -173,8 +188,13 @@ func mitigationRecipe(componentType string) (selfHostRecipe, bool) {
 
 func mitigationVMSizing(recipe selfHostRecipe, provider string) (int, int) {
 	cpu, ram := recipe.CPU, recipe.RAM
-	if strings.EqualFold(provider, ProviderUbicloud) && ram < 8 {
-		ram = 8
+	if strings.EqualFold(provider, ProviderUbicloud) {
+		if cpu < 2 {
+			cpu = 2
+		}
+		if ram < 8 {
+			ram = 8
+		}
 	}
 	return cpu, ram
 }

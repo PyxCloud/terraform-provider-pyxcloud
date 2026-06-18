@@ -279,7 +279,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	hasVM, hasNetworked := false, false
 	for _, c := range in.Components {
 		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
-			hasNetworked = true // mitigation runs the service on a VM, which needs the network
+			// Mitigation runs the service on a VM, which needs network placement and
+			// should receive the environment security group when expose rules exist.
+			hasVM, hasNetworked = true, true
 			continue
 		}
 		switch c.Type {
