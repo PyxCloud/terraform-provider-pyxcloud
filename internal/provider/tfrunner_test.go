@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,7 +24,6 @@ func TestTFRunnerWriteConfig(t *testing.T) {
 		t.Fatalf("writeConfig: %v", err)
 	}
 
-	// The two generated docs exist.
 	for i := range docs {
 		name := filepath.Join(dir, "pyx_00"+string(rune('0'+i))+".tf")
 		b, err := os.ReadFile(name)
@@ -34,21 +34,80 @@ func TestTFRunnerWriteConfig(t *testing.T) {
 			t.Errorf("%s = %q want %q", name, b, docs[i])
 		}
 	}
-	// The stale .tf was removed.
 	if _, err := os.Stat(filepath.Join(dir, "old.tf")); !os.IsNotExist(err) {
 		t.Error("stale old.tf should have been removed")
 	}
-	// The state file survived (not a .tf).
 	if _, err := os.Stat(filepath.Join(dir, "terraform.tfstate")); err != nil {
 		t.Error("terraform.tfstate must survive a re-write")
 	}
 }
 
 func TestNewTFRunnerMissingTerraform(t *testing.T) {
-	// With an empty PATH, terraform won't be found → a clear error (not a panic).
 	t.Setenv("PATH", "")
 	_, err := newTFRunner(t.TempDir())
 	if err == nil {
 		t.Fatal("expected error when terraform is not on PATH")
+	}
+}
+
+func TestDiscoverAWSImportCandidatesForNamedResources(t *testing.T) {
+	docs := []string{`
+resource "aws_iam_role" "beta-pyx-api-role" {
+  name = "beta-pyx-api-role"
+}
+
+resource "aws_iam_instance_profile" "beta-pyx-api-role" {
+  name = "beta-pyx-api-role"
+  role = aws_iam_role.beta-pyx-api-role.name
+}
+
+resource "aws_iam_role_policy" "beta-pyx-api-role-api-s3-cloudwatch-policy" {
+  name   = "api-s3-cloudwatch-policy"
+  role   = aws_iam_role.beta-pyx-api-role.id
+  policy = "{}"
+}
+
+resource "aws_iam_role_policy_attachment" "beta-pyx-api-role-managed-1" {
+  role       = aws_iam_role.beta-pyx-api-role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_cloudwatch_log_group" "_pyx_beta_api_application" {
+  name = "/pyx/beta/api/application"
+}
+
+resource "aws_autoscaling_group" "beta-api_asg" {
+  name                = "beta-api"
+  min_size            = 1
+}
+`}
+
+	got := discoverAWSImportCandidates(context.Background(), docs)
+	want := map[importCandidate]bool{
+		{Address: "aws_iam_role.beta-pyx-api-role", ID: "beta-pyx-api-role"}:                                                                                  true,
+		{Address: "aws_iam_instance_profile.beta-pyx-api-role", ID: "beta-pyx-api-role"}:                                                                      true,
+		{Address: "aws_iam_role_policy.beta-pyx-api-role-api-s3-cloudwatch-policy", ID: "beta-pyx-api-role:api-s3-cloudwatch-policy"}:                         true,
+		{Address: "aws_iam_role_policy_attachment.beta-pyx-api-role-managed-1", ID: "beta-pyx-api-role/arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"}: true,
+		{Address: "aws_cloudwatch_log_group._pyx_beta_api_application", ID: "/pyx/beta/api/application"}:                                                      true,
+		{Address: "aws_autoscaling_group.beta-api_asg", ID: "beta-api"}:                                                                                       true,
+	}
+
+	for _, candidate := range got {
+		delete(want, candidate)
+	}
+	for missing := range want {
+		t.Fatalf("missing import candidate: %#v; got %#v", missing, got)
+	}
+}
+
+func TestDiscoverAWSImportCandidatesSkipsTargetGroupWithoutAWSCLIResolution(t *testing.T) {
+	docs := []string{`
+resource "aws_lb_target_group" "beta-api-attach_tg" {
+  name = "pyxcloud-missing-target-group-for-unit-test"
+}
+`}
+
+	if got := discoverAWSImportCandidates(context.Background(), docs); len(got) != 0 {
+		t.Fatalf("target group should be skipped when ARN cannot be resolved, got %#v", got)
 	}
 }
