@@ -279,7 +279,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	hasVM, hasNetworked := false, false
 	for _, c := range in.Components {
 		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
-			hasNetworked = true // mitigation runs the service on a VM, which needs the network
+			// Mitigation runs the service on a VM, which needs network placement and
+			// should receive the environment security group when expose rules exist.
+			hasVM, hasNetworked = true, true
 			continue
 		}
 		switch c.Type {
@@ -416,7 +418,22 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, attHCL)
-		case "iam", "access-policy":
+		case "access-policy":
+			iamSpec := IAMSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.IAM != nil {
+				iamSpec.InlinePolicies = c.IAM.InlinePolicies
+				iamSpec.ManagedPolicyARNs = c.IAM.ManagedPolicyARNs
+			}
+			apPlan, err := TranslateAccessPolicy(ctx, cat, iamSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			apHCL, err := RenderAccessPolicyHCL(apPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, apHCL)
+		case "iam":
 			iamSpec := IAMSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.IAM != nil {
 				iamSpec.AssumeService = c.IAM.AssumeService

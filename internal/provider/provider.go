@@ -179,11 +179,13 @@ func (p *pyxCloudProvider) Resources(_ context.Context) []func() resource.Resour
 		NewTopologyResource,
 		NewMigrationResource,
 		NewEnvironmentResource,
+		NewImportTopologyResource,
 	}
 }
 
 func (p *pyxCloudProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewCompareDataSource,
+		NewImportDiscoveryDataSource,
 	}
 }

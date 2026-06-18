@@ -29,8 +29,8 @@ func TestAssembleHCLAWSVMEnv(t *testing.T) {
 	}
 	all := strings.Join(docs, "\n")
 	for _, want := range []string{
-		"resource \"aws_vpc\"",
-		"resource \"aws_subnet\"",
+		"data \"aws_vpc\" \"default\"",
+		"data \"aws_subnet\" \"demo-net_1\"",
 		"resource \"aws_security_group\"",
 		"resource \"aws_instance\"",
 		"vpc_security_group_ids = [aws_security_group.demo-sg.id]", // VM wired to the synthesised SG
@@ -149,7 +149,7 @@ func TestAssembleHCLLoadBalancer(t *testing.T) {
 		Components: []AssembleComponent{
 			{Name: "web", Type: "virtual-machine", Count: 1, VM: &AssembleVM{Architecture: "x86_64", CPU: "2", RAM: "4", OS: "ubuntu"}},
 			{Name: "web-lb", Type: "load-balancer", LB: &AssembleLB{
-				Listeners: []AssembleLBListener{{Port: 80, Protocol: "http"}},
+				Listeners:  []AssembleLBListener{{Port: 80, Protocol: "http"}},
 				TargetKind: "vm", TargetName: "web", HealthCheckPath: "/",
 			}},
 		},

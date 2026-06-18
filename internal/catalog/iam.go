@@ -50,6 +50,19 @@ type IAMPlan struct {
 	ResourceType      string      `json:"resource_type"`
 }
 
+// AccessPolicyPlan is a portable policy artifact. AWS can install it as a real
+// aws_iam_policy; non-AWS providers carry the same AWS-shaped JSON in
+// terraform_data so the topology remains deployable without pretending to create
+// a cloud IAM role.
+type AccessPolicyPlan struct {
+	Provider          string      `json:"provider"`
+	CSP               string      `json:"csp"`
+	Name              string      `json:"name"`
+	InlinePolicies    []IAMPolicy `json:"inline_policies"`
+	ManagedPolicyARNs []string    `json:"managed_policy_arns"`
+	ResourceType      string      `json:"resource_type"`
+}
+
 // TranslateIAM resolves an IAMSpec. DO is unsupported; GCP rejects AWS-shaped policies.
 func TranslateIAM(_ context.Context, _ RegionCatalog, spec IAMSpec) (IAMPlan, error) {
 	if strings.TrimSpace(spec.Name) == "" {
@@ -86,6 +99,29 @@ func TranslateIAM(_ context.Context, _ RegionCatalog, spec IAMSpec) (IAMPlan, er
 			"use AWS/GCP for workload identities (hard plan-time error)")
 	default:
 		return IAMPlan{}, fmt.Errorf("iam: unsupported provider %q", spec.Provider)
+	}
+	return plan, nil
+}
+
+func TranslateAccessPolicy(_ context.Context, _ RegionCatalog, spec IAMSpec) (AccessPolicyPlan, error) {
+	if strings.TrimSpace(spec.Name) == "" {
+		return AccessPolicyPlan{}, fmt.Errorf("access-policy: name is required")
+	}
+	csp, ok := ProviderToCSP(spec.Provider)
+	if !ok {
+		return AccessPolicyPlan{}, fmt.Errorf("access-policy: unknown provider %q", spec.Provider)
+	}
+	plan := AccessPolicyPlan{
+		Provider:          strings.ToLower(spec.Provider),
+		CSP:               csp,
+		Name:              spec.Name,
+		InlinePolicies:    spec.InlinePolicies,
+		ManagedPolicyARNs: spec.ManagedPolicyARNs,
+	}
+	if plan.Provider == ProviderAWS {
+		plan.ResourceType = "aws_iam_policy"
+	} else {
+		plan.ResourceType = "terraform_data"
 	}
 	return plan, nil
 }

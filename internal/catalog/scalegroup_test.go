@@ -260,7 +260,7 @@ func TestRenderScaleGroupAWS(t *testing.T) {
 		`max_size            = 6`,
 		`desired_capacity    = 3`,
 		`health_check_type   = "ELB"`,
-		`vpc_zone_identifier = [aws_subnet.production_1.id, aws_subnet.production_2.id, aws_subnet.production_3.id]`,
+		`vpc_zone_identifier = [data.aws_subnet.production_1.id, data.aws_subnet.production_2.id, data.aws_subnet.production_3.id]`,
 		`id      = aws_launch_template.web_lt.id`,
 		`instance_refresh {`,
 		`strategy = "Rolling"`,

@@ -275,6 +275,9 @@ func renderVMUbicloud(p VMPlan) string {
 		if p.NetworkName != "" {
 			fmt.Fprintf(&b, "  private_subnet_id = ubicloud_private_subnet.%s.id\n", tfName(p.NetworkName))
 		}
+		if strings.TrimSpace(p.UserData) != "" {
+			fmt.Fprintf(&b, "  user_data = %s\n", vmHeredoc(p.UserData))
+		}
 		b.WriteString("}\n\n")
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"

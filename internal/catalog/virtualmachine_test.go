@@ -256,7 +256,7 @@ func TestRenderVMAWS(t *testing.T) {
 		`resource "aws_instance" "web-1"`,
 		`resource "aws_instance" "web-2"`,
 		`instance_type = "t3.medium"`,
-		`subnet_id     = aws_subnet.production_1.id`,
+		`subnet_id     = data.aws_subnet.production_1.id`,
 		`vpc_security_group_ids = [aws_security_group.production-web.id]`,
 	} {
 		if !strings.Contains(hcl, want) {
