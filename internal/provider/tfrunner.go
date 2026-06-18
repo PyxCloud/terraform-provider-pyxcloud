@@ -192,17 +192,15 @@ func discoverAWSImportCandidates(ctx context.Context, docs []string) []importCan
 	for _, m := range resourceNameRE("aws_cloudwatch_log_group").FindAllStringSubmatch(all, -1) {
 		add("aws_cloudwatch_log_group."+m[1], m[2])
 	}
-	if defaultVPCID := awsDefaultVPCID(ctx); defaultVPCID != "" {
-		sgIDs := map[string]string{}
-		for _, m := range resourceNameRE("aws_security_group").FindAllStringSubmatch(all, -1) {
-			if id := awsSecurityGroupID(ctx, m[2], defaultVPCID); id != "" {
-				sgIDs[m[1]] = id
-				add("aws_security_group."+m[1], id)
-			}
+	sgIDs := map[string]string{}
+	for _, m := range resourceNameRE("aws_security_group").FindAllStringSubmatch(all, -1) {
+		if id := awsSecurityGroupID(ctx, m[2]); id != "" {
+			sgIDs[m[1]] = id
+			add("aws_security_group."+m[1], id)
 		}
-		for _, candidate := range awsSecurityGroupRuleImportCandidates(all, sgIDs) {
-			add(candidate.Address, candidate.ID)
-		}
+	}
+	for _, candidate := range awsSecurityGroupRuleImportCandidates(all, sgIDs) {
+		add(candidate.Address, candidate.ID)
 	}
 	for _, m := range resourceNameRE("aws_autoscaling_group").FindAllStringSubmatch(all, -1) {
 		add("aws_autoscaling_group."+m[1], m[2])
@@ -311,19 +309,12 @@ func awsOutput(ctx context.Context, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func awsDefaultVPCID(ctx context.Context) string {
-	return awsOutput(ctx, "ec2", "describe-vpcs",
-		"--filters", "Name=is-default,Values=true",
-		"--query", "Vpcs[0].VpcId",
-		"--output", "text")
-}
-
-func awsSecurityGroupID(ctx context.Context, groupName, vpcID string) string {
-	if groupName == "" || vpcID == "" {
+func awsSecurityGroupID(ctx context.Context, groupName string) string {
+	if groupName == "" {
 		return ""
 	}
 	return awsOutput(ctx, "ec2", "describe-security-groups",
-		"--filters", "Name=group-name,Values="+groupName, "Name=vpc-id,Values="+vpcID,
-		"--query", "SecurityGroups[0].GroupId",
+		"--filters", "Name=group-name,Values="+groupName,
+		"--query", "sort_by(SecurityGroups,&VpcId)[0].GroupId",
 		"--output", "text")
 }

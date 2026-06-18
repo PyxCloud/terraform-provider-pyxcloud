@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -157,5 +158,54 @@ resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
 	}
 	if got[0] != want {
 		t.Fatalf("candidate = %#v, want %#v", got[0], want)
+	}
+}
+
+func TestDiscoverAWSImportCandidatesAdoptsSecurityGroupsOutsideDefaultVPC(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test creates a POSIX shell fake aws executable")
+	}
+	binDir := t.TempDir()
+	awsPath := filepath.Join(binDir, "aws")
+	script := `#!/bin/sh
+case "$*" in
+  *"describe-security-groups"*)
+    printf 'sg-090dcaa930a166d99'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(awsPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	docs := []string{`
+resource "aws_security_group" "beta-api-sg" {
+  name = "beta-api-sg"
+}
+
+resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
+  type              = "ingress"
+  security_group_id = aws_security_group.beta-api-sg.id
+  protocol          = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  cidr_blocks       = ["0.0.0.0/0"]
+}
+`}
+
+	got := discoverAWSImportCandidates(context.Background(), docs)
+	want := map[importCandidate]bool{
+		{Address: "aws_security_group.beta-api-sg", ID: "sg-090dcaa930a166d99"}:                                                true,
+		{Address: "aws_security_group_rule.beta-api-sg_ingress_0", ID: "sg-090dcaa930a166d99_ingress_tcp_8080_8080_0.0.0.0/0"}: true,
+	}
+	for _, candidate := range got {
+		delete(want, candidate)
+	}
+	for missing := range want {
+		t.Fatalf("missing import candidate: %#v; got %#v", missing, got)
 	}
 }
