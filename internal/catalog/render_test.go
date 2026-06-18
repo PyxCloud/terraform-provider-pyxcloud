@@ -90,7 +90,8 @@ func TestRenderSGAWS(t *testing.T) {
 		`resource "aws_security_group" "web"`,
 		`description = "web tier"`,
 		`vpc_id      = data.aws_vpc.default.id`,
-		`resource "aws_security_group_rule"`,
+		`resource "aws_security_group_rule" "web_ingress_0_ipv4_0"`,
+		`resource "aws_security_group_rule" "web_ingress_0_ipv6_0"`,
 		`from_port         = 80`,
 		`from_port         = 443`,
 		`cidr_blocks       = ["0.0.0.0/0"]`,
@@ -100,6 +101,9 @@ func TestRenderSGAWS(t *testing.T) {
 		if !strings.Contains(hcl, want) {
 			t.Errorf("AWS SG HCL missing %q\n%s", want, hcl)
 		}
+	}
+	if got := strings.Count(hcl, `resource "aws_security_group_rule"`); got != 5 {
+		t.Fatalf("AWS expose rules should render one resource per CIDR source, got %d rules\n%s", got, hcl)
 	}
 }
 

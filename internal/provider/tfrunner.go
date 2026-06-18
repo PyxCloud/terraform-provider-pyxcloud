@@ -228,13 +228,13 @@ func discoverAWSImportCandidates(ctx context.Context, docs []string) []importCan
 
 func awsSecurityGroupRuleImportCandidates(hcl string, sgIDs map[string]string) []importCandidate {
 	type sgRuleSpec struct {
-		address   string
-		sgName    string
-		ruleType  string
-		protocol  string
-		fromPort  string
-		toPort    string
-		cidrBlock string
+		address    string
+		sgName     string
+		ruleType   string
+		protocol   string
+		fromPort   string
+		toPort     string
+		cidrBlocks []string
 	}
 	var candidates []importCandidate
 	for _, m := range awsSGRuleRE.FindAllStringSubmatch(hcl, -1) {
@@ -243,11 +243,15 @@ func awsSecurityGroupRuleImportCandidates(hcl string, sgIDs map[string]string) [
 		if sg := awsSGRuleSGRefRE.FindStringSubmatch(body); len(sg) == 2 {
 			spec.sgName = sg[1]
 		}
-		if cidr := awsSGRuleCIDRRE.FindStringSubmatch(body); len(cidr) == 2 {
-			spec.cidrBlock = cidr[1]
+		for _, cidr := range awsSGRuleCIDRRE.FindAllStringSubmatch(body, -1) {
+			if len(cidr) == 2 {
+				spec.cidrBlocks = append(spec.cidrBlocks, cidr[1])
+			}
 		}
-		if cidr := awsSGRuleIPv6CIDRRE.FindStringSubmatch(body); len(cidr) == 2 {
-			spec.cidrBlock = cidr[1]
+		for _, cidr := range awsSGRuleIPv6CIDRRE.FindAllStringSubmatch(body, -1) {
+			if len(cidr) == 2 {
+				spec.cidrBlocks = append(spec.cidrBlocks, cidr[1])
+			}
 		}
 		for _, attr := range hclStringAttrRE.FindAllStringSubmatch(body, -1) {
 			switch attr[1] {
@@ -260,15 +264,17 @@ func awsSecurityGroupRuleImportCandidates(hcl string, sgIDs map[string]string) [
 		spec.fromPort = hclNumberAttr(body, "from_port")
 		spec.toPort = hclNumberAttr(body, "to_port")
 		sgID := sgIDs[spec.sgName]
-		if sgID == "" || spec.ruleType == "" || spec.protocol == "" || spec.fromPort == "" || spec.toPort == "" || spec.cidrBlock == "" {
+		if sgID == "" || spec.ruleType == "" || spec.protocol == "" || spec.fromPort == "" || spec.toPort == "" || len(spec.cidrBlocks) == 0 {
 			continue
 		}
 		proto := spec.protocol
 		if proto == "-1" {
 			proto = "all"
 		}
-		id := strings.Join([]string{sgID, spec.ruleType, proto, spec.fromPort, spec.toPort, spec.cidrBlock}, "_")
-		candidates = append(candidates, importCandidate{Address: spec.address, ID: id})
+		for _, cidrBlock := range spec.cidrBlocks {
+			id := strings.Join([]string{sgID, spec.ruleType, proto, spec.fromPort, spec.toPort, cidrBlock}, "_")
+			candidates = append(candidates, importCandidate{Address: spec.address, ID: id})
+		}
 	}
 	return candidates
 }
@@ -283,8 +289,8 @@ var (
 	lbListenerRuleRE          = regexp.MustCompile(`(?s)resource\s+"aws_lb_listener_rule"\s+"([^"]+)"\s+\{.*?\n\s+listener_arn\s+=\s+"([^"]+)".*?\n\s+priority\s+=\s+([0-9]+)`)
 	awsSGRuleRE               = regexp.MustCompile(`(?s)resource\s+"aws_security_group_rule"\s+"([^"]+)"\s+\{(.*?)\n\}`)
 	awsSGRuleSGRefRE          = regexp.MustCompile(`security_group_id\s+=\s+aws_security_group\.([A-Za-z0-9_-]+)\.id`)
-	awsSGRuleCIDRRE           = regexp.MustCompile(`cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
-	awsSGRuleIPv6CIDRRE       = regexp.MustCompile(`ipv6_cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
+	awsSGRuleCIDRRE           = regexp.MustCompile(`(?m)^\s+cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
+	awsSGRuleIPv6CIDRRE       = regexp.MustCompile(`(?m)^\s+ipv6_cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
 	hclStringAttrRE           = regexp.MustCompile(`(?m)^\s+([a-zA-Z_]+)\s+=\s+"([^"]*)"`)
 )
 
