@@ -79,3 +79,27 @@ func TestAssembleHCLIAMComponent(t *testing.T) {
 		t.Errorf("assembled IAM HCL missing role/instance-profile:\n%s", all)
 	}
 }
+
+func TestAssembleHCLAccessPolicyComponent(t *testing.T) {
+	cat, err := NewEmbedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "app-role", Type: "access-policy", IAM: &AssembleIAM{
+				InstanceProfile:   true,
+				ManagedPolicyARNs: []string{"arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL access-policy: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, "resource \"aws_iam_role\" \"app-role\"") ||
+		!strings.Contains(all, "resource \"aws_iam_instance_profile\" \"app-role\"") {
+		t.Errorf("assembled access-policy HCL missing role/instance-profile:\n%s", all)
+	}
+}
