@@ -401,7 +401,7 @@ func TestRenderManagedDatabaseAWS(t *testing.T) {
 	}
 	for _, want := range []string{
 		`resource "aws_db_subnet_group" "app-db_subnet_group"`,
-		`subnet_ids = [aws_subnet.production_1.id, aws_subnet.production_2.id]`,
+		`subnet_ids = [data.aws_subnet.production_1.id, data.aws_subnet.production_2.id]`,
 		`resource "aws_db_instance" "app-db"`,
 		`identifier              = "app-db"`,
 		`engine                  = "postgres"`,
