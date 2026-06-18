@@ -1,5 +1,7 @@
 # .goreleaser.yml
 # Reference: https://goreleaser.com
+version: 2
+
 before:
   hooks:
     - go mod tidy
@@ -22,23 +24,23 @@ builds:
     binary: '{{ .ProjectName }}_v{{ .Version }}'
 
 archives:
-  - format: zip
+  - formats: [zip]
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
 
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
   algorithm: sha256
 
-sign:
-  artifacts: checksum
-  args:
-    - "--batch"
-    - "--local-user"
-    - "{{ .Env.GPG_FINGERPRINT }}"
-    - "--output"
-    - "${signature}"
-    - "--detach-sign"
-    - "${artifact}"
+signs:
+  - artifacts: checksum
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
 
 release:
   github:
