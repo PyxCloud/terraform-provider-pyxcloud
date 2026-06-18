@@ -187,6 +187,13 @@ func discoverAWSImportCandidates(ctx context.Context, docs []string) []importCan
 	for _, m := range resourceNameRE("aws_cloudwatch_log_group").FindAllStringSubmatch(all, -1) {
 		add("aws_cloudwatch_log_group."+m[1], m[2])
 	}
+	if defaultVPCID := awsDefaultVPCID(ctx); defaultVPCID != "" {
+		for _, m := range resourceNameRE("aws_security_group").FindAllStringSubmatch(all, -1) {
+			if id := awsSecurityGroupID(ctx, m[2], defaultVPCID); id != "" {
+				add("aws_security_group."+m[1], id)
+			}
+		}
+	}
 	for _, m := range resourceNameRE("aws_autoscaling_group").FindAllStringSubmatch(all, -1) {
 		add("aws_autoscaling_group."+m[1], m[2])
 	}
@@ -231,4 +238,21 @@ func awsOutput(ctx context.Context, args ...string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func awsDefaultVPCID(ctx context.Context) string {
+	return awsOutput(ctx, "ec2", "describe-vpcs",
+		"--filters", "Name=is-default,Values=true",
+		"--query", "Vpcs[0].VpcId",
+		"--output", "text")
+}
+
+func awsSecurityGroupID(ctx context.Context, groupName, vpcID string) string {
+	if groupName == "" || vpcID == "" {
+		return ""
+	}
+	return awsOutput(ctx, "ec2", "describe-security-groups",
+		"--filters", "Name=group-name,Values="+groupName, "Name=vpc-id,Values="+vpcID,
+		"--query", "SecurityGroups[0].GroupId",
+		"--output", "text")
 }
