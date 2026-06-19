@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ubicloud-standard-16
+    runs-on: ubuntu-latest
     steps:
       - name: Resolve release ref
         id: ref
