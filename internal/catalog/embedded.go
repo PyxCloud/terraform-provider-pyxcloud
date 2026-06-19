@@ -4,8 +4,12 @@ import (
 	"context"
 	_ "embed"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+	"time"
 )
 
 // regionCatalogCSV is a snapshot of the backend `region` table (wave-1
@@ -530,7 +534,7 @@ func osKey(csp, cspRegion, os, version, arch string) string {
 // ResolveSKU implements VMCatalog. It looks for an exact (cpu, ram) match in the
 // requested csp/region/architecture; no match is a hard error listing the
 // nearest available sizes (never a silent fallback to a different size).
-func (c *EmbeddedCatalog) ResolveSKU(_ context.Context, csp, cspRegion, arch string, cpu, ram int) (VMRow, error) {
+func (c *EmbeddedCatalog) ResolveSKU(ctx context.Context, csp, cspRegion, arch string, cpu, ram int) (VMRow, error) {
 	candidates := c.vmByRegionArch[vmRegionArchKey(csp, cspRegion, arch)]
 	var exact []VMRow
 	for _, r := range candidates {
@@ -553,12 +557,104 @@ func (c *EmbeddedCatalog) ResolveSKU(_ context.Context, csp, cspRegion, arch str
 				bestRank = rank
 			}
 		}
+
+		if err := validateSKUJIT(ctx, csp, cspRegion, best.Name); err != nil {
+			return VMRow{}, fmt.Errorf("JIT validation failed: %w", err)
+		}
+
 		return best, nil
 	}
 	return VMRow{}, ErrSKUNotFound{
 		CSP: csp, CSPRegion: cspRegion, Architecture: arch, CPU: cpu, RAM: ram,
 		Nearest: nearestSizes(candidates, cpu, ram, 5),
 	}
+}
+
+type awsInstanceTypeOfferings struct {
+	InstanceTypeOfferings []struct {
+		InstanceType string `json:"InstanceType"`
+		Location     string `json:"Location"`
+	} `json:"InstanceTypeOfferings"`
+}
+
+func validateSKUJIT(ctx context.Context, csp, cspRegion, instanceType string) error {
+	if os.Getenv("PYXCLOUD_BYPASS_JIT_CHECK") == "true" {
+		return nil
+	}
+
+	switch csp {
+	case "aws":
+		awsPath, err := exec.LookPath("aws")
+		if err != nil {
+			return nil // AWS CLI not installed, skip
+		}
+
+		// Check if credentials are valid by running get-caller-identity
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctxWithTimeout, awsPath, "sts", "get-caller-identity")
+		if err := cmd.Run(); err != nil {
+			return nil // Credentials not present or invalid, skip JIT check
+		}
+
+		// Query instance type offerings in this region
+		ctxQuery, cancelQuery := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelQuery()
+		queryCmd := exec.CommandContext(ctxQuery, awsPath, "ec2", "describe-instance-type-offerings",
+			"--region", cspRegion,
+			"--filters", fmt.Sprintf("Name=instance-type,Values=%s", instanceType),
+			"--output", "json")
+
+		output, err := queryCmd.Output()
+		if err != nil {
+			return nil // Ignore connection/transport errors, skip JIT check
+		}
+
+		var offerings awsInstanceTypeOfferings
+		if err := json.Unmarshal(output, &offerings); err != nil {
+			return nil
+		}
+
+		if len(offerings.InstanceTypeOfferings) == 0 {
+			return fmt.Errorf("instance type %q is not offered in region %q according to live AWS API", instanceType, cspRegion)
+		}
+
+	case "gcp":
+		gcloudPath, err := exec.LookPath("gcloud")
+		if err != nil {
+			return nil // gcloud CLI not installed, skip
+		}
+
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctxWithTimeout, gcloudPath, "auth", "print-access-token")
+		if err := cmd.Run(); err != nil {
+			return nil // Not authenticated, skip
+		}
+
+		ctxQuery, cancelQuery := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelQuery()
+		zoneFilter := fmt.Sprintf("name=%s AND zone:( %s* )", instanceType, cspRegion)
+		queryCmd := exec.CommandContext(ctxQuery, gcloudPath, "compute", "machine-types", "list",
+			"--filter", zoneFilter,
+			"--format", "json")
+
+		output, err := queryCmd.Output()
+		if err != nil {
+			return nil
+		}
+
+		var list []any
+		if err := json.Unmarshal(output, &list); err != nil {
+			return nil
+		}
+
+		if len(list) == 0 {
+			return fmt.Errorf("machine type %q is not offered in region %q according to live GCP API", instanceType, cspRegion)
+		}
+	}
+
+	return nil
 }
 
 // ResolveDBClass implements MDBCatalog. It looks for an exact (cpu, ram) match in
