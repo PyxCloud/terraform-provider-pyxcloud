@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/migration/runtime"
@@ -170,7 +171,7 @@ func (c *Client) RequestPlan(ctx context.Context, in PlanInput, ephPub [32]byte,
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode != http.StatusOK {
-		return PlanResponse{}, fmt.Errorf("migration plan: backend returned %d: %s", resp.StatusCode, string(rb))
+		return PlanResponse{}, fmt.Errorf("migration plan: backend returned %d: %s", resp.StatusCode, redactBackendErrorBody(rb))
 	}
 	var pr PlanResponse
 	if err := json.Unmarshal(rb, &pr); err != nil {
@@ -203,4 +204,71 @@ func SealedInputsFrom(pr PlanResponse, dryRun bool) (runtime.SealedInputs, error
 		ExpectedMeasurement: meas,
 		DryRun:              dryRun,
 	}, nil
+}
+
+func redactBackendErrorBody(body []byte) string {
+	const max = 512
+	if len(body) == 0 {
+		return "<empty>"
+	}
+	if len(body) > max {
+		body = body[:max]
+	}
+	var value any
+	if err := json.Unmarshal(body, &value); err == nil {
+		return redactJSONValue(value)
+	}
+	return "<redacted non-json error body>"
+}
+
+func redactJSONValue(value any) string {
+	switch v := value.(type) {
+	case map[string]any:
+		safe := make(map[string]any, len(v))
+		for k, item := range v {
+			if sensitiveField(k) {
+				safe[k] = "<redacted>"
+				continue
+			}
+			safe[k] = redactJSON(item)
+		}
+		out, _ := json.Marshal(safe)
+		return string(out)
+	default:
+		return "<redacted error body>"
+	}
+}
+
+func redactJSON(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		safe := make(map[string]any, len(v))
+		for k, item := range v {
+			if sensitiveField(k) {
+				safe[k] = "<redacted>"
+				continue
+			}
+			safe[k] = redactJSON(item)
+		}
+		return safe
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, redactJSON(item))
+		}
+		return out
+	case string:
+		return "<redacted>"
+	default:
+		return v
+	}
+}
+
+func sensitiveField(name string) bool {
+	switch strings.ToLower(name) {
+	case "token", "access_token", "refresh_token", "authorization", "password", "secret", "secretaccesskey", "accesskeyid", "credentials", "credential", "key", "private_key":
+		return true
+	default:
+		return false
+	}
 }
