@@ -1,0 +1,48 @@
+{
+  "name": "ci",
+  "triggers": [
+    {
+      "kind": "push",
+      "branches": ["main"]
+    },
+    {
+      "kind": "manual"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "check-and-test",
+      "runner": {
+        "sizeClass": "standard"
+      },
+      "steps": [
+        {
+          "name": "checkout",
+          "capability": "checkout"
+        },
+        {
+          "name": "setup go",
+          "capability": "setup-tool",
+          "with": {
+            "tool": "go",
+            "version": "1.25"
+          }
+        },
+        {
+          "name": "build/vet/test",
+          "run": "go vet ./... && go test ./..."
+        }
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "provider": "github-actions",
+      "out": ".github/workflows"
+    },
+    {
+      "provider": "pyx-lambda",
+      "out": "aws"
+    }
+  ]
+}
