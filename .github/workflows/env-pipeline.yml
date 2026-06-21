@@ -39,7 +39,7 @@ concurrency:
 
 jobs:
   pipeline:
-    runs-on: ubicloud-standard-16
+    runs-on: ubuntu-latest
     env:
       EXAMPLE: ${{ github.event.inputs.example || 'environment' }}
       ACTION: ${{ github.event.inputs.action || 'plan' }}
