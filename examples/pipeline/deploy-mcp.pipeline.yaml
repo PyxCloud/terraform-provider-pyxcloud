@@ -1,0 +1,47 @@
+# PyxCloud Pipeline IR — surface syntax example (see PIPELINE-SPEC.md).
+# The canonical model is internal/pipeline (Go types). This YAML is the authoring
+# surface; the parser (YAML -> IR) ships with the GHA backend (pd-DEVOPS-COMPILE-GHA).
+# This expresses the real deploy-mcp pipeline in the IR as a coverage proof.
+name: deploy-mcp
+
+triggers:
+  - kind: push
+    branches: [main]
+  - kind: manual
+    inputs:
+      - { name: env, default: beta }
+
+concurrency:
+  group: mcp-deploy-beta
+  cancelInProgress: false
+
+secrets:
+  - { name: AWS_ROLE_ARN, fromKey: beta/mcp/deploy-role }
+
+jobs:
+  - id: check-and-test
+    runner: { sizeClass: standard }
+    steps:
+      - { name: checkout, capability: checkout }
+      - name: setup go
+        capability: setup-tool
+        with: { tool: go, version: "1.22" }
+      - name: build/vet/test
+        run: cd mcp-go && go build ./... && go vet ./... && go test ./...
+    produces:
+      - { name: mcp-bin, paths: ["mcp-go/bin/"] }
+
+  - id: deploy
+    needs: [check-and-test]
+    runner: { sizeClass: standard }
+    consumes: [mcp-bin]
+    gate:
+      type: approval
+      approvers: [owner]
+      requireStepUp: true
+    steps:
+      - name: aws oidc
+        capability: cloud-auth
+        with: { provider: aws, via: oidc }
+      - name: terraform apply
+        run: terraform init -reconfigure && terraform apply -auto-approve
