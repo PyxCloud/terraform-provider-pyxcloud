@@ -277,6 +277,58 @@ func (c *HTTPClient) ImportTopology(ctx context.Context, req ImportTopologyReque
 	return out, nil
 }
 
+func (c *HTTPClient) DeployEnvironment(ctx context.Context, envID string, accountBindingID string, hclDocs []string) (map[string]string, error) {
+	reqBody := map[string]any{
+		"accountBindingId": accountBindingID,
+		"hcl":              hclDocs,
+	}
+	resp, data, err := c.do(ctx, http.MethodPost, "/api/environments/"+envID+"/deploy", reqBody)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, apiError("deploy environment", resp.StatusCode, data)
+	}
+	var out map[string]string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decoding deploy response: %w", err)
+	}
+	return out, nil
+}
+
+func (c *HTTPClient) RefreshEnvironment(ctx context.Context, envID string, accountBindingID string) (map[string]string, error) {
+	reqBody := map[string]any{
+		"accountBindingId": accountBindingID,
+	}
+	resp, data, err := c.do(ctx, http.MethodPost, "/api/environments/"+envID+"/refresh", reqBody)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, apiError("refresh environment", resp.StatusCode, data)
+	}
+	var out map[string]string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decoding refresh response: %w", err)
+	}
+	return out, nil
+}
+
+func (c *HTTPClient) DestroyEnvironment(ctx context.Context, envID string, accountBindingID string) error {
+	reqBody := map[string]any{
+		"accountBindingId": accountBindingID,
+	}
+	resp, data, err := c.do(ctx, http.MethodPost, "/api/environments/"+envID+"/destroy", reqBody)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return apiError("destroy environment", resp.StatusCode, data)
+	}
+	return nil
+}
+
+
 func newFeeRequiredError(status int, out ImportTopologyResponse) *FeeRequiredError {
 	reason := out.FeeReason
 	if reason == "" {

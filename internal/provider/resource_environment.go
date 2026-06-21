@@ -880,15 +880,19 @@ var errModeBNotEnabled = fmt.Errorf("managed-account deploy (Mode B, account_bin
 // token), then runs the resulting terraform in workDir with the ambient provider
 // env credentials (Mode A).
 func (r *environmentResource) translateAndApply(ctx context.Context, m *environmentModel) (map[string]string, string, error) {
-	if m.modeB() {
-		return nil, "", errModeBNotEnabled
-	}
 	if r.catalog == nil {
 		return nil, "", fmt.Errorf("provider not configured: missing catalog")
 	}
 	docs, err := catalog.AssembleHCL(ctx, r.catalog, r.assembleInputFromModel(*m))
 	if err != nil {
 		return nil, "", fmt.Errorf("translate: %w", err)
+	}
+	if m.modeB() {
+		outputs, err := r.client.DeployEnvironment(ctx, m.Name.ValueString(), m.AccountBinding.ValueString(), docs)
+		if err != nil {
+			return nil, "", err
+		}
+		return outputs, "", nil
 	}
 	if len(docs) == 0 {
 		return nil, "", fmt.Errorf("translation produced no terraform for this topology")
@@ -907,6 +911,7 @@ func (r *environmentResource) translateAndApply(ctx context.Context, m *environm
 	}
 	return outputs, workDir, nil
 }
+
 
 func (r *environmentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan environmentModel
@@ -934,6 +939,18 @@ func (r *environmentResource) Read(ctx context.Context, req resource.ReadRequest
 	var state environmentModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if state.modeB() {
+		outputs, err := r.client.RefreshEnvironment(ctx, state.Name.ValueString(), state.AccountBinding.ValueString())
+		if err != nil {
+			// Refresh is best-effort; don't fail Read on a transient output read error.
+			return
+		}
+		outMap, diags := types.MapValueFrom(ctx, types.StringType, outputs)
+		resp.Diagnostics.Append(diags...)
+		state.Outputs = outMap
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 		return
 	}
 	workDir, err := r.resolveWorkDir(&state)
@@ -981,6 +998,13 @@ func (r *environmentResource) Delete(ctx context.Context, req resource.DeleteReq
 	var state environmentModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if state.modeB() {
+		if err := r.client.DestroyEnvironment(ctx, state.Name.ValueString(), state.AccountBinding.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Environment destroy failed", err.Error())
+			return
+		}
 		return
 	}
 	workDir, err := r.resolveWorkDir(&state)

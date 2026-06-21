@@ -44,6 +44,10 @@ type Client interface {
 	// ImportTopology asks the backend to canonicalize selected discovered
 	// resources. Deployable topology output may be gated by a migration fee.
 	ImportTopology(ctx context.Context, req ImportTopologyRequest) (ImportTopologyResponse, error)
+
+	DeployEnvironment(ctx context.Context, envID string, accountBindingID string, hclDocs []string) (map[string]string, error)
+	RefreshEnvironment(ctx context.Context, envID string, accountBindingID string) (map[string]string, error)
+	DestroyEnvironment(ctx context.Context, envID string, accountBindingID string) error
 }
 
 // Config holds the provider-level connection settings.
@@ -177,6 +181,25 @@ func (c *StubClient) ImportTopology(_ context.Context, req ImportTopologyRequest
 		FeePaid:           req.Intent == ImportIntentDeployableTopology && req.MigrationFeeToken != "",
 	}, nil
 }
+
+func (c *StubClient) DeployEnvironment(ctx context.Context, envID string, accountBindingID string, hclDocs []string) (map[string]string, error) {
+	return map[string]string{
+		"status": "success",
+		"url":    "https://environment-deployed.pyxcloud.io",
+	}, nil
+}
+
+func (c *StubClient) RefreshEnvironment(ctx context.Context, envID string, accountBindingID string) (map[string]string, error) {
+	return map[string]string{
+		"status": "success",
+		"url":    "https://environment-deployed.pyxcloud.io",
+	}, nil
+}
+
+func (c *StubClient) DestroyEnvironment(ctx context.Context, envID string, accountBindingID string) error {
+	return nil
+}
+
 
 func stringListJSON(values []string) string {
 	if len(values) == 0 {
