@@ -333,9 +333,46 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	//    no rule is rejected by the translator, so with no expose we skip it and the
 	//    VMs fall back to the VPC default SG. vmSG is the name to wire onto VMs ("" = none).
 	if hasVM && len(in.Expose) > 0 {
+		p := strings.ToLower(in.Provider)
+		var rules []SecurityRule
+		if p == ProviderDigitalOcean || p == ProviderLinode || p == ProviderStackIt {
+			rules = []SecurityRule{
+				{
+					Direction: DirEgress,
+					Protocol:  ProtoTCP,
+					FromPort:  1,
+					ToPort:    65535,
+					CIDRs:     []string{"0.0.0.0/0", "::/0"},
+				},
+				{
+					Direction: DirEgress,
+					Protocol:  ProtoUDP,
+					FromPort:  1,
+					ToPort:    65535,
+					CIDRs:     []string{"0.0.0.0/0", "::/0"},
+				},
+				{
+					Direction: DirEgress,
+					Protocol:  ProtoICMP,
+					FromPort:  0,
+					ToPort:    0,
+					CIDRs:     []string{"0.0.0.0/0", "::/0"},
+				},
+			}
+		} else {
+			rules = []SecurityRule{
+				{
+					Direction: DirEgress,
+					Protocol:  ProtoAll,
+					FromPort:  0,
+					ToPort:    0,
+					CIDRs:     []string{"0.0.0.0/0", "::/0"},
+				},
+			}
+		}
 		sgPlan, err := TranslateSecurityGroup(ctx, cat, SecurityGroupSpec{
 			Name: sgName, Network: netName, Region: in.Region, Provider: in.Provider,
-			Description: in.Name + " environment", Expose: in.Expose,
+			Description: in.Name + " environment", Expose: in.Expose, Rules: rules,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("security-group: %w", err)
