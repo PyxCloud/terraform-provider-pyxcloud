@@ -430,6 +430,27 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			docs = append(docs, attHCL)
 		case "access-policy":
+			if c.IAM != nil && (c.IAM.AssumeService != "" || c.IAM.InstanceProfile) {
+				iamSpec := IAMSpec{
+					Name:              c.Name,
+					Region:            in.Region,
+					Provider:          in.Provider,
+					AssumeService:     c.IAM.AssumeService,
+					InlinePolicies:    c.IAM.InlinePolicies,
+					ManagedPolicyARNs: c.IAM.ManagedPolicyARNs,
+					InstanceProfile:   c.IAM.InstanceProfile,
+				}
+				iamPlan, err := TranslateIAM(ctx, cat, iamSpec)
+				if err != nil {
+					return nil, fmt.Errorf("component %q: %w", c.Name, err)
+				}
+				iamHCL, err := RenderIAMHCL(iamPlan)
+				if err != nil {
+					return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+				}
+				docs = append(docs, iamHCL)
+				break
+			}
 			iamSpec := IAMSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.IAM != nil {
 				iamSpec.InlinePolicies = c.IAM.InlinePolicies
