@@ -356,7 +356,11 @@ func renderVMAWS(p VMPlan) string {
 			fmt.Fprintf(&b, "  vpc_security_group_ids = [aws_security_group.%s.id]\n", tfName(p.SecurityGroup))
 		}
 		if p.InstanceProfile != "" {
-			fmt.Fprintf(&b, "  iam_instance_profile = %q\n", p.InstanceProfile)
+			if p.InstanceProfileManaged {
+				fmt.Fprintf(&b, "  iam_instance_profile = aws_iam_instance_profile.%s.name\n", tfName(p.InstanceProfile))
+			} else {
+				fmt.Fprintf(&b, "  iam_instance_profile = %q\n", p.InstanceProfile)
+			}
 		}
 		if p.UserData != "" {
 			fmt.Fprintf(&b, "  user_data = base64encode(%s)\n", vmHeredoc(p.UserData))
@@ -502,7 +506,11 @@ func renderASGAWS(p ScaleGroupPlan) string {
 	}
 	if p.InstanceProfile != "" {
 		b.WriteString("  iam_instance_profile {\n")
-		fmt.Fprintf(&b, "    name = %q\n", p.InstanceProfile)
+		if p.InstanceProfileManaged {
+			fmt.Fprintf(&b, "    name = aws_iam_instance_profile.%s.name\n", tfName(p.InstanceProfile))
+		} else {
+			fmt.Fprintf(&b, "    name = %q\n", p.InstanceProfile)
+		}
 		b.WriteString("  }\n")
 	}
 	if p.RootDiskGB > 0 {

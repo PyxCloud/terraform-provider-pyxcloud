@@ -370,6 +370,26 @@ func TestRenderASGAWSUserDataProfileEBS(t *testing.T) {
 	}
 }
 
+func TestRenderASGAWSUserDataProfileManaged(t *testing.T) {
+	p := ScaleGroupPlan{
+		Provider: ProviderAWS, CSP: "aws", CSPRegion: "eu-west-1", GroupName: "api",
+		InstanceType: "t3.large", Image: "ami-1", Min: 1, Max: 1, Desired: 1, Health: HealthELB,
+		SubnetNames: []string{"net-a"}, NetworkName: "net", SecurityGroup: "api-sg",
+		UserData: "#!/bin/bash\npull-native-binary\n", InstanceProfile: "api-profile", InstanceProfileManaged: true,
+	}
+	hcl, err := RenderScaleGroupHCL(p)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		"iam_instance_profile {", "name = aws_iam_instance_profile.api-profile.name",
+	} {
+		if !sgTestContains(hcl, want) {
+			t.Errorf("ASG HCL missing %q\n---\n%s", want, hcl)
+		}
+	}
+}
+
 func sgTestContains(h, n string) bool {
 	for i := 0; i+len(n) <= len(h); i++ {
 		if h[i:i+len(n)] == n {

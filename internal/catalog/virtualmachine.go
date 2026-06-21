@@ -104,9 +104,10 @@ type VMPlan struct {
 	NetworkName     string           `json:"network_name"`     // VPC/network it lives in
 	SubnetName      string           `json:"subnet_name"`      // subnet (where applicable)
 	SecurityGroup   string           `json:"security_group"`   // SG/firewall to attach
-	UserData        string           `json:"user_data"`        // cloud-init/bootstrap
-	InstanceProfile string           `json:"instance_profile"` // IAM instance-profile name
-	ResourceType    string           `json:"resource_type"`    // top provider resource
+	UserData               string           `json:"user_data"`        // cloud-init/bootstrap
+	InstanceProfile        string           `json:"instance_profile"` // IAM instance-profile name
+	InstanceProfileManaged bool             `json:"instance_profile_managed"`
+	ResourceType           string           `json:"resource_type"`    // top provider resource
 }
 
 // VMCatalog is the resolution boundary for virtual-machine SKUs and OS images.

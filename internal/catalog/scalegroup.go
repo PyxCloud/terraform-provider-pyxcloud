@@ -78,9 +78,10 @@ type ScaleGroupPlan struct {
 	Desired int    `json:"desired"` // desired instances
 	Health  string `json:"health"`  // ec2 | elb
 
-	UserData        string `json:"user_data"`        // cloud-init/bootstrap (provider-neutral plaintext)
-	InstanceProfile string `json:"instance_profile"` // IAM instance-profile/service-account name (optional)
-	RootDiskGB      int    `json:"root_disk_gb"`     // root volume size GiB (0 = provider default)
+	UserData               string `json:"user_data"`        // cloud-init/bootstrap (provider-neutral plaintext)
+	InstanceProfile        string `json:"instance_profile"` // IAM instance-profile/service-account name (optional)
+	InstanceProfileManaged bool   `json:"instance_profile_managed"`
+	RootDiskGB             int    `json:"root_disk_gb"`     // root volume size GiB (0 = provider default)
 
 	// Zones are the concrete AZs/zones the group spreads across (multi-AZ),
 	// derived from the region catalog. Empty for DigitalOcean.

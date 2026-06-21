@@ -271,6 +271,15 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		subnets = []string{"10.0.1.0/24", "10.0.2.0/24"}
 	}
 
+	managedInstanceProfiles := make(map[string]bool)
+	for _, c := range in.Components {
+		if c.Type == "access-policy" {
+			managedInstanceProfiles[c.Name] = true
+		} else if c.Type == "iam" && c.IAM != nil && c.IAM.InstanceProfile {
+			managedInstanceProfiles[c.Name] = true
+		}
+	}
+
 	var docs []string
 	needsCloudflare := false
 
@@ -365,6 +374,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
 			}
+			vmPlan.InstanceProfileManaged = managedInstanceProfiles[c.VM.InstanceProfile]
 			vmHCL, err := RenderVMHCL(vmPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
@@ -386,6 +396,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
 			}
+			sgPlan.InstanceProfileManaged = managedInstanceProfiles[sg.InstanceProfile]
 			sgHCL, err := RenderScaleGroupHCL(sgPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
