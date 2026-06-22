@@ -188,6 +188,118 @@ resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
 	}
 }
 
+// TestAWSSecurityGroupRuleImportCandidatesExternalPeer covers the #63 feature shape:
+// a rule scoped to an external SG id literal must be ADOPTED (importable), not skipped
+// — otherwise apply re-creates it and hits InvalidPermission.Duplicate.
+func TestAWSSecurityGroupRuleImportCandidatesExternalPeer(t *testing.T) {
+	hcl := `
+resource "aws_security_group_rule" "beta-api-sg_ingress_1" {
+  type              = "ingress"
+  security_group_id = aws_security_group.beta-api-sg.id
+  protocol          = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  source_security_group_id = "sg-0bda7f6dc31d1c7c0"
+}
+`
+	got := awsSecurityGroupRuleImportCandidates(hcl, map[string]string{"beta-api-sg": "sg-090dcaa930a166d99"})
+	want := importCandidate{
+		Address: "aws_security_group_rule.beta-api-sg_ingress_1",
+		ID:      "sg-090dcaa930a166d99_ingress_tcp_8080_8080_sg-0bda7f6dc31d1c7c0",
+	}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("external-peer candidate = %#v, want one %#v", got, want)
+	}
+}
+
+// TestAWSSecurityGroupRuleImportCandidatesInPlanPeer covers an in-plan source SG
+// reference (aws_security_group.<name>.id) resolved via the sgIDs map.
+func TestAWSSecurityGroupRuleImportCandidatesInPlanPeer(t *testing.T) {
+	hcl := `
+resource "aws_security_group_rule" "app-sg_ingress_1" {
+  type              = "ingress"
+  security_group_id = aws_security_group.app-sg.id
+  protocol          = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  source_security_group_id = aws_security_group.lb.id
+}
+`
+	got := awsSecurityGroupRuleImportCandidates(hcl, map[string]string{"app-sg": "sg-app", "lb": "sg-lb"})
+	want := importCandidate{
+		Address: "aws_security_group_rule.app-sg_ingress_1",
+		ID:      "sg-app_ingress_tcp_8080_8080_sg-lb",
+	}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("in-plan-peer candidate = %#v, want one %#v", got, want)
+	}
+}
+
+// TestSGRuleKeyNormalization: the all/-1 protocol drops ports (AWS reports -1/-1 while
+// HCL says 0/0) and the "sg:" source prefix is stripped, so desired (HCL) and actual
+// (AWS) keys compare equal.
+func TestSGRuleKeyNormalization(t *testing.T) {
+	if a, b := sgRuleKey("egress", "-1", "0", "0", "0.0.0.0/0"), sgRuleKey("egress", "-1", "-1", "-1", "0.0.0.0/0"); a != b {
+		t.Fatalf("all-proto egress keys must match across 0/0 vs -1/-1: %q != %q", a, b)
+	}
+	if a, b := sgRuleKey("ingress", "tcp", "8080", "8080", "sg:sg-abc"), sgRuleKey("ingress", "tcp", "8080", "8080", "sg-abc"); a != b {
+		t.Fatalf("peer source key must be sg:-prefix-insensitive: %q != %q", a, b)
+	}
+	// A real tcp rule must keep its ports distinct.
+	if a, b := sgRuleKey("ingress", "tcp", "8080", "8080", "0.0.0.0/0"), sgRuleKey("ingress", "tcp", "443", "443", "0.0.0.0/0"); a == b {
+		t.Fatal("distinct tcp ports must produce distinct keys")
+	}
+}
+
+// TestSGRulePruneRevokesOnlyOrphans is the lifecycle fix: after a port is moved from a
+// public expose to an ALB-scoped peer rule, the prune diff must revoke ONLY the
+// orphaned 0.0.0.0/0 + ::/0 ingress — keeping the peer ingress and the default egress.
+func TestSGRulePruneRevokesOnlyOrphans(t *testing.T) {
+	hcl := `
+resource "aws_security_group" "app-sg" {
+  name        = "app-sg"
+}
+
+resource "aws_security_group_rule" "app-sg_egress_0" {
+  type              = "egress"
+  security_group_id = aws_security_group.app-sg.id
+  protocol          = "-1"
+  from_port         = 0
+  to_port           = 0
+  cidr_blocks       = ["0.0.0.0/0"]
+  ipv6_cidr_blocks  = ["::/0"]
+}
+
+resource "aws_security_group_rule" "app-sg_ingress_1" {
+  type              = "ingress"
+  security_group_id = aws_security_group.app-sg.id
+  protocol          = "tcp"
+  from_port         = 8080
+  to_port           = 8080
+  source_security_group_id = "sg-alb"
+}
+`
+	desired := desiredSGRuleKeys(parseSGRules(hcl, map[string]string{"app-sg": "sg-app"}), "sg-app")
+	actual := []actualSGRule{
+		{id: "sgr-peer", egress: false, key: sgRuleKey("ingress", "tcp", "8080", "8080", "sg:sg-alb")}, // keep (desired)
+		{id: "sgr-egress4", egress: true, key: sgRuleKey("egress", "-1", "-1", "-1", "0.0.0.0/0")},     // keep (egress)
+		{id: "sgr-egress6", egress: true, key: sgRuleKey("egress", "-1", "-1", "-1", "::/0")},          // keep (egress)
+		{id: "sgr-pub4", egress: false, key: sgRuleKey("ingress", "tcp", "8080", "8080", "0.0.0.0/0")}, // ORPHAN
+		{id: "sgr-pub6", egress: false, key: sgRuleKey("ingress", "tcp", "8080", "8080", "::/0")},      // ORPHAN
+	}
+	got := map[string]bool{}
+	for _, o := range rulesToRevoke(desired, actual) {
+		got[o.id] = true
+	}
+	if len(got) != 2 || !got["sgr-pub4"] || !got["sgr-pub6"] {
+		t.Fatalf("expected to revoke only sgr-pub4 + sgr-pub6, got %#v", got)
+	}
+	// Safety: an SG with no parsed desired rules yields an empty set (prune skips it).
+	if len(desiredSGRuleKeys(parseSGRules(hcl, map[string]string{"app-sg": "sg-app"}), "sg-unknown")) != 0 {
+		t.Fatal("desired keys for an unmanaged SG must be empty")
+	}
+}
+
 func TestDiscoverAWSImportCandidatesAdoptsSecurityGroupsOutsideDefaultVPC(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test creates a POSIX shell fake aws executable")
