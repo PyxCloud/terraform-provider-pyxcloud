@@ -180,3 +180,49 @@ func TestSourceSGRuleTranslates(t *testing.T) {
 		t.Fatalf("source_sg rule not preserved: %+v", plan.Rules)
 	}
 }
+
+// TestExternalSourceSGIDRuleRendersLiteral covers the door-closure feature: a rule
+// scoped to an external SG id (e.g. a shared ALB SG from remote-state) must
+// translate and render to a literal source_security_group_id — NOT a resource ref.
+func TestExternalSourceSGIDRuleRendersLiteral(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateSecurityGroup(context.Background(), MustEmbedded(), SecurityGroupSpec{
+		Name: "app", Region: "Dublin", Provider: "aws",
+		Rules: []SecurityRule{
+			{Direction: "ingress", Protocol: "tcp", FromPort: 8080, ToPort: 8080, ExternalSourceSGID: "sg-0abc123"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Rules) != 1 || plan.Rules[0].ExternalSourceSGID != "sg-0abc123" {
+		t.Fatalf("external_source_sg_id rule not preserved: %+v", plan.Rules)
+	}
+	hcl := renderSGAWS(plan)
+	if !strings.Contains(hcl, `source_security_group_id = "sg-0abc123"`) {
+		t.Fatalf("expected literal source_security_group_id, got:\n%s", hcl)
+	}
+	if strings.Contains(hcl, "aws_security_group.sg-0abc123") {
+		t.Fatalf("external sg id must render as a literal, not a resource ref:\n%s", hcl)
+	}
+}
+
+// TestExternalSourceSGIDValidation asserts the three rejection paths are hard
+// errors: a second scope alongside it, a non-sg- value, and a non-AWS provider.
+func TestExternalSourceSGIDValidation(t *testing.T) {
+	t.Parallel()
+	cat := MustEmbedded()
+	cases := []struct {
+		name string
+		spec SecurityGroupSpec
+	}{
+		{"external + cidr (two scopes)", SecurityGroupSpec{Region: "Dublin", Provider: "aws", Rules: []SecurityRule{{Direction: "ingress", Protocol: "tcp", FromPort: 1, ToPort: 1, CIDRs: []string{"0.0.0.0/0"}, ExternalSourceSGID: "sg-1"}}}},
+		{"external bad format", SecurityGroupSpec{Region: "Dublin", Provider: "aws", Rules: []SecurityRule{{Direction: "ingress", Protocol: "tcp", FromPort: 1, ToPort: 1, ExternalSourceSGID: "lb-1"}}}},
+		{"external on non-aws", SecurityGroupSpec{Region: "Dublin", Provider: "gcp", Rules: []SecurityRule{{Direction: "ingress", Protocol: "tcp", FromPort: 1, ToPort: 1, ExternalSourceSGID: "sg-1"}}}},
+	}
+	for _, c := range cases {
+		if _, err := TranslateSecurityGroup(context.Background(), cat, c.spec); err == nil {
+			t.Errorf("%s: expected validation error, got nil", c.name)
+		}
+	}
+}

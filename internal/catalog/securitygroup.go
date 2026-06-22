@@ -61,6 +61,11 @@ type SecurityRule struct {
 	ToPort    int      // inclusive high port
 	CIDRs     []string // source (ingress) / destination (egress) CIDRs
 	SourceSG  string   // canonical name of a peer security-group (mutually exclusive with CIDRs)
+	// ExternalSourceSGID references a security-group by its concrete provider id
+	// (e.g. an AWS "sg-..." living in a different terraform state — a shared ALB SG
+	// exported via remote-state). Mutually exclusive with CIDRs and SourceSG.
+	// AWS-only: a raw security-group id is an AWS concept.
+	ExternalSourceSGID string
 }
 
 // SecurityGroupSpec is the abstract description of a security-group attached to a
@@ -86,6 +91,9 @@ type RulePlan struct {
 	ToPort    int      `json:"to_port"`             // inclusive
 	CIDRs     []string `json:"cidrs,omitempty"`     // cidr-scoped rule
 	SourceSG  string   `json:"source_sg,omitempty"` // peer-SG-scoped rule (canonical name)
+	// ExternalSourceSGID is a concrete provider SG id (AWS sg-...) for an external,
+	// out-of-plan security group (mutually exclusive with CIDRs and SourceSG).
+	ExternalSourceSGID string `json:"external_source_sg_id,omitempty"`
 }
 
 // SecurityGroupPlan is the deterministic, catalog-resolved concrete translation
@@ -168,12 +176,13 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 	// Layer explicit rules on top, normalised.
 	for _, r := range spec.Rules {
 		rules = append(rules, RulePlan{
-			Direction: strings.ToLower(strings.TrimSpace(r.Direction)),
-			Protocol:  strings.ToLower(strings.TrimSpace(r.Protocol)),
-			FromPort:  r.FromPort,
-			ToPort:    r.ToPort,
-			CIDRs:     append([]string(nil), r.CIDRs...),
-			SourceSG:  strings.TrimSpace(r.SourceSG),
+			Direction:          strings.ToLower(strings.TrimSpace(r.Direction)),
+			Protocol:           strings.ToLower(strings.TrimSpace(r.Protocol)),
+			FromPort:           r.FromPort,
+			ToPort:             r.ToPort,
+			CIDRs:              append([]string(nil), r.CIDRs...),
+			SourceSG:           strings.TrimSpace(r.SourceSG),
+			ExternalSourceSGID: strings.TrimSpace(r.ExternalSourceSGID),
 		})
 	}
 
@@ -229,6 +238,15 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 // DO must be expressed explicitly per protocol/port instead.
 func enforceProviderCapabilities(provider string, rules []RulePlan) error {
 	p := strings.ToLower(provider)
+	// external_source_sg_id is a raw AWS security-group id; reject it on any other
+	// provider as a hard plan-time error (never a silent drop at render).
+	if p != ProviderAWS {
+		for _, r := range rules {
+			if strings.TrimSpace(r.ExternalSourceSGID) != "" {
+				return fmt.Errorf("security-group: external_source_sg_id is AWS-only; provider %q does not support raw security-group ids", provider)
+			}
+		}
+	}
 	// DigitalOcean, Linode and StackIt firewalls/security-group rules support only
 	// named protocols (tcp/udp/icmp) — there is no "all"/"any" protocol — so an
 	// `all` rule must be expressed explicitly per protocol (a hard plan-time error,
@@ -357,14 +375,22 @@ func validateRule(i int, r SecurityRule) error {
 	default:
 		return fmt.Errorf("security-group: rule %d has invalid protocol %q (tcp | udp | icmp | all)", i, r.Protocol)
 	}
-	// Exactly one scope: CIDRs xor SourceSG.
+	// Exactly one scope: CIDRs xor SourceSG xor ExternalSourceSGID.
 	hasCIDR := len(r.CIDRs) > 0
 	hasSG := strings.TrimSpace(r.SourceSG) != ""
-	if hasCIDR && hasSG {
-		return fmt.Errorf("security-group: rule %d sets both cidrs and source_sg (mutually exclusive)", i)
+	extSGID := strings.TrimSpace(r.ExternalSourceSGID)
+	hasExtSG := extSGID != ""
+	scopes := 0
+	for _, set := range []bool{hasCIDR, hasSG, hasExtSG} {
+		if set {
+			scopes++
+		}
 	}
-	if !hasCIDR && !hasSG {
-		return fmt.Errorf("security-group: rule %d must set either cidrs or source_sg", i)
+	if scopes != 1 {
+		return fmt.Errorf("security-group: rule %d must set exactly one scope of cidrs, source_sg, or external_source_sg_id", i)
+	}
+	if hasExtSG && !strings.HasPrefix(extSGID, "sg-") {
+		return fmt.Errorf("security-group: rule %d external_source_sg_id %q must be a security-group id (sg-...)", i, extSGID)
 	}
 	for _, c := range r.CIDRs {
 		if _, _, err := net.ParseCIDR(c); err != nil {

@@ -246,13 +246,16 @@ type AssembleServerless struct {
 // AssembleInput is the catalog-native environment description (no client import,
 // so the catalog stays dependency-free).
 type AssembleInput struct {
-	Name       string
-	Provider   string
-	Region     string
-	CIDR       string   // optional; defaults to 10.0.0.0/16
-	Subnets    []string // optional; defaults to a single 10.0.1.0/24
-	Expose     []int    // optional security-group TCP expose ports
-	Components []AssembleComponent
+	Name     string
+	Provider string
+	Region   string
+	CIDR     string   // optional; defaults to 10.0.0.0/16
+	Subnets  []string // optional; defaults to a single 10.0.1.0/24
+	Expose   []int    // optional security-group TCP expose ports
+	// IngressRules are explicit ingress rules layered on top of Expose — used to
+	// scope a port to an external SG (e.g. a shared ALB SG) instead of 0.0.0.0/0.
+	IngressRules []SecurityRule
+	Components   []AssembleComponent
 }
 
 // AssembleHCL translates the environment to concrete terraform documents.
@@ -332,7 +335,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// 2. Security group — only when VMs are present AND ports are exposed. A SG with
 	//    no rule is rejected by the translator, so with no expose we skip it and the
 	//    VMs fall back to the VPC default SG. vmSG is the name to wire onto VMs ("" = none).
-	if hasVM && len(in.Expose) > 0 {
+	if hasVM && (len(in.Expose) > 0 || len(in.IngressRules) > 0) {
 		p := strings.ToLower(in.Provider)
 		var rules []SecurityRule
 		if p == ProviderDigitalOcean || p == ProviderLinode || p == ProviderStackIt {
@@ -370,6 +373,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				},
 			}
 		}
+		// Layer explicit ingress rules (e.g. ALB-scoped service doors) on top of expose.
+		rules = append(rules, in.IngressRules...)
 		sgPlan, err := TranslateSecurityGroup(ctx, cat, SecurityGroupSpec{
 			Name: sgName, Network: netName, Region: in.Region, Provider: in.Provider,
 			Description: in.Name + " environment", Expose: in.Expose, Rules: rules,
