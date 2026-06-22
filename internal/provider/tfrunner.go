@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/terraform-exec/tfexec"
@@ -96,6 +97,7 @@ func (r *tfRunner) apply(ctx context.Context, docs []string) (map[string]string,
 	if err := tf.Apply(ctx); err != nil {
 		return nil, fmt.Errorf("terraform apply: %w", err)
 	}
+	r.pruneOrphanedSGRules(ctx, docs)
 	return r.outputs(ctx, tf)
 }
 
@@ -226,57 +228,232 @@ func discoverAWSImportCandidates(ctx context.Context, docs []string) []importCan
 	return candidates
 }
 
-func awsSecurityGroupRuleImportCandidates(hcl string, sgIDs map[string]string) []importCandidate {
-	type sgRuleSpec struct {
-		address    string
-		sgName     string
-		ruleType   string
-		protocol   string
-		fromPort   string
-		toPort     string
-		cidrBlocks []string
-	}
-	var candidates []importCandidate
+// parsedSGRule is one aws_security_group_rule parsed from the rendered HCL, with its
+// owning SG id resolved (via sgIDs) and each source resolved to a concrete token: a
+// CIDR string, or "sg:<group-id>" for a source_security_group_id rule (either an
+// in-plan aws_security_group.<name>.id or an external "sg-..." literal). Pure — no
+// AWS calls — and shared by the import-adoption and orphan-prune paths.
+type parsedSGRule struct {
+	address  string
+	sgName   string
+	sgID     string
+	ruleType string // ingress | egress
+	protocol string // tcp | udp | icmp | -1
+	fromPort string
+	toPort   string
+	sources  []string // CIDRs and/or "sg:<group-id>" tokens
+}
+
+func parseSGRules(hcl string, sgIDs map[string]string) []parsedSGRule {
+	var out []parsedSGRule
 	for _, m := range awsSGRuleRE.FindAllStringSubmatch(hcl, -1) {
-		spec := sgRuleSpec{address: "aws_security_group_rule." + m[1]}
 		body := m[2]
+		pr := parsedSGRule{address: "aws_security_group_rule." + m[1]}
 		if sg := awsSGRuleSGRefRE.FindStringSubmatch(body); len(sg) == 2 {
-			spec.sgName = sg[1]
-		}
-		for _, cidr := range awsSGRuleCIDRRE.FindAllStringSubmatch(body, -1) {
-			if len(cidr) == 2 {
-				spec.cidrBlocks = append(spec.cidrBlocks, cidr[1])
-			}
-		}
-		for _, cidr := range awsSGRuleIPv6CIDRRE.FindAllStringSubmatch(body, -1) {
-			if len(cidr) == 2 {
-				spec.cidrBlocks = append(spec.cidrBlocks, cidr[1])
-			}
+			pr.sgName = sg[1]
+			pr.sgID = sgIDs[sg[1]]
 		}
 		for _, attr := range hclStringAttrRE.FindAllStringSubmatch(body, -1) {
 			switch attr[1] {
 			case "type":
-				spec.ruleType = attr[2]
+				pr.ruleType = attr[2]
 			case "protocol":
-				spec.protocol = attr[2]
+				pr.protocol = attr[2]
 			}
 		}
-		spec.fromPort = hclNumberAttr(body, "from_port")
-		spec.toPort = hclNumberAttr(body, "to_port")
-		sgID := sgIDs[spec.sgName]
-		if sgID == "" || spec.ruleType == "" || spec.protocol == "" || spec.fromPort == "" || spec.toPort == "" || len(spec.cidrBlocks) == 0 {
+		pr.fromPort = hclNumberAttr(body, "from_port")
+		pr.toPort = hclNumberAttr(body, "to_port")
+		for _, c := range awsSGRuleCIDRRE.FindAllStringSubmatch(body, -1) {
+			if len(c) == 2 {
+				pr.sources = append(pr.sources, c[1])
+			}
+		}
+		for _, c := range awsSGRuleIPv6CIDRRE.FindAllStringSubmatch(body, -1) {
+			if len(c) == 2 {
+				pr.sources = append(pr.sources, c[1])
+			}
+		}
+		// source_security_group_id: an in-plan SG (resolve to its id) or an external literal.
+		if sg := awsSGRuleSourceSGRefRE.FindStringSubmatch(body); len(sg) == 2 {
+			if id := sgIDs[sg[1]]; id != "" {
+				pr.sources = append(pr.sources, "sg:"+id)
+			}
+		} else if lit := awsSGRuleSourceSGLiteralRE.FindStringSubmatch(body); len(lit) == 2 {
+			pr.sources = append(pr.sources, "sg:"+lit[1])
+		}
+		out = append(out, pr)
+	}
+	return out
+}
+
+// awsSGRuleImportID builds the terraform import id for one source of an SG rule:
+// "<sg-id>_<type>_<proto>_<from>_<to>_<source>" (the source is a CIDR, or a peer group
+// id with the "sg:" prefix stripped) — the aws_security_group_rule import format for
+// both CIDR and source-SG rules.
+func awsSGRuleImportID(sgID, ruleType, proto, from, to, source string) string {
+	if proto == "-1" {
+		proto = "all"
+	}
+	return strings.Join([]string{sgID, ruleType, proto, from, to, strings.TrimPrefix(source, "sg:")}, "_")
+}
+
+func awsSecurityGroupRuleImportCandidates(hcl string, sgIDs map[string]string) []importCandidate {
+	var candidates []importCandidate
+	for _, pr := range parseSGRules(hcl, sgIDs) {
+		if pr.sgID == "" || pr.ruleType == "" || pr.protocol == "" || pr.fromPort == "" || pr.toPort == "" || len(pr.sources) == 0 {
 			continue
 		}
-		proto := spec.protocol
-		if proto == "-1" {
-			proto = "all"
-		}
-		for _, cidrBlock := range spec.cidrBlocks {
-			id := strings.Join([]string{sgID, spec.ruleType, proto, spec.fromPort, spec.toPort, cidrBlock}, "_")
-			candidates = append(candidates, importCandidate{Address: spec.address, ID: id})
+		for _, source := range pr.sources {
+			candidates = append(candidates, importCandidate{
+				Address: pr.address,
+				ID:      awsSGRuleImportID(pr.sgID, pr.ruleType, pr.protocol, pr.fromPort, pr.toPort, source),
+			})
 		}
 	}
 	return candidates
+}
+
+// sgRuleKey canonicalizes a rule for set comparison between desired (HCL) and actual
+// (AWS): "<dir>|<proto>|<from>|<to>|<source>". Ports are dropped for the all/-1
+// protocol (AWS reports -1/-1 while the HCL may say 0/0), and the source is a CIDR or
+// a bare peer group id ("sg:" stripped).
+func sgRuleKey(direction, proto, from, to, source string) string {
+	p := strings.ToLower(strings.TrimSpace(proto))
+	if p == "-1" || p == "all" {
+		p, from, to = "all", "", ""
+	}
+	return strings.ToLower(strings.TrimSpace(direction)) + "|" + p + "|" + from + "|" + to + "|" +
+		strings.ToLower(strings.TrimPrefix(strings.TrimSpace(source), "sg:"))
+}
+
+// desiredSGRuleKeys is the set of canonical rule keys the HCL declares for ownerSgID.
+func desiredSGRuleKeys(rules []parsedSGRule, ownerSgID string) map[string]bool {
+	keys := map[string]bool{}
+	for _, pr := range rules {
+		if pr.sgID != ownerSgID {
+			continue
+		}
+		for _, source := range pr.sources {
+			keys[sgRuleKey(pr.ruleType, pr.protocol, pr.fromPort, pr.toPort, source)] = true
+		}
+	}
+	return keys
+}
+
+// actualSGRule is one live ingress/egress rule on an AWS SG.
+type actualSGRule struct {
+	id     string
+	egress bool
+	key    string
+}
+
+// rulesToRevoke returns the actual rules whose key is absent from the desired set —
+// the orphans to prune. Pure; the AWS describe/revoke glue lives in pruneOrphanedSGRules.
+func rulesToRevoke(desired map[string]bool, actual []actualSGRule) []actualSGRule {
+	var orphans []actualSGRule
+	for _, a := range actual {
+		if !desired[a.key] {
+			orphans = append(orphans, a)
+		}
+	}
+	return orphans
+}
+
+// pruneOrphanedSGRules revokes ingress/egress rules that exist in AWS but are absent
+// from the desired HCL, for each SG the provider manages. The local nested state is
+// empty on a fresh runner, so terraform can only create/adopt what is in the current
+// HCL and cannot itself destroy a rule dropped from config — without this prune such a
+// rule lingers (e.g. a public 0.0.0.0/0 door left open after a port is moved to an
+// ALB-scoped rule). Conservative: an SG whose desired set parses empty is skipped so a
+// parse failure can never blindly strip a live SG.
+func (r *tfRunner) pruneOrphanedSGRules(ctx context.Context, docs []string) {
+	all := strings.Join(docs, "\n")
+	sgIDs := map[string]string{}
+	for _, m := range resourceNameRE("aws_security_group").FindAllStringSubmatch(all, -1) {
+		if id := awsSecurityGroupID(ctx, m[2]); id != "" {
+			sgIDs[m[1]] = id
+		}
+	}
+	if len(sgIDs) == 0 {
+		return
+	}
+	rules := parseSGRules(all, sgIDs)
+	for _, sgID := range sgIDs {
+		desired := desiredSGRuleKeys(rules, sgID)
+		if len(desired) == 0 {
+			continue // never prune blind on a parse miss
+		}
+		for _, orphan := range rulesToRevoke(desired, describeSGRules(ctx, sgID)) {
+			if err := awsRevokeSGRule(ctx, sgID, orphan.id, orphan.egress); err != nil {
+				fmt.Fprintf(os.Stderr, "pyxcloud: skipped revoke of orphaned SG rule %s on %s: %v\n", orphan.id, sgID, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "pyxcloud: revoked orphaned SG rule %s on %s (not in desired config)\n", orphan.id, sgID)
+			}
+		}
+	}
+}
+
+// describeSGRules lists the live ingress+egress rules on an SG, keyed for comparison.
+func describeSGRules(ctx context.Context, sgID string) []actualSGRule {
+	out := awsOutput(ctx, "ec2", "describe-security-group-rules",
+		"--filters", "Name=group-id,Values="+sgID,
+		"--query", "SecurityGroupRules[].{id:SecurityGroupRuleId,egress:IsEgress,proto:IpProtocol,from:FromPort,to:ToPort,cidr:CidrIpv4,cidr6:CidrIpv6,peer:ReferencedGroupInfo.GroupId}",
+		"--output", "json")
+	if out == "" {
+		return nil
+	}
+	var rows []struct {
+		ID    string `json:"id"`
+		Egr   bool   `json:"egress"`
+		Proto string `json:"proto"`
+		From  int    `json:"from"`
+		To    int    `json:"to"`
+		Cidr  string `json:"cidr"`
+		Cidr6 string `json:"cidr6"`
+		Peer  string `json:"peer"`
+	}
+	if json.Unmarshal([]byte(out), &rows) != nil {
+		return nil
+	}
+	var actual []actualSGRule
+	for _, row := range rows {
+		dir := "ingress"
+		if row.Egr {
+			dir = "egress"
+		}
+		var source string
+		switch {
+		case row.Cidr != "":
+			source = row.Cidr
+		case row.Cidr6 != "":
+			source = row.Cidr6
+		case row.Peer != "":
+			source = "sg:" + row.Peer
+		default:
+			continue // prefix-list / self rules are not modelled — leave them alone
+		}
+		actual = append(actual, actualSGRule{
+			id:     row.ID,
+			egress: row.Egr,
+			key:    sgRuleKey(dir, row.Proto, strconv.Itoa(row.From), strconv.Itoa(row.To), source),
+		})
+	}
+	return actual
+}
+
+func awsRevokeSGRule(ctx context.Context, sgID, ruleID string, egress bool) error {
+	if _, err := exec.LookPath("aws"); err != nil {
+		return fmt.Errorf("aws CLI not found")
+	}
+	api := "revoke-security-group-ingress"
+	if egress {
+		api = "revoke-security-group-egress"
+	}
+	cmd := exec.CommandContext(ctx, "aws", "ec2", api, "--group-id", sgID, "--security-group-rule-ids", ruleID)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func resourceNameRE(resourceType string) *regexp.Regexp {
@@ -284,14 +461,16 @@ func resourceNameRE(resourceType string) *regexp.Regexp {
 }
 
 var (
-	iamRolePolicyRE           = regexp.MustCompile(`(?s)resource\s+"aws_iam_role_policy"\s+"([^"]+)"\s+\{.*?\n\s+name\s+=\s+"([^"]+)".*?\n\s+role\s+=\s+aws_iam_role\.([A-Za-z0-9_-]+)\.id`)
-	iamRolePolicyAttachmentRE = regexp.MustCompile(`(?s)resource\s+"aws_iam_role_policy_attachment"\s+"([^"]+)"\s+\{.*?\n\s+role\s+=\s+aws_iam_role\.([A-Za-z0-9_-]+)\.name.*?\n\s+policy_arn\s+=\s+"([^"]+)"`)
-	lbListenerRuleRE          = regexp.MustCompile(`(?s)resource\s+"aws_lb_listener_rule"\s+"([^"]+)"\s+\{.*?\n\s+listener_arn\s+=\s+"([^"]+)".*?\n\s+priority\s+=\s+([0-9]+)`)
-	awsSGRuleRE               = regexp.MustCompile(`(?s)resource\s+"aws_security_group_rule"\s+"([^"]+)"\s+\{(.*?)\n\}`)
-	awsSGRuleSGRefRE          = regexp.MustCompile(`security_group_id\s+=\s+aws_security_group\.([A-Za-z0-9_-]+)\.id`)
-	awsSGRuleCIDRRE           = regexp.MustCompile(`(?m)^\s+cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
-	awsSGRuleIPv6CIDRRE       = regexp.MustCompile(`(?m)^\s+ipv6_cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
-	hclStringAttrRE           = regexp.MustCompile(`(?m)^\s+([a-zA-Z_]+)\s+=\s+"([^"]*)"`)
+	iamRolePolicyRE            = regexp.MustCompile(`(?s)resource\s+"aws_iam_role_policy"\s+"([^"]+)"\s+\{.*?\n\s+name\s+=\s+"([^"]+)".*?\n\s+role\s+=\s+aws_iam_role\.([A-Za-z0-9_-]+)\.id`)
+	iamRolePolicyAttachmentRE  = regexp.MustCompile(`(?s)resource\s+"aws_iam_role_policy_attachment"\s+"([^"]+)"\s+\{.*?\n\s+role\s+=\s+aws_iam_role\.([A-Za-z0-9_-]+)\.name.*?\n\s+policy_arn\s+=\s+"([^"]+)"`)
+	lbListenerRuleRE           = regexp.MustCompile(`(?s)resource\s+"aws_lb_listener_rule"\s+"([^"]+)"\s+\{.*?\n\s+listener_arn\s+=\s+"([^"]+)".*?\n\s+priority\s+=\s+([0-9]+)`)
+	awsSGRuleRE                = regexp.MustCompile(`(?s)resource\s+"aws_security_group_rule"\s+"([^"]+)"\s+\{(.*?)\n\}`)
+	awsSGRuleSGRefRE           = regexp.MustCompile(`(?m)^\s+security_group_id\s+=\s+aws_security_group\.([A-Za-z0-9_-]+)\.id`)
+	awsSGRuleSourceSGRefRE     = regexp.MustCompile(`(?m)^\s+source_security_group_id\s+=\s+aws_security_group\.([A-Za-z0-9_-]+)\.id`)
+	awsSGRuleSourceSGLiteralRE = regexp.MustCompile(`(?m)^\s+source_security_group_id\s+=\s+"(sg-[A-Za-z0-9]+)"`)
+	awsSGRuleCIDRRE            = regexp.MustCompile(`(?m)^\s+cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
+	awsSGRuleIPv6CIDRRE        = regexp.MustCompile(`(?m)^\s+ipv6_cidr_blocks\s+=\s+\[\s*"([^"]+)"`)
+	hclStringAttrRE            = regexp.MustCompile(`(?m)^\s+([a-zA-Z_]+)\s+=\s+"([^"]*)"`)
 )
 
 func hclNumberAttr(body, name string) string {
