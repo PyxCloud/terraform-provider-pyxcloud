@@ -40,38 +40,49 @@ func NewEnvironmentResource() resource.Resource {
 
 // environmentModel maps the pyxcloud_environment resource.
 type environmentModel struct {
-	ID                              types.String        `tfsdk:"id"`
-	Name                            types.String        `tfsdk:"name"`
-	Provider                        types.String        `tfsdk:"cloud"`
-	Region                          types.String        `tfsdk:"region"`
-	Expose                          []types.Int64       `tfsdk:"expose"`
-	PyxVPC                          []envComponentModel `tfsdk:"pyx_vpc"`
-	PyxNetworkRule                  []envComponentModel `tfsdk:"pyx_network_rule"`
-	PyxAccessPolicy                 []envComponentModel `tfsdk:"pyx_access_policy"`
-	PyxMonitoring                   []envComponentModel `tfsdk:"pyx_monitoring"`
-	PyxDNS                          []envComponentModel `tfsdk:"pyx_dns"`
-	PyxVirtualMachine               []envComponentModel `tfsdk:"pyx_virtual_machine"`
-	PyxAutoscaleVirtualMachineGroup []envComponentModel `tfsdk:"pyx_autoscale_virtual_machine_group"`
-	PyxDatabase                     []envComponentModel `tfsdk:"pyx_database"`
-	PyxLoadBalancer                 []envComponentModel `tfsdk:"pyx_load_balancer"`
-	PyxCache                        []envComponentModel `tfsdk:"pyx_cache"`
-	PyxObjectStorage                []envComponentModel `tfsdk:"pyx_object_storage"`
-	PyxSecret                       []envComponentModel `tfsdk:"pyx_secret"`
-	PyxQueue                        []envComponentModel `tfsdk:"pyx_queue"`
-	PyxStream                       []envComponentModel `tfsdk:"pyx_stream"`
-	PyxServerlessFunction           []envComponentModel `tfsdk:"pyx_serverless_function"`
-	PyxKMS                          []envComponentModel `tfsdk:"pyx_kms"`
-	PyxCDN                          []envComponentModel `tfsdk:"pyx_cdn"`
-	PyxWAF                          []envComponentModel `tfsdk:"pyx_waf"`
-	PyxKubernetes                   []envComponentModel `tfsdk:"pyx_kubernetes"`
-	PyxEmail                        []envComponentModel `tfsdk:"pyx_email"`
-	PyxBlockStorage                 []envComponentModel `tfsdk:"pyx_block_storage"`
-	PyxPrefixList                   []envComponentModel `tfsdk:"pyx_prefix_list"`
-	PyxSynthetics                   []envComponentModel `tfsdk:"pyx_synthetics"`
-	PyxALBAttachment                []envComponentModel `tfsdk:"pyx_alb_attachment"`
-	AccountBinding                  types.String        `tfsdk:"account_binding"`
-	WorkDir                         types.String        `tfsdk:"work_dir"`
-	Outputs                         types.Map           `tfsdk:"outputs"`
+	ID                              types.String           `tfsdk:"id"`
+	Name                            types.String           `tfsdk:"name"`
+	Provider                        types.String           `tfsdk:"cloud"`
+	Region                          types.String           `tfsdk:"region"`
+	Expose                          []types.Int64          `tfsdk:"expose"`
+	SecurityRule                    []envSecurityRuleModel `tfsdk:"security_rule"`
+	PyxVPC                          []envComponentModel    `tfsdk:"pyx_vpc"`
+	PyxNetworkRule                  []envComponentModel    `tfsdk:"pyx_network_rule"`
+	PyxAccessPolicy                 []envComponentModel    `tfsdk:"pyx_access_policy"`
+	PyxMonitoring                   []envComponentModel    `tfsdk:"pyx_monitoring"`
+	PyxDNS                          []envComponentModel    `tfsdk:"pyx_dns"`
+	PyxVirtualMachine               []envComponentModel    `tfsdk:"pyx_virtual_machine"`
+	PyxAutoscaleVirtualMachineGroup []envComponentModel    `tfsdk:"pyx_autoscale_virtual_machine_group"`
+	PyxDatabase                     []envComponentModel    `tfsdk:"pyx_database"`
+	PyxLoadBalancer                 []envComponentModel    `tfsdk:"pyx_load_balancer"`
+	PyxCache                        []envComponentModel    `tfsdk:"pyx_cache"`
+	PyxObjectStorage                []envComponentModel    `tfsdk:"pyx_object_storage"`
+	PyxSecret                       []envComponentModel    `tfsdk:"pyx_secret"`
+	PyxQueue                        []envComponentModel    `tfsdk:"pyx_queue"`
+	PyxStream                       []envComponentModel    `tfsdk:"pyx_stream"`
+	PyxServerlessFunction           []envComponentModel    `tfsdk:"pyx_serverless_function"`
+	PyxKMS                          []envComponentModel    `tfsdk:"pyx_kms"`
+	PyxCDN                          []envComponentModel    `tfsdk:"pyx_cdn"`
+	PyxWAF                          []envComponentModel    `tfsdk:"pyx_waf"`
+	PyxKubernetes                   []envComponentModel    `tfsdk:"pyx_kubernetes"`
+	PyxEmail                        []envComponentModel    `tfsdk:"pyx_email"`
+	PyxBlockStorage                 []envComponentModel    `tfsdk:"pyx_block_storage"`
+	PyxPrefixList                   []envComponentModel    `tfsdk:"pyx_prefix_list"`
+	PyxSynthetics                   []envComponentModel    `tfsdk:"pyx_synthetics"`
+	PyxALBAttachment                []envComponentModel    `tfsdk:"pyx_alb_attachment"`
+	AccountBinding                  types.String           `tfsdk:"account_binding"`
+	WorkDir                         types.String           `tfsdk:"work_dir"`
+	Outputs                         types.Map              `tfsdk:"outputs"`
+}
+
+// envSecurityRuleModel is one explicit ingress rule scoped to an external
+// security-group id (e.g. a shared ALB SG from remote-state), instead of the
+// 0.0.0.0/0 `expose` shorthand. AWS-only.
+type envSecurityRuleModel struct {
+	FromPort              types.Int64  `tfsdk:"from_port"`
+	ToPort                types.Int64  `tfsdk:"to_port"`
+	Protocol              types.String `tfsdk:"protocol"`
+	SourceSecurityGroupID types.String `tfsdk:"source_security_group_id"`
 }
 
 // envComponentModel is the env-resource-specific component (decoupled from the
@@ -386,7 +397,29 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"expose": schema.ListAttribute{
 				Optional:            true,
 				ElementType:         types.Int64Type,
-				MarkdownDescription: "TCP ports to expose on the environment security group when VM or autoscale VM group components are present.",
+				MarkdownDescription: "TCP ports to expose on the environment security group when VM or autoscale VM group components are present. Opens ingress from 0.0.0.0/0 — for an internal port reachable only via a load balancer, use `security_rule` with `source_security_group_id` instead.",
+			},
+			"security_rule": schema.ListNestedAttribute{
+				Optional:            true,
+				MarkdownDescription: "Explicit ingress rules scoped to an external security-group id (e.g. a shared ALB SG from remote-state) instead of the 0.0.0.0/0 `expose` shorthand — each rule opens [from_port,to_port]/protocol from `source_security_group_id` only. AWS-only.",
+				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+					"from_port": schema.Int64Attribute{
+						Required:            true,
+						MarkdownDescription: "Inclusive low port.",
+					},
+					"to_port": schema.Int64Attribute{
+						Optional:            true,
+						MarkdownDescription: "Inclusive high port (defaults to from_port).",
+					},
+					"protocol": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Protocol: tcp | udp | icmp | all (defaults to tcp).",
+					},
+					"source_security_group_id": schema.StringAttribute{
+						Required:            true,
+						MarkdownDescription: "The external security-group id (sg-...) allowed to reach the port.",
+					},
+				}},
 			},
 			"account_binding": schema.StringAttribute{
 				Optional: true,
@@ -620,6 +653,24 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 	}
 	for _, p := range m.Expose {
 		in.Expose = append(in.Expose, int(p.ValueInt64()))
+	}
+	for _, sr := range m.SecurityRule {
+		from := int(sr.FromPort.ValueInt64())
+		to := int(sr.ToPort.ValueInt64())
+		if to == 0 {
+			to = from
+		}
+		proto := sr.Protocol.ValueString()
+		if proto == "" {
+			proto = catalog.ProtoTCP
+		}
+		in.IngressRules = append(in.IngressRules, catalog.SecurityRule{
+			Direction:          catalog.DirIngress,
+			Protocol:           proto,
+			FromPort:           from,
+			ToPort:             to,
+			ExternalSourceSGID: sr.SourceSecurityGroupID.ValueString(),
+		})
 	}
 	for _, typed := range environmentComponentsFromModel(m) {
 		cm := typed.model
@@ -911,7 +962,6 @@ func (r *environmentResource) translateAndApply(ctx context.Context, m *environm
 	}
 	return outputs, workDir, nil
 }
-
 
 func (r *environmentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan environmentModel

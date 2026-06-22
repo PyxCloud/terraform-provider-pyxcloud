@@ -173,6 +173,13 @@ func renderSGAWS(p SecurityGroupPlan) string {
 	b.WriteString("}\n")
 
 	for i, r := range p.Rules {
+		if r.ExternalSourceSGID != "" {
+			// Scope to an external, out-of-plan SG by its concrete id (e.g. a shared
+			// ALB SG from remote-state). Rendered as a literal, not a resource ref.
+			rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
+			writeAWSSecurityGroupRule(&b, rn, name, r, fmt.Sprintf("%q", r.ExternalSourceSGID), "source_security_group_id")
+			continue
+		}
 		if r.SourceSG != "" {
 			rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
 			writeAWSSecurityGroupRule(&b, rn, name, r, fmt.Sprintf("aws_security_group.%s.id", tfName(r.SourceSG)), "source_security_group_id")
