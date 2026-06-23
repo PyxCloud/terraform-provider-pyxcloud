@@ -186,18 +186,31 @@ func TestRenderTracingDO(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		// shared DOKS cluster data source
 		`data "digitalocean_kubernetes_cluster" "app-traces_cluster"`,
-		`image = "` + defaultTempoImage + `"`,
-		`image = "` + defaultOTelCollImage + `"`,
-		`kind       = "Deployment"`,
-		`kind       = "ConfigMap"`,
-		`receivers: [otlp]`,
-		`sampling_percentage: 50`,
-		`endpoint: app-traces-tempo.observability.svc.cluster.local:4317`,
-		`exporters: [otlp/tempo]`,
+		// CORE: upstream operators via helm_release (the operator-pattern CORE)
+		`resource "helm_release" "app-traces_otel_operator"`,
+		`chart      = "opentelemetry-operator"`,
+		`resource "helm_release" "app-traces_tempo_operator"`,
+		`chart      = "tempo-operator"`,
+		// EXTRA: our custom resources the operators reconcile
+		`kind       = "TempoStack"`,
+		`kind       = "OpenTelemetryCollector"`,
+		`image    = "` + defaultOTelCollImage + `"`,
+		`probabilistic_sampler = { sampling_percentage = 50 }`,
+		`endpoint = "tempo-app-traces-tempo-distributor.observability.svc.cluster.local:4317"`,
+		`exporters  = ["otlp/tempo"]`,
+		// EXTRA depends on CORE (operator owns the CRD)
+		`depends_on = [helm_release.app-traces_otel_operator`,
 	} {
 		if !strings.Contains(hcl, want) {
-			t.Errorf("do Tempo+OTel HCL missing %q:\n%s", want, hcl)
+			t.Errorf("do operator-pattern tracing HCL missing %q:\n%s", want, hcl)
+		}
+	}
+	// The hand-rolled raw Deployments/Services/ConfigMap are gone — the operators own them.
+	for _, gone := range []string{`kind       = "ConfigMap"`, `kind       = "Deployment"`} {
+		if strings.Contains(hcl, gone) {
+			t.Errorf("operator pattern must not hand-roll %q:\n%s", gone, hcl)
 		}
 	}
 }

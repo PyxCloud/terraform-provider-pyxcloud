@@ -6,10 +6,11 @@ import (
 )
 
 // RenderTLSCertificateHCL renders a TLSCertificatePlan into provider HCL.
-// AWS -> aws_acm_certificate (DNS validation); DigitalOcean -> cert-manager +
-// Let's Encrypt on DOKS (a ClusterIssuer + a Certificate via kubernetes_manifest).
-// Any other provider never reaches here (TranslateTLSCertificate rejects it with
-// a clean ErrComponentUnsupported).
+// AWS -> aws_acm_certificate (DNS validation); DigitalOcean -> the OPERATOR
+// pattern: the cert-manager operator as an upstream helm_release (CORE) plus a
+// ClusterIssuer + a Certificate custom resource via kubernetes_manifest (EXTRA),
+// making the component self-contained. Any other provider never reaches here
+// (TranslateTLSCertificate rejects it with a clean ErrComponentUnsupported).
 func RenderTLSCertificateHCL(plan TLSCertificatePlan) (string, error) {
 	switch plan.Provider {
 	case ProviderAWS:
@@ -46,18 +47,46 @@ func renderTLSCertificateAWS(p TLSCertificatePlan) string {
 
 func renderTLSCertificateDO(p TLSCertificatePlan) string {
 	name := tfName(p.Name)
+	clusterData := name + "_cluster"
+	operator := name + "_certmanager_operator"
+
+	// ── CORE: the cert-manager operator (controller + CRDs) via the Jetstack chart.
+	// installCRDs=true so the cert-manager.io CRDs our ClusterIssuer/Certificate
+	// resources reference exist before they are applied. This makes the component
+	// self-contained per the operator pattern — see operator.go.
+	core := []HelmReleaseSpec{{
+		TFName:          operator,
+		ReleaseName:     "cert-manager",
+		Repository:      certManagerRepo,
+		Chart:           certManagerChart,
+		Version:         certManagerChartVersion,
+		Namespace:       certManagerNamespace,
+		CreateNamespace: true,
+		Set:             []HelmSet{{Name: "installCRDs", Value: "true"}},
+		ClusterDataRef:  clusterData,
+	}}
+
+	// ── EXTRA: our ClusterIssuer + Certificate custom resources.
+	issuerCR := ManifestCR{
+		TFName:    name + "_issuer",
+		Manifest:  renderTLSIssuerManifest(p),
+		DependsOn: []string{"helm_release." + operator},
+	}
+	certCR := ManifestCR{
+		TFName:   name + "_certificate",
+		Manifest: renderTLSCertManifest(p),
+		// The Certificate depends on both the operator (its CRD) and its issuer.
+		DependsOn: []string{"helm_release." + operator, "kubernetes_manifest." + name + "_issuer"},
+	}
+
+	return renderOperatorComponent(clusterData, p.ClusterName, core, []ManifestCR{issuerCR, certCR})
+}
+
+// renderTLSIssuerManifest renders the EXTRA ClusterIssuer CR body (ACME /
+// Let's Encrypt). Cluster-scoped so multiple Certificates can share it. The
+// private-key Secret is created by cert-manager.
+func renderTLSIssuerManifest(p TLSCertificatePlan) string {
 	var b strings.Builder
-
-	// cert-manager runs IN the DOKS cluster; reference the existing cluster via a
-	// data source so the manifests land on the right cluster's kube credentials
-	// (the same convention the scheduled-trigger DOKS path uses).
-	fmt.Fprintf(&b, "data \"digitalocean_kubernetes_cluster\" %q {\n", name+"_cluster")
-	fmt.Fprintf(&b, "  name = %q\n", p.ClusterName)
-	b.WriteString("}\n\n")
-
-	// ClusterIssuer (ACME / Let's Encrypt). Cluster-scoped so multiple Certificates
-	// can share it. The private-key Secret is created by cert-manager.
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", name+"_issuer")
 	b.WriteString("  manifest = {\n")
 	b.WriteString("    apiVersion = \"cert-manager.io/v1\"\n")
 	b.WriteString("    kind       = \"ClusterIssuer\"\n")
@@ -95,10 +124,13 @@ func renderTLSCertificateDO(p TLSCertificatePlan) string {
 	b.WriteString("      }\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
-	b.WriteString("}\n\n")
+	return b.String()
+}
 
-	// Certificate custom resource — requests + auto-renews the cert from the issuer.
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", name+"_certificate")
+// renderTLSCertManifest renders the EXTRA Certificate CR body — requests +
+// auto-renews the cert from the ClusterIssuer.
+func renderTLSCertManifest(p TLSCertificatePlan) string {
+	var b strings.Builder
 	b.WriteString("  manifest = {\n")
 	b.WriteString("    apiVersion = \"cert-manager.io/v1\"\n")
 	b.WriteString("    kind       = \"Certificate\"\n")
@@ -115,8 +147,5 @@ func renderTLSCertificateDO(p TLSCertificatePlan) string {
 	fmt.Fprintf(&b, "      dnsNames = [%s]\n", quoteList(p.Domains))
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
-	// The Certificate depends on its issuer existing first.
-	fmt.Fprintf(&b, "  depends_on = [kubernetes_manifest.%s]\n", name+"_issuer")
-	b.WriteString("}\n")
 	return b.String()
 }

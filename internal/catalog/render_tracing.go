@@ -7,8 +7,9 @@ import (
 
 // RenderTracingHCL renders a TracingPlan into provider HCL.
 // AWS -> aws_xray_group + aws_xray_sampling_rule (the X-Ray service being
-// migrated away from); DigitalOcean -> Grafana Tempo + an OpenTelemetry collector
-// on DOKS (kubernetes_manifest Deployments/Services/ConfigMap). Any other
+// migrated away from); DigitalOcean -> the OPERATOR pattern: the OpenTelemetry
+// Operator + the Tempo Operator as upstream Helm releases (CORE) plus an
+// OpenTelemetryCollector + a TempoStack custom resource (EXTRA). Any other
 // provider never reaches here (TranslateTracing rejects it with a clean
 // ErrComponentUnsupported).
 func RenderTracingHCL(plan TracingPlan) (string, error) {
@@ -53,180 +54,171 @@ func renderTracingAWS(p TracingPlan) string {
 	return b.String()
 }
 
+// renderTracingDO renders the DigitalOcean tracing replacement following the
+// Kubernetes OPERATOR pattern (pd-MIG-OPERATOR-PATTERN-CONVENTION):
+//
+//   - CORE (upstream, via the operator-pattern helper): the OpenTelemetry Operator
+//     and the Tempo Operator, each installed as a `helm_release` of its official
+//     chart. The charts own the controllers, RBAC and CRDs — we do NOT hand-roll
+//     the Tempo / collector Deployments + Services any more.
+//   - EXTRA (ours): a `TempoStack` custom resource (the operator provisions Tempo's
+//     micro-services + storage) and an `OpenTelemetryCollector` custom resource
+//     (the operator provisions the collector Deployment + Service that ingests OTLP
+//     and exports to the TempoStack). These are the X-Ray-daemon replacements.
+//
+// All resources land on the existing DOKS cluster via the shared
+// `data "digitalocean_kubernetes_cluster"` reference.
 func renderTracingDO(p TracingPlan) string {
 	name := tfName(p.Name)
-	tempo := name + "_tempo"
-	coll := name + "_collector"
+	clusterData := name + "_cluster"
+	otelOp := name + "_otel_operator"
+	tempoOp := name + "_tempo_operator"
+	tempoStack := name + "_tempostack"
+	collector := name + "_collector"
+
+	// ── CORE: upstream operators (controllers + CRDs) via their Helm charts ──
+	core := []HelmReleaseSpec{
+		{
+			TFName:          otelOp,
+			ReleaseName:     p.Name + "-otel-operator",
+			Repository:      otelOperatorRepo,
+			Chart:           otelOperatorChart,
+			Version:         otelOperatorVersion,
+			Namespace:       p.Namespace,
+			CreateNamespace: true,
+			ClusterDataRef:  clusterData,
+		},
+		{
+			TFName:          tempoOp,
+			ReleaseName:     p.Name + "-tempo-operator",
+			Repository:      tempoOperatorRepo,
+			Chart:           tempoOperatorChart,
+			Version:         tempoOperatorVersion,
+			Namespace:       p.Namespace,
+			CreateNamespace: true,
+			ClusterDataRef:  clusterData,
+		},
+	}
+
+	// ── EXTRA: our custom resources the operators reconcile ──
+	tempoStackCR := ManifestCR{
+		TFName:    tempoStack,
+		Manifest:  renderTempoStackManifest(p),
+		DependsOn: []string{"helm_release." + tempoOp},
+	}
+	collectorCR := ManifestCR{
+		TFName:   collector,
+		Manifest: renderOTelCollectorManifest(p),
+		// The collector exports to the TempoStack's gateway, so it must wait for both
+		// the OTel operator (owns its CRD) and the TempoStack (its export target).
+		DependsOn: []string{"helm_release." + otelOp, "kubernetes_manifest." + tempoStack},
+	}
+
+	return renderOperatorComponent(clusterData, p.ClusterName, core, []ManifestCR{tempoStackCR, collectorCR})
+}
+
+// renderTempoStackManifest renders the EXTRA `TempoStack` CR body (the
+// tempo-operator API). The operator provisions Tempo's components + storage;
+// global block retention is bounded (never unbounded).
+func renderTempoStackManifest(p TracingPlan) string {
 	var b strings.Builder
-
-	// The pipeline runs IN the DOKS cluster; reference it via a data source so the
-	// manifests land on the right cluster's kube credentials (the same convention
-	// the cert-manager / scheduled-trigger DOKS paths use).
-	fmt.Fprintf(&b, "data \"digitalocean_kubernetes_cluster\" %q {\n", name+"_cluster")
-	fmt.Fprintf(&b, "  name = %q\n", p.ClusterName)
-	b.WriteString("}\n\n")
-
-	// ── Grafana Tempo: a Deployment (trace store) fronted by a Service exposing the
-	// OTLP ingest ports + the query port. retention bounds the block retention.
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", tempo+"_deployment")
 	b.WriteString("  manifest = {\n")
-	b.WriteString("    apiVersion = \"apps/v1\"\n")
-	b.WriteString("    kind       = \"Deployment\"\n")
+	b.WriteString("    apiVersion = \"tempo.grafana.com/v1alpha1\"\n")
+	b.WriteString("    kind       = \"TempoStack\"\n")
 	b.WriteString("    metadata = {\n")
 	fmt.Fprintf(&b, "      name      = %q\n", p.Name+"-tempo")
 	fmt.Fprintf(&b, "      namespace = %q\n", p.Namespace)
 	b.WriteString("      labels    = { app = \"tempo\", pyxcloud = \"true\" }\n")
 	b.WriteString("    }\n")
 	b.WriteString("    spec = {\n")
-	b.WriteString("      replicas = 1\n")
-	b.WriteString("      selector = { matchLabels = { app = \"tempo\" } }\n")
+	// Storage secret holds the object-storage credentials/endpoint the operator
+	// uses for trace blocks (supplied out-of-band, never in state).
+	b.WriteString("      storage = {\n")
+	b.WriteString("        secret = {\n")
+	fmt.Fprintf(&b, "          name = %q\n", p.Name+"-tempo-storage")
+	b.WriteString("          type = \"s3\"\n")
+	b.WriteString("        }\n")
+	b.WriteString("      }\n")
+	// storageSize bounds the per-ingester PVC; retention bounds block age.
+	b.WriteString("      storageSize = \"10Gi\"\n")
+	b.WriteString("      retention = {\n")
+	b.WriteString("        global = {\n")
+	fmt.Fprintf(&b, "          traces = \"%dh\"\n", p.RetentionHours)
+	b.WriteString("        }\n")
+	b.WriteString("      }\n")
+	// Enable the distributor's OTLP receivers (the collector exports here).
 	b.WriteString("      template = {\n")
-	b.WriteString("        metadata = { labels = { app = \"tempo\" } }\n")
-	b.WriteString("        spec = {\n")
-	b.WriteString("          containers = [{\n")
-	b.WriteString("            name  = \"tempo\"\n")
-	fmt.Fprintf(&b, "            image = %q\n", p.TempoImage)
-	fmt.Fprintf(&b, "            args  = [\"-config.file=/etc/tempo/tempo.yaml\", \"-storage.trace.local.path=/var/tempo\", \"-config.expand-env=true\"]\n")
-	b.WriteString("            ports = [\n")
-	fmt.Fprintf(&b, "              { containerPort = %d, name = \"otlp-grpc\" },\n", p.OTLPGRPCPort)
-	fmt.Fprintf(&b, "              { containerPort = %d, name = \"http-query\" },\n", p.TempoQueryPort)
-	b.WriteString("            ]\n")
-	fmt.Fprintf(&b, "            env = [{ name = \"TEMPO_RETENTION\", value = \"%dh\" }]\n", p.RetentionHours)
-	b.WriteString("          }]\n")
+	b.WriteString("        distributor = {\n")
+	b.WriteString("          component = {\n")
+	b.WriteString("            replicas = 1\n")
+	b.WriteString("          }\n")
+	b.WriteString("        }\n")
+	b.WriteString("        queryFrontend = {\n")
+	b.WriteString("          component = {\n")
+	b.WriteString("            replicas = 1\n")
+	b.WriteString("          }\n")
 	b.WriteString("        }\n")
 	b.WriteString("      }\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
-	b.WriteString("}\n\n")
+	return b.String()
+}
 
-	// Tempo Service: the stable in-cluster endpoint the collector exports to and
-	// Grafana queries.
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", tempo+"_service")
-	b.WriteString("  manifest = {\n")
-	b.WriteString("    apiVersion = \"v1\"\n")
-	b.WriteString("    kind       = \"Service\"\n")
-	b.WriteString("    metadata = {\n")
-	fmt.Fprintf(&b, "      name      = %q\n", p.Name+"-tempo")
-	fmt.Fprintf(&b, "      namespace = %q\n", p.Namespace)
-	b.WriteString("    }\n")
-	b.WriteString("    spec = {\n")
-	b.WriteString("      selector = { app = \"tempo\" }\n")
-	b.WriteString("      ports = [\n")
-	fmt.Fprintf(&b, "        { name = \"otlp-grpc\", port = %d, targetPort = %d },\n", p.OTLPGRPCPort, p.OTLPGRPCPort)
-	fmt.Fprintf(&b, "        { name = \"http-query\", port = %d, targetPort = %d },\n", p.TempoQueryPort, p.TempoQueryPort)
-	b.WriteString("      ]\n")
-	b.WriteString("    }\n")
-	b.WriteString("  }\n")
-	fmt.Fprintf(&b, "  depends_on = [kubernetes_manifest.%s]\n", tempo+"_deployment")
-	b.WriteString("}\n\n")
-
-	// ── OpenTelemetry collector: a ConfigMap (the pipeline config: OTLP receivers ->
-	// probabilistic sampler -> OTLP exporter to Tempo) + a Deployment + a Service
-	// exposing the OTLP receivers applications send spans to.
-	tempoEndpoint := fmt.Sprintf("%s-tempo.%s.svc.cluster.local:%d", p.Name, p.Namespace, p.OTLPGRPCPort)
+// renderOTelCollectorManifest renders the EXTRA `OpenTelemetryCollector` CR body
+// (the opentelemetry-operator API). The operator provisions the collector
+// Deployment + Service from the embedded pipeline config: OTLP receivers ->
+// probabilistic sampler -> OTLP exporter to the TempoStack distributor gateway.
+func renderOTelCollectorManifest(p TracingPlan) string {
+	// The tempo-operator exposes the TempoStack's OTLP ingest on the distributor
+	// service: tempo-<name>-distributor.<ns>.svc.cluster.local:4317.
+	tempoEndpoint := fmt.Sprintf("tempo-%s-tempo-distributor.%s.svc.cluster.local:%d", p.Name, p.Namespace, p.OTLPGRPCPort)
 	samplingPct := p.SamplingRate * 100
-	collectorConfig := strings.Join([]string{
-		"receivers:",
-		"  otlp:",
-		"    protocols:",
-		"      grpc:",
-		fmt.Sprintf("        endpoint: 0.0.0.0:%d", p.OTLPGRPCPort),
-		"      http:",
-		fmt.Sprintf("        endpoint: 0.0.0.0:%d", p.OTLPHTTPPort),
-		"processors:",
-		"  probabilistic_sampler:",
-		fmt.Sprintf("    sampling_percentage: %g", samplingPct),
-		"  batch: {}",
-		"exporters:",
-		"  otlp/tempo:",
-		fmt.Sprintf("    endpoint: %s", tempoEndpoint),
-		"    tls:",
-		"      insecure: true",
-		"service:",
-		"  pipelines:",
-		"    traces:",
-		"      receivers: [otlp]",
-		"      processors: [probabilistic_sampler, batch]",
-		"      exporters: [otlp/tempo]",
-		"",
-	}, "\n")
 
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", coll+"_config")
+	var b strings.Builder
 	b.WriteString("  manifest = {\n")
-	b.WriteString("    apiVersion = \"v1\"\n")
-	b.WriteString("    kind       = \"ConfigMap\"\n")
-	b.WriteString("    metadata = {\n")
-	fmt.Fprintf(&b, "      name      = %q\n", p.Name+"-otel-collector")
-	fmt.Fprintf(&b, "      namespace = %q\n", p.Namespace)
-	b.WriteString("    }\n")
-	b.WriteString("    data = {\n")
-	fmt.Fprintf(&b, "      \"collector.yaml\" = %s\n", hclHeredoc("OTELCONFIG", collectorConfig))
-	b.WriteString("    }\n")
-	b.WriteString("  }\n")
-	b.WriteString("}\n\n")
-
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", coll+"_deployment")
-	b.WriteString("  manifest = {\n")
-	b.WriteString("    apiVersion = \"apps/v1\"\n")
-	b.WriteString("    kind       = \"Deployment\"\n")
+	b.WriteString("    apiVersion = \"opentelemetry.io/v1beta1\"\n")
+	b.WriteString("    kind       = \"OpenTelemetryCollector\"\n")
 	b.WriteString("    metadata = {\n")
 	fmt.Fprintf(&b, "      name      = %q\n", p.Name+"-otel-collector")
 	fmt.Fprintf(&b, "      namespace = %q\n", p.Namespace)
 	b.WriteString("      labels    = { app = \"otel-collector\", pyxcloud = \"true\" }\n")
 	b.WriteString("    }\n")
 	b.WriteString("    spec = {\n")
+	b.WriteString("      mode     = \"deployment\"\n")
+	fmt.Fprintf(&b, "      image    = %q\n", p.CollectorImage)
 	b.WriteString("      replicas = 1\n")
-	b.WriteString("      selector = { matchLabels = { app = \"otel-collector\" } }\n")
-	b.WriteString("      template = {\n")
-	b.WriteString("        metadata = { labels = { app = \"otel-collector\" } }\n")
-	b.WriteString("        spec = {\n")
-	b.WriteString("          containers = [{\n")
-	b.WriteString("            name  = \"otel-collector\"\n")
-	fmt.Fprintf(&b, "            image = %q\n", p.CollectorImage)
-	b.WriteString("            args  = [\"--config=/conf/collector.yaml\"]\n")
-	b.WriteString("            ports = [\n")
-	fmt.Fprintf(&b, "              { containerPort = %d, name = \"otlp-grpc\" },\n", p.OTLPGRPCPort)
-	fmt.Fprintf(&b, "              { containerPort = %d, name = \"otlp-http\" },\n", p.OTLPHTTPPort)
-	b.WriteString("            ]\n")
-	b.WriteString("            volumeMounts = [{ name = \"config\", mountPath = \"/conf\" }]\n")
-	b.WriteString("          }]\n")
-	fmt.Fprintf(&b, "          volumes = [{ name = \"config\", configMap = { name = %q } }]\n", p.Name+"-otel-collector")
+	// The collector pipeline config — a structured object the operator renders into
+	// the collector ConfigMap (the v1beta1 CR config is a typed map, not a YAML blob).
+	b.WriteString("      config = {\n")
+	b.WriteString("        receivers = {\n")
+	b.WriteString("          otlp = {\n")
+	b.WriteString("            protocols = {\n")
+	fmt.Fprintf(&b, "              grpc = { endpoint = \"0.0.0.0:%d\" }\n", p.OTLPGRPCPort)
+	fmt.Fprintf(&b, "              http = { endpoint = \"0.0.0.0:%d\" }\n", p.OTLPHTTPPort)
+	b.WriteString("            }\n")
+	b.WriteString("          }\n")
+	b.WriteString("        }\n")
+	b.WriteString("        processors = {\n")
+	fmt.Fprintf(&b, "          probabilistic_sampler = { sampling_percentage = %g }\n", samplingPct)
+	b.WriteString("          batch                 = {}\n")
+	b.WriteString("        }\n")
+	b.WriteString("        exporters = {\n")
+	b.WriteString("          \"otlp/tempo\" = {\n")
+	fmt.Fprintf(&b, "            endpoint = %q\n", tempoEndpoint)
+	b.WriteString("            tls      = { insecure = true }\n")
+	b.WriteString("          }\n")
+	b.WriteString("        }\n")
+	b.WriteString("        service = {\n")
+	b.WriteString("          pipelines = {\n")
+	b.WriteString("            traces = {\n")
+	b.WriteString("              receivers  = [\"otlp\"]\n")
+	b.WriteString("              processors = [\"probabilistic_sampler\", \"batch\"]\n")
+	b.WriteString("              exporters  = [\"otlp/tempo\"]\n")
+	b.WriteString("            }\n")
+	b.WriteString("          }\n")
 	b.WriteString("        }\n")
 	b.WriteString("      }\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
-	fmt.Fprintf(&b, "  depends_on = [kubernetes_manifest.%s, kubernetes_manifest.%s]\n", coll+"_config", tempo+"_service")
-	b.WriteString("}\n\n")
-
-	// Collector Service: the OTLP ingest endpoint applications point their tracer at
-	// (the X-Ray-daemon replacement). Same OTLP grpc/http ports.
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", coll+"_service")
-	b.WriteString("  manifest = {\n")
-	b.WriteString("    apiVersion = \"v1\"\n")
-	b.WriteString("    kind       = \"Service\"\n")
-	b.WriteString("    metadata = {\n")
-	fmt.Fprintf(&b, "      name      = %q\n", p.Name+"-otel-collector")
-	fmt.Fprintf(&b, "      namespace = %q\n", p.Namespace)
-	b.WriteString("    }\n")
-	b.WriteString("    spec = {\n")
-	b.WriteString("      selector = { app = \"otel-collector\" }\n")
-	b.WriteString("      ports = [\n")
-	fmt.Fprintf(&b, "        { name = \"otlp-grpc\", port = %d, targetPort = %d },\n", p.OTLPGRPCPort, p.OTLPGRPCPort)
-	fmt.Fprintf(&b, "        { name = \"otlp-http\", port = %d, targetPort = %d },\n", p.OTLPHTTPPort, p.OTLPHTTPPort)
-	b.WriteString("      ]\n")
-	b.WriteString("    }\n")
-	b.WriteString("  }\n")
-	fmt.Fprintf(&b, "  depends_on = [kubernetes_manifest.%s]\n", coll+"_deployment")
-	b.WriteString("}\n")
-	return b.String()
-}
-
-// hclHeredoc renders a multi-line string as an HCL heredoc with the given tag so
-// embedded YAML stays readable and quote-safe in the generated .tf.
-func hclHeredoc(tag, body string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "<<-%s\n", tag)
-	b.WriteString(body)
-	fmt.Fprintf(&b, "%s", tag)
 	return b.String()
 }

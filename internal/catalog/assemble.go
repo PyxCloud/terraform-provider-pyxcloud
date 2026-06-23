@@ -390,6 +390,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// in-cluster resources (DOKS CronJob, cert-manager manifests) — otherwise
 	// `terraform plan` cannot resolve kubernetes_* resources.
 	needsKubernetes := false
+	// needsHelm pins the hashicorp/helm provider when a component installs an
+	// upstream operator via helm_release (the operator-pattern CORE — tracing's
+	// OTel/Tempo operators, cert-manager's chart). Mirrors needsKubernetes.
+	needsHelm := false
 
 	// A network (VPC + subnets) is only needed when the environment places VMs or a
 	// managed database. A DNS-only / IAM-only / storage-only env must NOT make a VPC.
@@ -1061,6 +1065,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if tcPlan.ResourceType == "kubernetes_manifest" {
 				needsKubernetes = true
 			}
+			if tcPlan.RendersHelm {
+				needsHelm = true
+			}
 			docs = append(docs, tcHCL)
 		case "tracing", "distributed-tracing", "tempo", "trace-collector", "otel-tracing":
 			trSpec := TracingSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
@@ -1083,6 +1090,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if trPlan.ResourceType == "kubernetes_manifest" {
 				needsKubernetes = true
 			}
+			if trPlan.RendersHelm {
+				needsHelm = true
+			}
 			docs = append(docs, trHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
@@ -1103,7 +1113,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// and once ANY required_providers entry exists (e.g. Cloudflare) terraform also
 	// requires the cloud provider declared. AWS-only envs need NO block (hashicorp/aws
 	// auto-installs), keeping the common case clean.
-	if rp := requiredProvidersBlock(in.Provider, needsCloudflare, needsKubernetes); rp != "" {
+	if rp := requiredProvidersBlock(in.Provider, needsCloudflare, needsKubernetes, needsHelm); rp != "" {
 		docs = append([]string{rp}, docs...)
 	}
 	return docs, nil
@@ -1128,14 +1138,14 @@ var cloudProviderSource = map[string][2]string{
 
 // requiredProvidersBlock returns the terraform{required_providers{...}} HCL when
 // one is needed (non-default cloud source, or Cloudflare present), else "".
-func requiredProvidersBlock(provider string, needsCloudflare, needsKubernetes bool) string {
+func requiredProvidersBlock(provider string, needsCloudflare, needsKubernetes, needsHelm bool) string {
 	src, ok := cloudProviderSource[strings.ToLower(provider)]
 	cloudNonDefault := ok && !strings.HasPrefix(src[1], "hashicorp/")
-	// hashicorp/kubernetes auto-installs (default namespace) but once ANY
-	// required_providers entry exists, terraform requires every used provider to be
-	// declared — so we only need a block when there is a non-default source OR
-	// Cloudflare. When such a block IS emitted and kubernetes resources are present,
-	// pin kubernetes too so the block stays self-consistent.
+	// hashicorp/kubernetes and hashicorp/helm auto-install (default namespace) but
+	// once ANY required_providers entry exists, terraform requires every used
+	// provider to be declared — so we only need a block when there is a non-default
+	// source OR Cloudflare. When such a block IS emitted and kubernetes/helm
+	// resources are present, pin them too so the block stays self-consistent.
 	if !needsCloudflare && !cloudNonDefault {
 		return "" // AWS/GCP/Azure-only: hashicorp namespace auto-installs, no block needed
 	}
@@ -1149,6 +1159,11 @@ func requiredProvidersBlock(provider string, needsCloudflare, needsKubernetes bo
 	}
 	if needsKubernetes {
 		b.WriteString("    kubernetes = {\n      source = \"hashicorp/kubernetes\"\n    }\n")
+	}
+	if needsHelm {
+		// The operator-pattern CORE (upstream operator via helm_release) needs the
+		// hashicorp/helm provider declared.
+		b.WriteString("    helm = {\n      source = \"hashicorp/helm\"\n    }\n")
 	}
 	b.WriteString("  }\n}\n")
 	return b.String()
