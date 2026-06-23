@@ -15,6 +15,7 @@
     { "name": "assets",       "type": "object-storage", "versioning": true, "lifecycle": true, "sse": "AES256", "bucket_policy": true, "access_logs": true, "note": "S3 -> Spaces parity" },
     { "name": "edge-lb",      "type": "load-balancer", "target": "backend (scale-group)", "listeners": ["443/https"], "l7_rules": ["admin.passo.build->sso (VPN-gated 10.8.0.0/24)", "app.passo.build->backend"], "note": "ALB L7 -> DO LB + ingress" },
     { "name": "app-traces",   "type": "tracing", "sampling_rate": 0.2, "retention_hours": 168, "cluster": "backend", "note": "X-Ray -> Grafana Tempo + OTel on DOKS" },
+    { "name": "app-monitoring", "type": "monitoring", "cluster": "backend", "scrape_targets": ["backend"], "alarms": ["backend-cpu-high", "backend-5xx"], "tempo_datasource": "app-traces", "note": "CloudWatch + SNS -> LGTM (kube-prometheus-stack + Loki + Grafana + Alertmanager) on DOKS via the operator pattern; CloudWatch alarms -> PrometheusRule alerts -> Alertmanager" },
     { "name": "app-tls",      "type": "tls-certificate", "domains": ["app.passo.build", "admin.passo.build"], "production": true, "cluster": "backend", "note": "ACM -> cert-manager + Let's Encrypt on DOKS" },
     { "name": "nightly",      "type": "scheduled-trigger", "schedule": "cron(0 3 * * ? *)", "cluster": "backend", "note": "EventBridge cron -> DOKS CronJob" },
     { "name": "vpn-endpoint", "type": "reserved-ip", "note": "Elastic IP -> DO Reserved IP (VPN stable endpoint)" },

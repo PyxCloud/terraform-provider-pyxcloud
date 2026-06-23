@@ -15,6 +15,8 @@ package catalog
 //   - a layer-7 load-balancer fronting the backend scale-group (ALB L7 -> DO LB +
 //     ingress), with the admin/VPN source-IP gate
 //   - tracing (X-Ray -> Grafana Tempo + OTel collector on DOKS)
+//   - monitoring (CloudWatch + SNS -> the LGTM stack: kube-prometheus-stack + Loki
+//     + Grafana + Alertmanager on DOKS, via the operator pattern)
 //   - tls-certificate (ACM -> cert-manager + Let's Encrypt on DOKS)
 //   - a scheduled-trigger (EventBridge cron -> DOKS CronJob)
 //   - a reserved-ip (Elastic IP -> DO Reserved IP, the VPN stable endpoint)
@@ -84,6 +86,28 @@ func FullEstateComponents(arch, os, kubernetesVersion string) []AssembleComponen
 		AssembleComponent{
 			Name: "app-traces", Type: "tracing",
 			Tracing: &AssembleTracing{SamplingRate: 0.2, ClusterName: fullEstateClusterName, RetentionHours: 168},
+		},
+		// CloudWatch + SNS -> the LGTM stack on DOKS (kube-prometheus-stack + Loki +
+		// Grafana + Alertmanager) via the operator pattern. The CloudWatch metric
+		// alarms become PrometheusRule alerts routed through Alertmanager (not SNS);
+		// the Grafana Tempo datasource reuses the app-traces tracing operator so a
+		// single Grafana spans logs, metrics and traces.
+		AssembleComponent{
+			Name: "app-monitoring", Type: "monitoring",
+			Monitoring: &AssembleMonitoring{
+				ClusterName: fullEstateClusterName,
+				ScrapeTargets: []ScrapeTarget{
+					{Name: "backend", MatchLabels: map[string]string{"app": "backend"}, Port: "metrics", Path: "/q/metrics"},
+				},
+				Alarms: []MetricAlarm{
+					{Name: "backend-cpu-high", Namespace: "AWS/EC2", MetricName: "node_cpu_high_ratio",
+						ComparisonOperator: "GreaterThanThreshold", Threshold: 0.8, EvaluationPeriods: 3, PeriodSeconds: 60, Severity: "warning"},
+					{Name: "backend-5xx", Namespace: "AWS/ApplicationELB", MetricName: "http_server_requests_5xx_rate",
+						ComparisonOperator: "GreaterThanThreshold", Threshold: 5, EvaluationPeriods: 5, PeriodSeconds: 60, Severity: "critical"},
+				},
+				// Reuse the app-traces tracing component's Tempo operator as the trace datasource.
+				TempoDatasourceName: "app-traces",
+			},
 		},
 		// ACM -> cert-manager + Let's Encrypt (production) on DOKS.
 		AssembleComponent{

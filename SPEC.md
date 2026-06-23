@@ -140,17 +140,19 @@ sets `needsKubernetes` (→ `hashicorp/kubernetes`) and any `helm_release` sets 
 (→ `hashicorp/helm`) in `assemble.go` — the `needsHelm` pin mirrors the existing `needsKubernetes`
 pin. A component signals it renders Helm via `RendersHelm` on its plan.
 
-**Reference implementation:** tracing (`internal/catalog/tracing.go`, `render_tracing.go`) — CORE =
+**Reference implementations:** tracing (`internal/catalog/tracing.go`, `render_tracing.go`) — CORE =
 the OpenTelemetry Operator + the Tempo Operator (`helm_release`); EXTRA = an `OpenTelemetryCollector`
 + a `TempoStack` CR. cert‑manager (`tlscertificate.go`, `render_tlscertificate.go`) is self‑contained
 the same way: CORE = the cert‑manager Helm chart (`installCRDs=true`); EXTRA = `ClusterIssuer` +
-`Certificate`. The AWS managed‑service path (X‑Ray, ACM) is unchanged.
+`Certificate`. monitoring (`cloudwatch.go`, `render_monitoring_lgtm.go`) — CORE = the
+`kube-prometheus-stack` (Prometheus Operator + Grafana + Alertmanager) + the `grafana/loki` chart
+(`helm_release`); EXTRA = `ServiceMonitor` / `PodMonitor`, a `PrometheusRule` (the CloudWatch metric
+alarms mapped to Prometheus alerts, routed through Alertmanager instead of SNS), and Grafana `Loki` /
+`Tempo` datasources (the Tempo datasource reuses the tracing component's Tempo operator). The AWS
+managed‑service path (X‑Ray, ACM, CloudWatch + SNS) is unchanged.
 
 **Pending replacements MUST follow this convention:**
 
-- **LGTM / monitoring** (CloudWatch metrics/dashboards) → the **Prometheus Operator** /
-  `kube-prometheus-stack` Helm chart (CORE) + `Prometheus` / `ServiceMonitor` / `PrometheusRule`
-  / Grafana dashboard CRs (EXTRA).
 - **Vault‑HA** (Secrets Manager, when the single‑droplet mitigation is upgraded to HA) → the
   HashiCorp **Vault** Helm chart / Vault operator (CORE) + Vault config CRs (EXTRA).
 

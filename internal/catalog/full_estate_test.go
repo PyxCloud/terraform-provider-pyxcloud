@@ -40,6 +40,11 @@ var wantFullEstateResources = []struct{ component, resource string }{
 	{"load-balancer L7 ingress", `resource "kubernetes_manifest" "edge-lb_ingress"`},
 	{"tracing (OTel/Tempo operators)", `resource "helm_release" "app-traces_otel_operator"`},
 	{"tracing (TempoStack CR)", `resource "kubernetes_manifest" "app-traces_tempostack"`},
+	{"monitoring (kube-prometheus-stack operator)", `resource "helm_release" "app-monitoring_kube_prometheus_stack"`},
+	{"monitoring (Loki operator)", `resource "helm_release" "app-monitoring_loki"`},
+	{"monitoring (PrometheusRule alerts)", `resource "kubernetes_manifest" "app-monitoring_alerts"`},
+	{"monitoring (ServiceMonitor scrape)", `resource "kubernetes_manifest" "app-monitoring_scrape_backend"`},
+	{"monitoring (Loki datasource)", `resource "kubernetes_manifest" "app-monitoring_ds_loki"`},
 	{"tls-certificate (cert-manager)", `resource "kubernetes_manifest" "app-tls_issuer"`},
 	{"scheduled-trigger (CronJob)", `resource "kubernetes_cron_job_v1" "nightly"`},
 	{"reserved-ip", `resource "digitalocean_reserved_ip" "vpn-endpoint"`},
@@ -65,6 +70,7 @@ func TestFullEstateAssemblesForDO(t *testing.T) {
 	for _, want := range []string{
 		`source = "digitalocean/digitalocean"`,
 		`source = "hashicorp/kubernetes"`,
+		`source = "hashicorp/helm"`, // operator-pattern CORE (tracing + monitoring helm_release)
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("full estate missing provider pin %q", want)
@@ -104,10 +110,11 @@ func TestFullEstateAssemblesForAWS(t *testing.T) {
 		t.Errorf("want 5 aws_autoscaling_group, got %d", n)
 	}
 	for _, want := range []string{
-		`resource "aws_ecr_repository"`,        // container-registry
-		`resource "aws_s3_bucket" "assets"`,    // object-storage
-		`resource "aws_secretsmanager_secret"`, // secrets-manager native on AWS
-		`resource "aws_acm_certificate"`,       // tls-certificate native on AWS
+		`resource "aws_ecr_repository"`,          // container-registry
+		`resource "aws_s3_bucket" "assets"`,      // object-storage
+		`resource "aws_secretsmanager_secret"`,   // secrets-manager native on AWS
+		`resource "aws_acm_certificate"`,         // tls-certificate native on AWS
+		`resource "aws_cloudwatch_metric_alarm"`, // monitoring: CloudWatch+SNS peer kept on AWS
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("AWS full estate missing %q", want)
