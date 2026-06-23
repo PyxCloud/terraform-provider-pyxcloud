@@ -1,12 +1,14 @@
 name: ci
 on:
-  push:
-    branches:
-      - main
+  # Local-devops mode: automatic GitHub Actions triggers are disabled.
+  # Run pyxflow locally, or dispatch this workflow manually if explicitly approved.
   workflow_dispatch:
 jobs:
   check-and-test:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - pyxflow
+      - linux-x64
     steps:
       - name: checkout
         uses: actions/checkout@v4

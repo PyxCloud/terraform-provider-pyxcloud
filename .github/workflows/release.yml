@@ -1,16 +1,14 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  # Local-devops mode: automatic GitHub Actions triggers are disabled.
+  # Run pyxflow locally, or dispatch this workflow manually if explicitly approved.
   workflow_dispatch:
     inputs:
       tag:
         description: "Existing git tag to release, for example v0.1.5"
         required: true
         type: string
-
 permissions:
   contents: write
 
@@ -20,7 +18,10 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - pyxflow
+      - linux-x64
     steps:
       - name: Resolve release ref
         id: ref
