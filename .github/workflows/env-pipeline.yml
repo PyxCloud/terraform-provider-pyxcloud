@@ -14,6 +14,8 @@ name: Environment Pipeline (pyxcloud provider)
 # action=apply, matching the goal "finish all implementation, THEN prove in env".
 
 on:
+  # Local-devops mode: automatic GitHub Actions triggers are disabled.
+  # Run pyxflow locally, or dispatch this workflow manually if explicitly approved.
   workflow_dispatch:
     inputs:
       action:
@@ -27,19 +29,16 @@ on:
         type: string
         default: environment
         required: true
-  pull_request:
-    paths:
-      - "internal/**"
-      - "examples/environment/**"
-      - ".github/workflows/env-pipeline.yml"
-
 concurrency:
   group: env-pipeline-${{ github.event.inputs.example || 'environment' }}
   cancel-in-progress: false
 
 jobs:
   pipeline:
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - pyxflow
+      - linux-x64
     env:
       EXAMPLE: ${{ github.event.inputs.example || 'environment' }}
       ACTION: ${{ github.event.inputs.action || 'plan' }}
