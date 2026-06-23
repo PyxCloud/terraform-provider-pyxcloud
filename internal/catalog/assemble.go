@@ -341,6 +341,14 @@ type AssembleInput struct {
 	// scope a port to an external SG (e.g. a shared ALB SG) instead of 0.0.0.0/0.
 	IngressRules []SecurityRule
 	Components   []AssembleComponent
+
+	// ApplySecurityBaseline opts the environment into the deploy-default security
+	// baseline (pd-DEP-SECURITY-BASELINE): least-privilege egress on the environment
+	// security-group (DNS/HTTPS/NTP only, replacing the allow-all default) and
+	// production-safe secrets defaults (keep the recovery window). Derived from the
+	// topology by DeriveSecurityBaseline; additive and never widens access. Off by
+	// default so existing callers are unchanged; the deploy path turns it on.
+	ApplySecurityBaseline bool
 }
 
 // AssembleHCL translates the environment to concrete terraform documents.
@@ -357,6 +365,14 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		// Two subnets by default so a managed-database subnet group is multi-AZ
 		// (AWS requires >= 2 AZs); VMs just use the first.
 		subnets = []string{"10.0.1.0/24", "10.0.2.0/24"}
+	}
+
+	// Derive the deploy-default security baseline from the topology (pd-DEP-SECURITY-
+	// BASELINE) when opted in. It supplies least-privilege egress for the environment
+	// SG and production-safe secrets defaults below; empty fields mean "no baseline".
+	var baseline SecurityBaseline
+	if in.ApplySecurityBaseline {
+		baseline = DeriveSecurityBaseline(in)
 	}
 
 	managedInstanceProfiles := make(map[string]bool)
@@ -464,6 +480,12 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 					CIDRs:     []string{"0.0.0.0/0", "::/0"},
 				},
 			}
+		}
+		// Security baseline (pd-DEP-SECURITY-BASELINE): when opted in, REPLACE the
+		// allow-all egress default above with the derived least-privilege egress
+		// (DNS/HTTPS/NTP). Authors needing wider egress add explicit IngressRules/rules.
+		if len(baseline.EgressRules) > 0 {
+			rules = append([]SecurityRule(nil), baseline.EgressRules...)
 		}
 		// Layer explicit ingress rules (e.g. ALB-scoped service doors) on top of expose.
 		rules = append(rules, in.IngressRules...)
@@ -703,6 +725,11 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if c.Secrets != nil {
 				secSpec.Description = c.Secrets.Description
 				secSpec.RotationDays = c.Secrets.RotationDays
+			}
+			// Security baseline: keep the provider recovery window (force_destroy=false)
+			// so an accidental delete is recoverable (pd-DEP-SECURITY-BASELINE).
+			if baseline.SecretsForceDestroy != nil {
+				secSpec.ForceDestroy = baseline.SecretsForceDestroy
 			}
 			secPlan, err := TranslateSecrets(ctx, cat, secSpec)
 			if err != nil {
