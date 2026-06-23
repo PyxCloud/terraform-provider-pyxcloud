@@ -822,3 +822,39 @@ func TestAssembleHCLVaultHAAndWorkloadIdentityDO(t *testing.T) {
 		}
 	}
 }
+
+// TestAssembleHCLPipelineControlPlane proves the pyx-lambda control-plane is
+// reachable via the environment assembly path (dogfood: pd-DEP-PYXLAMBDA-CONTROLPLANE).
+func TestAssembleHCLPipelineControlPlane(t *testing.T) {
+	cat, err := NewEmbedded()
+	if err != nil {
+		t.Fatalf("embedded catalog: %v", err)
+	}
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name:     "demo",
+		Provider: "aws",
+		Region:   "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "pyx-ci", Type: "pipeline-control-plane",
+				PipelineControlPlane: &AssemblePipelineControlPlane{
+					PipelineName: "ci", GitHubOIDC: true,
+					GitHubOwnerRepo: "PyxCloud/terraform-provider-pyxcloud",
+				}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		"resource \"aws_sfn_state_machine\" \"pyx_ci\"",
+		"resource \"aws_lambda_function\" \"pyx_ci_runner\"",
+		"resource \"aws_ecs_cluster\" \"pyx_ci\"",
+		"resource \"aws_codebuild_project\" \"pyx_ci\"",
+		"resource \"aws_iam_openid_connect_provider\" \"pyx_ci_github\"",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("assembled control-plane HCL missing %q\n---\n%s", want, all)
+		}
+	}
+}

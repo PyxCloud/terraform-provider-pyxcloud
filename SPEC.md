@@ -73,6 +73,7 @@ tables in `core/database/sql/provider-catalog-inventory`.
 | `secrets-manager`, `access-policy` | resp. tables | `pd-TF-REST-LAMBDA` |
 | `scheduled-trigger` / `cron-job` / `scheduled-task` | (region only) | `pd-MIG-SCHEDULED-TRIGGER` |
 | `key-value-store` / `kv-store` / `dynamodb` | (region only) | `pd-MIG-KV-STORE-DYNAMODB` |
+| `pipeline-control-plane` / `pyx-lambda-control-plane` / `pipeline-runner` | (region only) | `pd-DEP-PYXLAMBDA-CONTROLPLANE` |
 
 ### 3.2 Abstract region + macro logical place
 
@@ -226,6 +227,12 @@ Same pattern for: `cache` (ElastiCache / Memorystore / DO managed Redis), `manag
 (Route53 / Cloud DNS / DO domains), `cdn-service` (CloudFront / Cloud CDN), `waf-service`,
 `managed-kubernetes` (EKS / GKE / DOKS), `secrets-manager` (Secrets Manager / Secret Manager),
 and finally `serverless-function` (Lambda / Cloud Functions / DO Functions). No exotic products.
+
+### 5.9 `pd-DEP-PYXLAMBDA-CONTROLPLANE` — pyx-lambda DevOps control-plane (dogfood)
+- **Abstract:** `pipeline-control-plane { pipeline_name, runner_*, fargate_*, codebuild_*, github_oidc, github_owner_repo }` — the runtime that EXECUTES a [DevOps Pipeline IR](https://github.com/PyxCloud/pyx-pipeline-ir) pipeline on the "super-custom AWS Lambda" backend (the fully-custom executor). The pyx-pipeline-ir compiler emits the Step Functions ASL for a pipeline (e.g. `aws/ci.json`); **this component provisions the AWS control-plane that ASL runs on** — exactly the split that ASL's header comment calls out ("TF provisioning of the Step Functions state machine, Lambda, Fargate, and CodeBuild resources is handled by terraform-provider-pyxcloud, not by this compiler").
+- **AWS (only backend):** the closed set — `aws_sfn_state_machine` (orchestrator; the ASL is injected via `replace()` so the runtime resource is wired into the compiler output without forking the compiler) + `aws_lambda_function` (PyxRunner, short steps) + `aws_ecs_cluster`/Fargate (long/Docker steps, `FARGATE`+`FARGATE_SPOT`) + `aws_codebuild_project` (image builds, privileged Docker) + four scoped `aws_iam_role`s + optional `aws_iam_openid_connect_provider` + repo-scoped GitHub CI role (kills the static-key fragility class).
+- **Every other provider:** the pyx-lambda backend is AWS-specific (no clean cross-provider equivalent set), so a non-AWS provider surfaces a clean `ErrComponentUnsupported` directing the user to a managed-kubernetes-based runner — never an invented resource (§1, §4).
+- **Catalog:** `region` only (region-scoped; Lambda/Fargate/CodeBuild are serverless-priced, no SKU table). This is the DOGFOOD: the control-plane is expressed as an abstract catalog component, not bespoke terraform. Plan-first proof: `examples/pipeline-control-plane/roundtrip.sh` renders the real `aws/ci.json` ASL and runs `terraform validate` (no apply).
 
 ## 6. Test methodology (mandatory per component)
 
