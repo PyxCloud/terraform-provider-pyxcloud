@@ -185,6 +185,14 @@ func renderSGAWS(p SecurityGroupPlan) string {
 			writeAWSSecurityGroupRule(&b, rn, name, r, fmt.Sprintf("aws_security_group.%s.id", tfName(r.SourceSG)), "source_security_group_id")
 			continue
 		}
+		if r.SourcePrefixList != "" {
+			// Reference the managed prefix list emitted by the prefix-list component.
+			// AWS rules carry prefix_list_ids as a list of managed-prefix-list ids.
+			rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
+			writeAWSSecurityGroupRule(&b, rn, name, r,
+				fmt.Sprintf("[aws_ec2_managed_prefix_list.%s.id]", tfName(r.SourcePrefixList)), "prefix_list_ids")
+			continue
+		}
 		v4, v6 := splitCIDRs(r.CIDRs)
 		for j, cidr := range v4 {
 			rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
@@ -271,16 +279,29 @@ func renderSGDO(p SecurityGroupPlan) string {
 	for _, r := range p.Rules {
 		blockName := "inbound_rule"
 		cidrKey := "source_addresses"
+		tagKey := "source_tags"
 		if r.Direction == DirEgress {
 			blockName = "outbound_rule"
 			cidrKey = "destination_addresses"
+			tagKey = "destination_tags"
 		}
 		fmt.Fprintf(&b, "\n  %s {\n", blockName)
 		fmt.Fprintf(&b, "    protocol   = %q\n", doProto(r.Protocol))
 		if r.Protocol == ProtoTCP || r.Protocol == ProtoUDP {
 			fmt.Fprintf(&b, "    port_range = %q\n", portRangeString(r.FromPort, r.ToPort))
 		}
-		if r.CIDRs != nil {
+		switch {
+		case r.SourceSG != "":
+			// DigitalOcean firewalls have no SG-references-SG primitive: a peer
+			// security-group is migrated to a DO TAG. The referenced SG's droplets
+			// carry that tag, so source_tags/destination_tags reproduce the AWS
+			// "allow from this security group" semantics.
+			fmt.Fprintf(&b, "    %s = [%q]\n", tagKey, tfName(r.SourceSG))
+		case r.SourcePrefixList != "":
+			// DO has no managed-prefix-list primitive: inline the resolved CIDRs the
+			// prefix-list expands to (translate populated ResolvedPrefixCIDRs).
+			fmt.Fprintf(&b, "    %s = %s\n", cidrKey, hclCIDRList(r.ResolvedPrefixCIDRs))
+		case r.CIDRs != nil:
 			fmt.Fprintf(&b, "    %s = %s\n", cidrKey, hclCIDRList(r.CIDRs))
 		}
 		b.WriteString("  }\n")
