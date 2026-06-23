@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -890,7 +891,8 @@ func renderLBAWS(p LoadBalancerPlan) string {
 	b.WriteString("}\n\n")
 
 	// One listener per declared listener port. The default action forwards to the
-	// target group.
+	// target group; explicit layer-7 routing rules (path/host/priority/admin-VPN
+	// gate) render as aws_lb_listener_rule resources attached to the listener.
 	for _, l := range p.Listeners {
 		ln := fmt.Sprintf("%s_listener_%d", tfName(p.LBName), l.Port)
 		fmt.Fprintf(&b, "resource \"aws_lb_listener\" %q {\n", ln)
@@ -902,6 +904,12 @@ func renderLBAWS(p LoadBalancerPlan) string {
 		fmt.Fprintf(&b, "    target_group_arn = aws_lb_target_group.%s.arn\n", tgName)
 		b.WriteString("  }\n")
 		b.WriteString("}\n\n")
+
+		// Layer-7 routing rules (pd-MIG-LB-L7-ROUTING). Each renders an
+		// aws_lb_listener_rule with the resolved priority, the host/path conditions,
+		// and the admin-VPN source_ip gate when CIDRs are present. Rules are
+		// pre-sorted by ascending priority at translate time.
+		renderLBAWSListenerRules(&b, p, l, ln, tgName)
 	}
 
 	// Target wiring: a scale-group target gets the target-group ARN attached to
@@ -929,6 +937,49 @@ func renderLBAWS(p LoadBalancerPlan) string {
 	}
 
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// renderLBAWSListenerRules emits one aws_lb_listener_rule per resolved layer-7
+// routing rule on a listener. A rule carries an explicit priority, host_header
+// and/or path_pattern conditions, and — when AdminVPNCIDRs is set — a source_ip
+// condition implementing the admin/VPN gate (only those CIDRs may match the rule).
+// A rule may forward to its own target group (TargetName) or, by default, to the
+// LB's default target group. The resolved rules are pre-sorted by priority.
+func renderLBAWSListenerRules(b *strings.Builder, p LoadBalancerPlan, l LBListenerPlan, listenerLabel, defaultTG string) {
+	for _, r := range l.Rules {
+		ruleName := fmt.Sprintf("%s_listener_%d_rule_%d", tfName(p.LBName), l.Port, r.Priority)
+		// A per-rule target group is referenced by convention "<target>_tg"; when no
+		// override is given the rule forwards to the LB's default target group.
+		tg := defaultTG
+		if r.TargetName != "" {
+			tg = tfName(r.TargetName) + "_tg"
+		}
+		fmt.Fprintf(b, "resource \"aws_lb_listener_rule\" %q {\n", ruleName)
+		fmt.Fprintf(b, "  listener_arn = aws_lb_listener.%s.arn\n", listenerLabel)
+		fmt.Fprintf(b, "  priority     = %d\n", r.Priority)
+		b.WriteString("  action {\n")
+		b.WriteString("    type             = \"forward\"\n")
+		fmt.Fprintf(b, "    target_group_arn = aws_lb_target_group.%s.arn\n", tg)
+		b.WriteString("  }\n")
+		if len(r.HostHeaders) > 0 {
+			b.WriteString("  condition {\n    host_header {\n")
+			fmt.Fprintf(b, "      values = [%s]\n", quoteList(r.HostHeaders))
+			b.WriteString("    }\n  }\n")
+		}
+		if len(r.PathPatterns) > 0 {
+			b.WriteString("  condition {\n    path_pattern {\n")
+			fmt.Fprintf(b, "      values = [%s]\n", quoteList(r.PathPatterns))
+			b.WriteString("    }\n  }\n")
+		}
+		// Admin-VPN gate: a source_ip condition restricts the rule to the admin/VPN
+		// allow-list CIDRs — the same semantics the AWS topology enforces today.
+		if len(r.AdminVPNCIDRs) > 0 {
+			b.WriteString("  condition {\n    source_ip {\n")
+			fmt.Fprintf(b, "      values = [%s]\n", quoteList(r.AdminVPNCIDRs))
+			b.WriteString("    }\n  }\n")
+		}
+		b.WriteString("}\n\n")
+	}
 }
 
 // lbGCPProto maps a canonical LB protocol to the GCP forwarding-rule /
@@ -1067,7 +1118,130 @@ func renderLBDO(p LoadBalancerPlan) string {
 	}
 
 	b.WriteString("}\n")
+
+	// Layer-7 routing rules (pd-MIG-LB-L7-ROUTING). A digitalocean_loadbalancer
+	// forwarding_rule is pure port-to-port mapping: it has NO host/path matching
+	// and NO per-rule source-IP gate, so it cannot express ALB listener-rule
+	// parity. The canonical, plan-time-expressible DO equivalent is a DOKS Ingress
+	// (the same kubernetes_manifest convention the cert-manager / scheduled-trigger
+	// paths use): host + path rules map to ingress rules, and the admin-VPN gate is
+	// preserved as a documented constraint via the ingress-nginx whitelist-source-range
+	// annotation (an in-cluster source-IP allow-list, the DO analogue of the ALB
+	// source_ip condition). This is appended only when L7 rules are declared.
+	if hasLBRoutingRules(p.Listeners) {
+		b.WriteString("\n")
+		b.WriteString(renderLBDOIngress(p))
+	}
 	return b.String()
+}
+
+// hasLBRoutingRules reports whether any listener carries layer-7 routing rules.
+func hasLBRoutingRules(listeners []LBListenerPlan) bool {
+	for _, l := range listeners {
+		if len(l.Rules) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// renderLBDOIngress renders the DOKS Ingress that carries the layer-7 routing
+// rules a DO load-balancer forwarding_rule cannot express (host/path match +
+// admin-VPN source-IP gate). Host/path rules become ingress rules; the union of
+// all admin-VPN CIDRs across the rules becomes the ingress-nginx
+// whitelist-source-range annotation (a DOCUMENTED constraint: DO enforces the
+// admin/VPN gate at the in-cluster ingress, not on the managed LB).
+func renderLBDOIngress(p LoadBalancerPlan) string {
+	name := tfName(p.LBName) + "_ingress"
+	var b strings.Builder
+
+	// Collect the deduplicated, deterministic admin-VPN CIDR union for the gate.
+	seen := map[string]bool{}
+	var vpnCIDRs []string
+	for _, l := range p.Listeners {
+		for _, r := range l.Rules {
+			for _, c := range r.AdminVPNCIDRs {
+				if c != "" && !seen[c] {
+					seen[c] = true
+					vpnCIDRs = append(vpnCIDRs, c)
+				}
+			}
+		}
+	}
+	sort.Strings(vpnCIDRs)
+
+	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", name)
+	b.WriteString("  manifest = {\n")
+	b.WriteString("    apiVersion = \"networking.k8s.io/v1\"\n")
+	b.WriteString("    kind       = \"Ingress\"\n")
+	b.WriteString("    metadata = {\n")
+	fmt.Fprintf(&b, "      name      = %q\n", tfName(p.LBName))
+	b.WriteString("      namespace = \"default\"\n")
+	b.WriteString("      annotations = {\n")
+	b.WriteString("        \"kubernetes.io/ingress.class\" = \"nginx\"\n")
+	if len(vpnCIDRs) > 0 {
+		// Admin-VPN gate: the ingress-nginx source-range whitelist preserves the ALB
+		// source_ip admin/VPN allow-list semantics in-cluster (documented constraint).
+		fmt.Fprintf(&b, "        \"nginx.ingress.kubernetes.io/whitelist-source-range\" = %q\n", strings.Join(vpnCIDRs, ","))
+	}
+	b.WriteString("      }\n")
+	b.WriteString("    }\n")
+	b.WriteString("    spec = {\n")
+	b.WriteString("      rules = [\n")
+	for _, l := range p.Listeners {
+		for _, r := range l.Rules {
+			// One ingress rule per host (or a host-less rule). Each path pattern
+			// becomes an HTTP path on that host, backed by the rule's service.
+			svc := tfName(p.LBName) + "-svc"
+			if r.TargetName != "" {
+				svc = tfName(r.TargetName) + "-svc"
+			}
+			paths := r.PathPatterns
+			if len(paths) == 0 {
+				paths = []string{"/"}
+			}
+			hosts := r.HostHeaders
+			if len(hosts) == 0 {
+				hosts = []string{""}
+			}
+			for _, h := range hosts {
+				b.WriteString("        {\n")
+				if h != "" {
+					fmt.Fprintf(&b, "          host = %q\n", h)
+				}
+				b.WriteString("          http = {\n            paths = [\n")
+				for _, pat := range paths {
+					b.WriteString("              {\n")
+					fmt.Fprintf(&b, "                path     = %q\n", ingressPath(pat))
+					b.WriteString("                pathType = \"Prefix\"\n")
+					b.WriteString("                backend = {\n                  service = {\n")
+					fmt.Fprintf(&b, "                    name = %q\n", svc)
+					fmt.Fprintf(&b, "                    port = { number = %d }\n", l.Port)
+					b.WriteString("                  }\n                }\n")
+					b.WriteString("              },\n")
+				}
+				b.WriteString("            ]\n          }\n")
+				b.WriteString("        },\n")
+			}
+		}
+	}
+	b.WriteString("      ]\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// ingressPath maps an ALB-style path pattern ("/admin/*") to a Kubernetes Ingress
+// Prefix path ("/admin"), trimming the trailing glob the ingress matches by prefix.
+func ingressPath(pattern string) string {
+	pattern = strings.TrimSpace(pattern)
+	pattern = strings.TrimSuffix(pattern, "*")
+	pattern = strings.TrimSuffix(pattern, "/")
+	if pattern == "" {
+		return "/"
+	}
+	return pattern
 }
 
 // RenderManagedDatabaseHCL renders a resolved ManagedDatabasePlan into concrete

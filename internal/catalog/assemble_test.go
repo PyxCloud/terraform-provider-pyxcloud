@@ -591,10 +591,10 @@ func TestAssembleHCLScaleGroupDOKS(t *testing.T) {
 	}
 	all := strings.Join(docs, "\n")
 	for _, want := range []string{
-		`source = "digitalocean/digitalocean"`,            // provider source pinned
-		`resource "digitalocean_vpc" "sg-mig-net"`,        // place VPC synthesised
+		`source = "digitalocean/digitalocean"`,             // provider source pinned
+		`resource "digitalocean_vpc" "sg-mig-net"`,         // place VPC synthesised
 		`resource "digitalocean_kubernetes_cluster" "web"`, // scale-group -> DOKS
-		`vpc_uuid = digitalocean_vpc.sg-mig-net.id`,       // node pool joins the VPC
+		`vpc_uuid = digitalocean_vpc.sg-mig-net.id`,        // node pool joins the VPC
 		`node_pool {`,
 		`auto_scale = true`,
 		`min_nodes  = 1`, // self-heal: ASG-of-1 floor
@@ -610,5 +610,82 @@ func TestAssembleHCLScaleGroupDOKS(t *testing.T) {
 	// NOT appear.
 	if strings.Contains(all, "aws_autoscaling_group") || strings.Contains(all, "aws_launch_template") {
 		t.Errorf("DO scale-group must not emit AWS ASG resources:\n%s", all)
+	}
+}
+
+// TestAssembleHCLTracingAWS asserts the tracing component assembles X-Ray on AWS.
+func TestAssembleHCLTracingAWS(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "obs", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "traces", Type: "tracing", Tracing: &AssembleTracing{SamplingRate: 0.3}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL tracing aws: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, "aws_xray_group") || !strings.Contains(all, "fixed_rate     = 0.3") {
+		t.Errorf("aws tracing env missing X-Ray group / sampling:\n%s", all)
+	}
+	// AWS-only env needs no required_providers block.
+	if strings.Contains(all, "hashicorp/kubernetes") {
+		t.Errorf("aws tracing must not pin kubernetes:\n%s", all)
+	}
+}
+
+// TestAssembleHCLTracingDOPinsKubernetes asserts the DO tracing component
+// assembles Tempo+OTel and pins hashicorp/kubernetes (kubernetes_manifest).
+func TestAssembleHCLTracingDOPinsKubernetes(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "obs", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "traces", Type: "tracing", Tracing: &AssembleTracing{ClusterName: "prod-doks"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL tracing do: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`data "digitalocean_kubernetes_cluster" "traces_cluster"`,
+		`kind       = "Deployment"`,
+		`source = "hashicorp/kubernetes"`, // needsKubernetes pin
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("DO tracing env missing %q:\n%s", want, all)
+		}
+	}
+}
+
+// TestAssembleHCLLoadBalancerL7DOPinsKubernetes asserts a DO load-balancer with
+// L7 routing rules emits a DOKS Ingress and pins hashicorp/kubernetes.
+func TestAssembleHCLLoadBalancerL7DOPinsKubernetes(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "web-lb", Type: "load-balancer", LB: &AssembleLB{
+				TargetKind: "vm", TargetName: "web",
+				Listeners: []AssembleLBListener{{Port: 443, Protocol: "https", Rules: []AssembleLBRoutingRule{
+					{Priority: 100, HostHeaders: []string{"admin.example.com"}, AdminVPNCIDRs: []string{"10.8.0.0/24"}},
+				}}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL lb l7 do: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`kind       = "Ingress"`,
+		`whitelist-source-range`,
+		`source = "hashicorp/kubernetes"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("DO L7 lb env missing %q:\n%s", want, all)
+		}
 	}
 }
