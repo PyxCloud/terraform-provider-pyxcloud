@@ -104,6 +104,18 @@ type AssembleComponent struct {
 	KeyValueStore       *AssembleKeyValueStore
 	ContainerRegistry   *AssembleContainerRegistry
 	ReservedIP          *AssembleReservedIP
+	TLSCertificate      *AssembleTLSCertificate
+}
+
+// AssembleTLSCertificate is the config for a `tls-certificate` / `cert-manager`
+// component (ACM -> cert-manager + Let's Encrypt on DOKS).
+type AssembleTLSCertificate struct {
+	Domains      []string
+	Email        string
+	Production   bool
+	ClusterName  string
+	Namespace    string
+	DNSChallenge bool
 }
 
 // AssembleScheduledTrigger is the config for a `scheduled-trigger` component
@@ -239,6 +251,12 @@ type AssembleDNS struct {
 type AssembleObjectStorage struct {
 	Versioning bool
 	Public     bool
+
+	// pd-MIG-OBJSTORE-PARITY: S3->Spaces feature parity carried through the assembler.
+	Lifecycle    []LifecycleRule  // object-lifecycle rules
+	SSE          *SSEConfig       // server-side encryption at rest
+	BucketPolicy string           // bucket-policy JSON
+	AccessLogs   *AccessLogConfig // server access logging
 }
 
 // AssembleSecrets is the config for a `secrets-manager` component.
@@ -323,6 +341,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 
 	var docs []string
 	needsCloudflare := false
+	// needsKubernetes pins the hashicorp/kubernetes provider when a component emits
+	// in-cluster resources (DOKS CronJob, cert-manager manifests) — otherwise
+	// `terraform plan` cannot resolve kubernetes_* resources.
+	needsKubernetes := false
 
 	// A network (VPC + subnets) is only needed when the environment places VMs or a
 	// managed database. A DNS-only / IAM-only / storage-only env must NOT make a VPC.
@@ -602,6 +624,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if c.ObjectStorage != nil {
 				osSpec.Versioning = c.ObjectStorage.Versioning
 				osSpec.Public = c.ObjectStorage.Public
+				osSpec.Lifecycle = c.ObjectStorage.Lifecycle
+				osSpec.SSE = c.ObjectStorage.SSE
+				osSpec.BucketPolicy = c.ObjectStorage.BucketPolicy
+				osSpec.AccessLogs = c.ObjectStorage.AccessLogs
 			}
 			osPlan, err := TranslateObjectStorage(ctx, cat, osSpec)
 			if err != nil {
@@ -922,6 +948,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
+			if stPlan.ResourceType == "kubernetes_cron_job_v1" {
+				needsKubernetes = true
+			}
 			docs = append(docs, stHCL)
 		case "key-value-store", "kv-store", "keyvalue-store", "dynamodb":
 			kvSpec := KeyValueStoreSpec{Name: c.Name, Region: in.Region, Provider: in.Provider, Network: netName}
@@ -939,6 +968,28 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, kvHCL)
+		case "tls-certificate", "certificate", "cert-manager", "managed-certificate":
+			tcSpec := TLSCertificateSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.TLSCertificate != nil {
+				tcSpec.Domains = c.TLSCertificate.Domains
+				tcSpec.Email = c.TLSCertificate.Email
+				tcSpec.Production = c.TLSCertificate.Production
+				tcSpec.ClusterName = c.TLSCertificate.ClusterName
+				tcSpec.Namespace = c.TLSCertificate.Namespace
+				tcSpec.DNSChallenge = c.TLSCertificate.DNSChallenge
+			}
+			tcPlan, err := TranslateTLSCertificate(ctx, cat, tcSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			tcHCL, err := RenderTLSCertificateHCL(tcPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			if tcPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
+			}
+			docs = append(docs, tcHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
@@ -958,7 +1009,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// and once ANY required_providers entry exists (e.g. Cloudflare) terraform also
 	// requires the cloud provider declared. AWS-only envs need NO block (hashicorp/aws
 	// auto-installs), keeping the common case clean.
-	if rp := requiredProvidersBlock(in.Provider, needsCloudflare); rp != "" {
+	if rp := requiredProvidersBlock(in.Provider, needsCloudflare, needsKubernetes); rp != "" {
 		docs = append([]string{rp}, docs...)
 	}
 	return docs, nil
@@ -983,9 +1034,14 @@ var cloudProviderSource = map[string][2]string{
 
 // requiredProvidersBlock returns the terraform{required_providers{...}} HCL when
 // one is needed (non-default cloud source, or Cloudflare present), else "".
-func requiredProvidersBlock(provider string, needsCloudflare bool) string {
+func requiredProvidersBlock(provider string, needsCloudflare, needsKubernetes bool) string {
 	src, ok := cloudProviderSource[strings.ToLower(provider)]
 	cloudNonDefault := ok && !strings.HasPrefix(src[1], "hashicorp/")
+	// hashicorp/kubernetes auto-installs (default namespace) but once ANY
+	// required_providers entry exists, terraform requires every used provider to be
+	// declared — so we only need a block when there is a non-default source OR
+	// Cloudflare. When such a block IS emitted and kubernetes resources are present,
+	// pin kubernetes too so the block stays self-consistent.
 	if !needsCloudflare && !cloudNonDefault {
 		return "" // AWS/GCP/Azure-only: hashicorp namespace auto-installs, no block needed
 	}
@@ -996,6 +1052,9 @@ func requiredProvidersBlock(provider string, needsCloudflare bool) string {
 	}
 	if needsCloudflare {
 		b.WriteString("    cloudflare = {\n      source = \"cloudflare/cloudflare\"\n    }\n")
+	}
+	if needsKubernetes {
+		b.WriteString("    kubernetes = {\n      source = \"hashicorp/kubernetes\"\n    }\n")
 	}
 	b.WriteString("  }\n}\n")
 	return b.String()

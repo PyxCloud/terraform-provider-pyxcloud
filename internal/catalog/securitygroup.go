@@ -66,6 +66,13 @@ type SecurityRule struct {
 	// exported via remote-state). Mutually exclusive with CIDRs and SourceSG.
 	// AWS-only: a raw security-group id is an AWS concept.
 	ExternalSourceSGID string
+	// SourcePrefixList references a named prefix-list (a reusable CIDR set, see
+	// prefixlist.go) by canonical name. Mutually exclusive with the other scopes.
+	// On AWS it renders as a managed-prefix-list reference (prefix_list_ids); on
+	// DigitalOcean (which has no managed-prefix-list primitive) the prefix-list's
+	// CIDRs are INLINED into the firewall rule's source/destination_addresses —
+	// the canonical AWS->DO migration of aws_ec2_managed_prefix_list.
+	SourcePrefixList string
 }
 
 // SecurityGroupSpec is the abstract description of a security-group attached to a
@@ -81,6 +88,14 @@ type SecurityGroupSpec struct {
 	Expose []int
 	// Rules are explicit ingress/egress rules layered on top of Expose.
 	Rules []SecurityRule
+	// PrefixLists are the named CIDR sets that rules may reference via
+	// SourcePrefixList (keyed by canonical prefix-list name). On DigitalOcean these
+	// are inlined into firewall rules at translate (DO has no prefix-list primitive),
+	// so the resolved CIDRs must be available here; on AWS the reference renders to a
+	// managed prefix list and the entries are still validated for non-empty/CIDR
+	// correctness. A SourcePrefixList that is not present here is a hard plan-time
+	// error (never a silent empty rule).
+	PrefixLists map[string][]PrefixEntry
 }
 
 // RulePlan is one concrete, resolved firewall rule in the translated plan.
@@ -94,6 +109,14 @@ type RulePlan struct {
 	// ExternalSourceSGID is a concrete provider SG id (AWS sg-...) for an external,
 	// out-of-plan security group (mutually exclusive with CIDRs and SourceSG).
 	ExternalSourceSGID string `json:"external_source_sg_id,omitempty"`
+	// SourcePrefixList is the canonical name of a referenced prefix-list (a reusable
+	// CIDR set). On AWS this renders as a managed-prefix-list reference; on DO the
+	// reference is resolved to inline CIDRs (see ResolvedPrefixCIDRs).
+	SourcePrefixList string `json:"source_prefix_list,omitempty"`
+	// ResolvedPrefixCIDRs carries the prefix-list's CIDRs once resolved at translate.
+	// Populated for providers without a managed-prefix-list primitive (DigitalOcean)
+	// so the renderer can inline them; deterministically ordered.
+	ResolvedPrefixCIDRs []string `json:"resolved_prefix_cidrs,omitempty"`
 }
 
 // SecurityGroupPlan is the deterministic, catalog-resolved concrete translation
@@ -173,9 +196,14 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 			CIDRs:     []string{"0.0.0.0/0", "::/0"},
 		})
 	}
-	// Layer explicit rules on top, normalised.
+	// Layer explicit rules on top, normalised. A SourcePrefixList reference is
+	// resolved against spec.PrefixLists: on a provider without a managed-prefix-list
+	// primitive (DigitalOcean) the CIDRs are inlined into the rule; on AWS the
+	// reference is kept and rendered as a managed-prefix-list id. A reference to an
+	// undefined prefix-list is a hard plan-time error (never a silent empty rule).
+	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
 	for _, r := range spec.Rules {
-		rules = append(rules, RulePlan{
+		rp := RulePlan{
 			Direction:          strings.ToLower(strings.TrimSpace(r.Direction)),
 			Protocol:           strings.ToLower(strings.TrimSpace(r.Protocol)),
 			FromPort:           r.FromPort,
@@ -183,7 +211,31 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 			CIDRs:              append([]string(nil), r.CIDRs...),
 			SourceSG:           strings.TrimSpace(r.SourceSG),
 			ExternalSourceSGID: strings.TrimSpace(r.ExternalSourceSGID),
-		})
+			SourcePrefixList:   strings.TrimSpace(r.SourcePrefixList),
+		}
+		if rp.SourcePrefixList != "" {
+			entries, ok := spec.PrefixLists[rp.SourcePrefixList]
+			if !ok || len(entries) == 0 {
+				return SecurityGroupPlan{}, fmt.Errorf(
+					"security-group: rule references prefix-list %q which is not defined (define it under prefix_lists)",
+					rp.SourcePrefixList)
+			}
+			cidrs := make([]string, 0, len(entries))
+			for _, e := range entries {
+				c := strings.TrimSpace(e.CIDR)
+				if _, _, err := net.ParseCIDR(c); err != nil {
+					return SecurityGroupPlan{}, fmt.Errorf("security-group: prefix-list %q has invalid CIDR %q: %w", rp.SourcePrefixList, e.CIDR, err)
+				}
+				cidrs = append(cidrs, c)
+			}
+			sort.Strings(cidrs)
+			// On providers without a managed-prefix-list primitive, inline the CIDRs so
+			// the renderer can emit them directly (the canonical AWS->DO migration).
+			if provider != ProviderAWS {
+				rp.ResolvedPrefixCIDRs = cidrs
+			}
+		}
+		rules = append(rules, rp)
 	}
 
 	if err := enforceProviderCapabilities(spec.Provider, rules); err != nil {
@@ -360,6 +412,11 @@ func validateSGSpec(spec SecurityGroupSpec) error {
 		if err := validateRule(i, r); err != nil {
 			return err
 		}
+		if pl := strings.TrimSpace(r.SourcePrefixList); pl != "" {
+			if _, ok := spec.PrefixLists[pl]; !ok {
+				return fmt.Errorf("security-group: rule %d references prefix-list %q which is not defined in prefix_lists", i, pl)
+			}
+		}
 	}
 	return nil
 }
@@ -375,19 +432,20 @@ func validateRule(i int, r SecurityRule) error {
 	default:
 		return fmt.Errorf("security-group: rule %d has invalid protocol %q (tcp | udp | icmp | all)", i, r.Protocol)
 	}
-	// Exactly one scope: CIDRs xor SourceSG xor ExternalSourceSGID.
+	// Exactly one scope: CIDRs xor SourceSG xor ExternalSourceSGID xor SourcePrefixList.
 	hasCIDR := len(r.CIDRs) > 0
 	hasSG := strings.TrimSpace(r.SourceSG) != ""
 	extSGID := strings.TrimSpace(r.ExternalSourceSGID)
 	hasExtSG := extSGID != ""
+	hasPL := strings.TrimSpace(r.SourcePrefixList) != ""
 	scopes := 0
-	for _, set := range []bool{hasCIDR, hasSG, hasExtSG} {
+	for _, set := range []bool{hasCIDR, hasSG, hasExtSG, hasPL} {
 		if set {
 			scopes++
 		}
 	}
 	if scopes != 1 {
-		return fmt.Errorf("security-group: rule %d must set exactly one scope of cidrs, source_sg, or external_source_sg_id", i)
+		return fmt.Errorf("security-group: rule %d must set exactly one scope of cidrs, source_sg, external_source_sg_id, or source_prefix_list", i)
 	}
 	if hasExtSG && !strings.HasPrefix(extSGID, "sg-") {
 		return fmt.Errorf("security-group: rule %d external_source_sg_id %q must be a security-group id (sg-...)", i, extSGID)

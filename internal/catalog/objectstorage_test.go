@@ -368,3 +368,138 @@ func TestRenderObjectStorageUnsupportedProvider(t *testing.T) {
 		t.Fatal("expected render error for unsupported provider, got nil")
 	}
 }
+
+// ── pd-MIG-OBJSTORE-PARITY: lifecycle + SSE + bucket-policy + access-logs ──────
+
+// paritySpec is a full-parity spec used by the parity tests.
+func paritySpec(provider string) ObjectStorageSpec {
+	return ObjectStorageSpec{
+		Name: "app-assets", Region: "Frankfurt", Provider: provider, Versioning: true,
+		Lifecycle: []LifecycleRule{
+			// Deliberately out of ID order to prove deterministic sorting.
+			{ID: "expire-tmp", Prefix: "tmp/", Enabled: true, ExpireDays: 30},
+			{ID: "abort-mpu", Enabled: true, AbortIncompleteMultipartDays: 7},
+			{ID: "prune-old-versions", Enabled: true, NoncurrentVersionExpireDays: 90},
+		},
+		SSE:          &SSEConfig{Algorithm: SSEAlgoAES256},
+		BucketPolicy: `{"Version":"2012-10-17","Statement":[]}`,
+		AccessLogs:   &AccessLogConfig{TargetBucket: "audit-logs", TargetPrefix: "s3/"},
+	}
+}
+
+// TestObjectStorageParityLifecycleSortedAndValidated asserts lifecycle rules are
+// canonicalised (sorted by id) and the no-action / duplicate / missing-id cases
+// are hard errors.
+func TestObjectStorageParityLifecycleSortedAndValidated(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateObjectStorage(context.Background(), MustEmbedded(), paritySpec("aws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotIDs := []string{plan.Lifecycle[0].ID, plan.Lifecycle[1].ID, plan.Lifecycle[2].ID}
+	want := []string{"abort-mpu", "expire-tmp", "prune-old-versions"}
+	for i := range want {
+		if gotIDs[i] != want[i] {
+			t.Errorf("lifecycle not sorted by id: got %v want %v", gotIDs, want)
+			break
+		}
+	}
+	bad := []ObjectStorageSpec{
+		{Name: "x", Region: "Frankfurt", Provider: "aws", Lifecycle: []LifecycleRule{{ID: "", ExpireDays: 1}}},
+		{Name: "x", Region: "Frankfurt", Provider: "aws", Lifecycle: []LifecycleRule{{ID: "noop"}}},
+		{Name: "x", Region: "Frankfurt", Provider: "aws", Lifecycle: []LifecycleRule{{ID: "d", ExpireDays: 1}, {ID: "d", ExpireDays: 2}}},
+	}
+	for i, b := range bad {
+		if _, err := TranslateObjectStorage(context.Background(), MustEmbedded(), b); err == nil {
+			t.Errorf("bad lifecycle case %d should error", i)
+		}
+	}
+}
+
+// TestObjectStorageParitySSEKMSOnDOIsHardError proves SSE-KMS on DO is a hard
+// plan-time error (never a silent downgrade to AES256), and AES256 is fine on DO.
+func TestObjectStorageParitySSEKMSOnDOIsHardError(t *testing.T) {
+	t.Parallel()
+	_, err := TranslateObjectStorage(context.Background(), MustEmbedded(), ObjectStorageSpec{
+		Name: "x", Region: "Frankfurt", Provider: "digitalocean",
+		SSE: &SSEConfig{Algorithm: SSEAlgoKMS, KMSKeyID: "arn:aws:kms:::key/abc"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "AWS-only") {
+		t.Fatalf("SSE-KMS on DO must be a hard error, got %v", err)
+	}
+	// AES256 on DO resolves cleanly.
+	if _, err := TranslateObjectStorage(context.Background(), MustEmbedded(), ObjectStorageSpec{
+		Name: "x", Region: "Frankfurt", Provider: "digitalocean", SSE: &SSEConfig{Algorithm: SSEAlgoAES256},
+	}); err != nil {
+		t.Fatalf("AES256 on DO should resolve: %v", err)
+	}
+	// AES256 + a KMS key id is contradictory -> error.
+	if _, err := TranslateObjectStorage(context.Background(), MustEmbedded(), ObjectStorageSpec{
+		Name: "x", Region: "Frankfurt", Provider: "aws", SSE: &SSEConfig{Algorithm: SSEAlgoAES256, KMSKeyID: "k"},
+	}); err == nil {
+		t.Error("AES256 + kms_key_id should be a validation error")
+	}
+}
+
+// TestRenderObjectStorageParityAWS asserts the AWS peer emits all four parity
+// sub-resources with the right shaping.
+func TestRenderObjectStorageParityAWS(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateObjectStorage(context.Background(), MustEmbedded(), paritySpec("aws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hcl, err := RenderObjectStorageHCL(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`resource "aws_s3_bucket_server_side_encryption_configuration" "app-assets"`,
+		`sse_algorithm     = "AES256"`,
+		`resource "aws_s3_bucket_lifecycle_configuration" "app-assets"`,
+		`id     = "abort-mpu"`,
+		`days_after_initiation = 7`,
+		`noncurrent_days = 90`,
+		`days = 30`,
+		`prefix = "tmp/"`,
+		`resource "aws_s3_bucket_policy" "app-assets"`,
+		`resource "aws_s3_bucket_logging" "app-assets"`,
+		`target_bucket = "audit-logs"`,
+		`target_prefix = "s3/"`,
+	} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("aws parity HCL missing %q:\n%s", want, hcl)
+		}
+	}
+	if !IsASCII(hcl) {
+		t.Errorf("rendered HCL not ASCII:\n%s", hcl)
+	}
+}
+
+// TestRenderObjectStorageParityDO asserts DO Spaces carries lifecycle (inline)
+// and bucket-policy, notes SSE-at-rest, and flags the access-log gap.
+func TestRenderObjectStorageParityDO(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateObjectStorage(context.Background(), MustEmbedded(), paritySpec("digitalocean"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hcl, err := RenderObjectStorageHCL(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`resource "digitalocean_spaces_bucket" "app-assets"`,
+		`lifecycle_rule {`,
+		`id      = "abort-mpu"`,
+		`abort_incomplete_multipart_upload_days = 7`,
+		`prefix  = "tmp/"`,
+		`# server-side encryption (AES256) is enabled at rest by default`,
+		`resource "digitalocean_spaces_bucket_policy" "app-assets"`,
+		`# NOTE: server access logging`,
+	} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("do parity HCL missing %q:\n%s", want, hcl)
+		}
+	}
+}

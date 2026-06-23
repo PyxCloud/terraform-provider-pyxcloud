@@ -185,6 +185,14 @@ func renderSGAWS(p SecurityGroupPlan) string {
 			writeAWSSecurityGroupRule(&b, rn, name, r, fmt.Sprintf("aws_security_group.%s.id", tfName(r.SourceSG)), "source_security_group_id")
 			continue
 		}
+		if r.SourcePrefixList != "" {
+			// Reference the managed prefix list emitted by the prefix-list component.
+			// AWS rules carry prefix_list_ids as a list of managed-prefix-list ids.
+			rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
+			writeAWSSecurityGroupRule(&b, rn, name, r,
+				fmt.Sprintf("[aws_ec2_managed_prefix_list.%s.id]", tfName(r.SourcePrefixList)), "prefix_list_ids")
+			continue
+		}
 		v4, v6 := splitCIDRs(r.CIDRs)
 		for j, cidr := range v4 {
 			rn := fmt.Sprintf("%s_%s_%d", name, r.Direction, i)
@@ -271,16 +279,29 @@ func renderSGDO(p SecurityGroupPlan) string {
 	for _, r := range p.Rules {
 		blockName := "inbound_rule"
 		cidrKey := "source_addresses"
+		tagKey := "source_tags"
 		if r.Direction == DirEgress {
 			blockName = "outbound_rule"
 			cidrKey = "destination_addresses"
+			tagKey = "destination_tags"
 		}
 		fmt.Fprintf(&b, "\n  %s {\n", blockName)
 		fmt.Fprintf(&b, "    protocol   = %q\n", doProto(r.Protocol))
 		if r.Protocol == ProtoTCP || r.Protocol == ProtoUDP {
 			fmt.Fprintf(&b, "    port_range = %q\n", portRangeString(r.FromPort, r.ToPort))
 		}
-		if r.CIDRs != nil {
+		switch {
+		case r.SourceSG != "":
+			// DigitalOcean firewalls have no SG-references-SG primitive: a peer
+			// security-group is migrated to a DO TAG. The referenced SG's droplets
+			// carry that tag, so source_tags/destination_tags reproduce the AWS
+			// "allow from this security group" semantics.
+			fmt.Fprintf(&b, "    %s = [%q]\n", tagKey, tfName(r.SourceSG))
+		case r.SourcePrefixList != "":
+			// DO has no managed-prefix-list primitive: inline the resolved CIDRs the
+			// prefix-list expands to (translate populated ResolvedPrefixCIDRs).
+			fmt.Fprintf(&b, "    %s = %s\n", cidrKey, hclCIDRList(r.ResolvedPrefixCIDRs))
+		case r.CIDRs != nil:
 			fmt.Fprintf(&b, "    %s = %s\n", cidrKey, hclCIDRList(r.CIDRs))
 		}
 		b.WriteString("  }\n")
@@ -1286,6 +1307,70 @@ func renderObjectStorageAWS(p ObjectStoragePlan) string {
 	fmt.Fprintf(&b, "  ignore_public_acls      = %t\n", blockPublic)
 	fmt.Fprintf(&b, "  restrict_public_buckets = %t\n", blockPublic)
 	b.WriteString("}\n")
+
+	// pd-MIG-OBJSTORE-PARITY: SSE, lifecycle, bucket-policy, access-logs as the
+	// separate AWS v4+ sub-resources (the AWS peer of the DO Spaces parity).
+	if p.SSE != nil {
+		fmt.Fprintf(&b, "\nresource \"aws_s3_bucket_server_side_encryption_configuration\" %q {\n", label)
+		fmt.Fprintf(&b, "  bucket = aws_s3_bucket.%s.id\n", label)
+		b.WriteString("  rule {\n")
+		b.WriteString("    apply_server_side_encryption_by_default {\n")
+		fmt.Fprintf(&b, "      sse_algorithm     = %q\n", p.SSE.Algorithm)
+		if p.SSE.Algorithm == SSEAlgoKMS && p.SSE.KMSKeyID != "" {
+			fmt.Fprintf(&b, "      kms_master_key_id = %q\n", p.SSE.KMSKeyID)
+		}
+		b.WriteString("    }\n")
+		b.WriteString("  }\n")
+		b.WriteString("}\n")
+	}
+	if len(p.Lifecycle) > 0 {
+		fmt.Fprintf(&b, "\nresource \"aws_s3_bucket_lifecycle_configuration\" %q {\n", label)
+		fmt.Fprintf(&b, "  bucket = aws_s3_bucket.%s.id\n", label)
+		for _, r := range p.Lifecycle {
+			b.WriteString("  rule {\n")
+			fmt.Fprintf(&b, "    id     = %q\n", r.ID)
+			status := "Disabled"
+			if r.Enabled {
+				status = "Enabled"
+			}
+			fmt.Fprintf(&b, "    status = %q\n", status)
+			if r.Prefix != "" {
+				b.WriteString("    filter {\n")
+				fmt.Fprintf(&b, "      prefix = %q\n", r.Prefix)
+				b.WriteString("    }\n")
+			}
+			if r.ExpireDays > 0 {
+				b.WriteString("    expiration {\n")
+				fmt.Fprintf(&b, "      days = %d\n", r.ExpireDays)
+				b.WriteString("    }\n")
+			}
+			if r.NoncurrentVersionExpireDays > 0 {
+				b.WriteString("    noncurrent_version_expiration {\n")
+				fmt.Fprintf(&b, "      noncurrent_days = %d\n", r.NoncurrentVersionExpireDays)
+				b.WriteString("    }\n")
+			}
+			if r.AbortIncompleteMultipartDays > 0 {
+				b.WriteString("    abort_incomplete_multipart_upload {\n")
+				fmt.Fprintf(&b, "      days_after_initiation = %d\n", r.AbortIncompleteMultipartDays)
+				b.WriteString("    }\n")
+			}
+			b.WriteString("  }\n")
+		}
+		b.WriteString("}\n")
+	}
+	if p.BucketPolicy != "" {
+		fmt.Fprintf(&b, "\nresource \"aws_s3_bucket_policy\" %q {\n", label)
+		fmt.Fprintf(&b, "  bucket = aws_s3_bucket.%s.id\n", label)
+		fmt.Fprintf(&b, "  policy = %s\n", iamHeredoc(p.BucketPolicy))
+		b.WriteString("}\n")
+	}
+	if p.AccessLogs != nil {
+		fmt.Fprintf(&b, "\nresource \"aws_s3_bucket_logging\" %q {\n", label)
+		fmt.Fprintf(&b, "  bucket        = aws_s3_bucket.%s.id\n", label)
+		fmt.Fprintf(&b, "  target_bucket = %q\n", p.AccessLogs.TargetBucket)
+		fmt.Fprintf(&b, "  target_prefix = %q\n", p.AccessLogs.TargetPrefix)
+		b.WriteString("}\n")
+	}
 	return b.String()
 }
 
@@ -1330,7 +1415,58 @@ func renderObjectStorageDO(p ObjectStoragePlan) string {
 	b.WriteString("  versioning {\n")
 	fmt.Fprintf(&b, "    enabled = %t\n", p.Versioning)
 	b.WriteString("  }\n")
+
+	// pd-MIG-OBJSTORE-PARITY: DO Spaces is S3-compatible. Lifecycle rules render as
+	// inline `lifecycle_rule` blocks on the bucket resource (the Spaces analogue of
+	// the AWS lifecycle sub-resource). SSE-at-rest is ALWAYS ON for Spaces (no
+	// resource toggle) — an explicit AES256 request is honoured by the platform, so
+	// we record it as an inline comment for migration traceability rather than a
+	// no-op attribute. KMS was already rejected at translate time for DO.
+	if p.SSE != nil {
+		fmt.Fprintf(&b, "  # server-side encryption (%s) is enabled at rest by default on DO Spaces\n", p.SSE.Algorithm)
+	}
+	for _, r := range p.Lifecycle {
+		b.WriteString("  lifecycle_rule {\n")
+		fmt.Fprintf(&b, "    id      = %q\n", r.ID)
+		fmt.Fprintf(&b, "    enabled = %t\n", r.Enabled)
+		if r.Prefix != "" {
+			fmt.Fprintf(&b, "    prefix  = %q\n", r.Prefix)
+		}
+		if r.ExpireDays > 0 {
+			b.WriteString("    expiration {\n")
+			fmt.Fprintf(&b, "      days = %d\n", r.ExpireDays)
+			b.WriteString("    }\n")
+		}
+		if r.NoncurrentVersionExpireDays > 0 {
+			b.WriteString("    noncurrent_version_expiration {\n")
+			fmt.Fprintf(&b, "      days = %d\n", r.NoncurrentVersionExpireDays)
+			b.WriteString("    }\n")
+		}
+		if r.AbortIncompleteMultipartDays > 0 {
+			b.WriteString("    abort_incomplete_multipart_upload_days = ")
+			fmt.Fprintf(&b, "%d\n", r.AbortIncompleteMultipartDays)
+		}
+		b.WriteString("  }\n")
+	}
 	b.WriteString("}\n")
+
+	// Bucket-policy is a separate S3-compatible resource on DO.
+	if p.BucketPolicy != "" {
+		fmt.Fprintf(&b, "\nresource \"digitalocean_spaces_bucket_policy\" %q {\n", label)
+		fmt.Fprintf(&b, "  region = %q\n", p.CSPRegion)
+		fmt.Fprintf(&b, "  bucket = digitalocean_spaces_bucket.%s.name\n", label)
+		fmt.Fprintf(&b, "  policy = %s\n", iamHeredoc(p.BucketPolicy))
+		b.WriteString("}\n")
+	}
+
+	// Access-logs: DO Spaces exposes no server-access-logging resource. The
+	// translate step does not reject it (logs are advisory, not data-protection),
+	// so we record the migration gap as a comment rather than silently swallowing
+	// the intent.
+	if p.AccessLogs != nil {
+		fmt.Fprintf(&b, "\n# NOTE: server access logging (target %q) has no DO Spaces equivalent; "+
+			"front the bucket with a CDN/edge log pipeline if access logs are required.\n", p.AccessLogs.TargetBucket)
+	}
 	return b.String()
 }
 
