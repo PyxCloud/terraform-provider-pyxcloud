@@ -109,6 +109,18 @@ type AssembleComponent struct {
 	ContainerRegistry   *AssembleContainerRegistry
 	ReservedIP          *AssembleReservedIP
 	TLSCertificate      *AssembleTLSCertificate
+	Tracing             *AssembleTracing
+}
+
+// AssembleTracing is the config for a `tracing` component (X-Ray -> Grafana Tempo
+// + an OpenTelemetry collector on DOKS).
+type AssembleTracing struct {
+	SamplingRate   float64
+	ClusterName    string
+	Namespace      string
+	TempoImage     string
+	CollectorImage string
+	RetentionHours int
 }
 
 // AssembleTLSCertificate is the config for a `tls-certificate` / `cert-manager`
@@ -215,6 +227,19 @@ type AssembleWAF struct {
 type AssembleLBListener struct {
 	Port     int
 	Protocol string
+	// Rules are optional layer-7 routing rules (pd-MIG-LB-L7-ROUTING) — ALB
+	// listener-rule parity: per-rule host/path match, priority, and the admin-VPN
+	// source-IP gate. Empty = a single default forward action.
+	Rules []AssembleLBRoutingRule
+}
+
+// AssembleLBRoutingRule is one layer-7 routing rule on a listener.
+type AssembleLBRoutingRule struct {
+	Priority      int
+	HostHeaders   []string
+	PathPatterns  []string
+	AdminVPNCIDRs []string // admin/VPN source-IP gate
+	TargetName    string
 }
 
 // AssembleLB is the config for a `load-balancer` component (network-scoped).
@@ -850,7 +875,17 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			if c.LB != nil {
 				for _, l := range c.LB.Listeners {
-					lbSpec.Listeners = append(lbSpec.Listeners, LBListenerSpec{Port: l.Port, Protocol: l.Protocol})
+					ls := LBListenerSpec{Port: l.Port, Protocol: l.Protocol}
+					for _, r := range l.Rules {
+						ls.Rules = append(ls.Rules, LBRoutingRule{
+							Priority:      r.Priority,
+							HostHeaders:   r.HostHeaders,
+							PathPatterns:  r.PathPatterns,
+							AdminVPNCIDRs: r.AdminVPNCIDRs,
+							TargetName:    r.TargetName,
+						})
+					}
+					lbSpec.Listeners = append(lbSpec.Listeners, ls)
 				}
 				lbSpec.HealthCheck = LBHealthCheckSpec{Protocol: c.LB.HealthProtocol, Port: c.LB.HealthCheckPort, Path: c.LB.HealthCheckPath}
 				lbSpec.Stickiness = c.LB.Stickiness
@@ -869,6 +904,11 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			lbHCL, err := RenderLoadBalancerHCL(lbPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			// A DigitalOcean LB with layer-7 routing rules emits a DOKS Ingress
+			// (kubernetes_manifest) — pin hashicorp/kubernetes so terraform can plan it.
+			if lbPlan.Provider == ProviderDigitalOcean && hasLBRoutingRules(lbPlan.Listeners) {
+				needsKubernetes = true
 			}
 			docs = append(docs, lbHCL)
 		case "email", "email-service":
@@ -995,6 +1035,28 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				needsKubernetes = true
 			}
 			docs = append(docs, tcHCL)
+		case "tracing", "distributed-tracing", "tempo", "trace-collector", "otel-tracing":
+			trSpec := TracingSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.Tracing != nil {
+				trSpec.SamplingRate = c.Tracing.SamplingRate
+				trSpec.ClusterName = c.Tracing.ClusterName
+				trSpec.Namespace = c.Tracing.Namespace
+				trSpec.TempoImage = c.Tracing.TempoImage
+				trSpec.CollectorImage = c.Tracing.CollectorImage
+				trSpec.RetentionHours = c.Tracing.RetentionHours
+			}
+			trPlan, err := TranslateTracing(ctx, cat, trSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			trHCL, err := RenderTracingHCL(trPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			if trPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
+			}
+			docs = append(docs, trHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

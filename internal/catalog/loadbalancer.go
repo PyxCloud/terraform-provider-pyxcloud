@@ -41,6 +41,37 @@ type LBListenerSpec struct {
 	// Conditions are optional layer-7 match values (paths/hosts). Used only by
 	// AWS to build an aws_lb_listener rule; bounded by the ALB 5-value quota.
 	Conditions []string
+	// Rules are optional layer-7 routing rules (pd-MIG-LB-L7-ROUTING) — full
+	// ALB listener-rule parity: per-rule path/host match, explicit priority, and
+	// the admin-VPN source-IP gate. When present they render as aws_lb_listener_rule
+	// resources on AWS; on DigitalOcean they map to a DOKS ingress (see
+	// LBRoutingRule). Empty = a single default forward action (the legacy shape).
+	Rules []LBRoutingRule
+}
+
+// LBRoutingRule is one abstract layer-7 routing rule on a listener — the
+// provider-neutral form of an AWS ALB aws_lb_listener_rule. It matches on host
+// and/or path, carries an explicit evaluation priority, and optionally gates the
+// match to an admin/VPN source-IP allow-list (the admin-VPN gate the existing
+// AWS topology enforces with a source_ip condition).
+//
+// At least one of HostHeaders / PathPatterns must be set. AdminVPNCIDRs, when
+// non-empty, additionally restricts the rule to those CIDRs (the admin/VPN
+// allow-list) — on AWS a source_ip condition, on DO a documented ingress
+// whitelist annotation. The combined condition VALUE count is bounded by the AWS
+// ALB 5-values-per-rule quota (validated as a hard plan-time error).
+type LBRoutingRule struct {
+	Priority     int      // ALB rule priority (1-50000); lower = evaluated first. Required, unique per listener.
+	HostHeaders  []string // host_header match values (e.g. "admin.example.com"); optional
+	PathPatterns []string // path_pattern match values (e.g. "/admin/*"); optional
+	// AdminVPNCIDRs is the admin/VPN source-IP allow-list. Non-empty pins the rule
+	// to a source_ip condition (AWS) / source-range whitelist (DO) — the admin-VPN
+	// gate. Empty = no source restriction.
+	AdminVPNCIDRs []string
+	// TargetName overrides the listener's default forward target (the canonical
+	// name of a sibling scale-group/vm). Empty = forward to the LB's default
+	// target group (the same target the default action uses).
+	TargetName string
 }
 
 // LBHealthCheckSpec is the abstract health check the load-balancer runs against
@@ -88,6 +119,20 @@ type LBListenerPlan struct {
 	Port       int      `json:"port"`
 	Protocol   string   `json:"protocol"`
 	Conditions []string `json:"conditions,omitempty"`
+	// Rules are the resolved layer-7 routing rules, sorted by ascending priority
+	// for a deterministic plan/render (pd-MIG-LB-L7-ROUTING).
+	Rules []LBRoutingRulePlan `json:"rules,omitempty"`
+}
+
+// LBRoutingRulePlan is one resolved layer-7 routing rule (the catalog-resolved
+// form of LBRoutingRule). Provider-neutral; rendered to aws_lb_listener_rule on
+// AWS and a DOKS ingress rule on DigitalOcean.
+type LBRoutingRulePlan struct {
+	Priority      int      `json:"priority"`
+	HostHeaders   []string `json:"host_headers,omitempty"`
+	PathPatterns  []string `json:"path_patterns,omitempty"`
+	AdminVPNCIDRs []string `json:"admin_vpn_cidrs,omitempty"` // admin/VPN source-IP gate
+	TargetName    string   `json:"target_name,omitempty"`     // override forward target ("" = default TG)
 }
 
 // LBHealthCheckPlan is the resolved, defaulted health check in the plan.
@@ -164,6 +209,7 @@ func TranslateLoadBalancer(ctx context.Context, cat RegionCatalog, spec LoadBala
 			Port:       l.Port,
 			Protocol:   canonicalLBProto(l.Protocol),
 			Conditions: append([]string(nil), l.Conditions...),
+			Rules:      resolveRoutingRules(l.Rules),
 		})
 	}
 	// Deterministic listener order (ascending port) so the rendered .tf and the
@@ -233,6 +279,28 @@ func canonicalLBProto(p string) string {
 	default:
 		return LBProtoHTTP
 	}
+}
+
+// resolveRoutingRules copies and deterministically orders the abstract routing
+// rules into resolved plan rules, sorted by ascending priority so the rendered
+// .tf and the plan are stable regardless of input order. Slice fields are copied
+// (never aliased) so the plan is independent of the input spec.
+func resolveRoutingRules(in []LBRoutingRule) []LBRoutingRulePlan {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]LBRoutingRulePlan, 0, len(in))
+	for _, r := range in {
+		out = append(out, LBRoutingRulePlan{
+			Priority:      r.Priority,
+			HostHeaders:   append([]string(nil), r.HostHeaders...),
+			PathPatterns:  append([]string(nil), r.PathPatterns...),
+			AdminVPNCIDRs: append([]string(nil), r.AdminVPNCIDRs...),
+			TargetName:    strings.TrimSpace(r.TargetName),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Priority < out[j].Priority })
+	return out
 }
 
 // canonicalTargetKind maps accepted target-kind aliases to the canonical token.
@@ -316,6 +384,9 @@ func validateLoadBalancerSpec(spec LoadBalancerSpec) error {
 					"limit of %d per listener rule (this is a hard plan-time error, never a "+
 					"silent truncation)", i, len(l.Conditions), awsListenerConditionValuesMax)
 		}
+		if err := validateRoutingRules(spec.Provider, i, l.Rules); err != nil {
+			return err
+		}
 	}
 	if k := strings.ToLower(strings.TrimSpace(spec.TargetKind)); k != "" {
 		switch k {
@@ -332,6 +403,63 @@ func validateLoadBalancerSpec(spec LoadBalancerSpec) error {
 		case LBProtoHTTP, LBProtoHTTPS, LBProtoTCP, "ssl", "l4":
 		default:
 			return fmt.Errorf("load-balancer: health_check has invalid protocol %q (http | https | tcp)", spec.HealthCheck.Protocol)
+		}
+	}
+	return nil
+}
+
+// ALB listener-rule priority must be 1..50000 (an AWS hard quota). Priority 0 /
+// negative is rejected, and priorities must be unique within a listener (ALB
+// rejects duplicate priorities on a listener).
+const (
+	awsListenerRulePriorityMin = 1
+	awsListenerRulePriorityMax = 50000
+)
+
+// validateRoutingRules enforces the layer-7 routing-rule invariants for a
+// listener (pd-MIG-LB-L7-ROUTING): every rule matches on at least one host/path,
+// priorities are in-range and unique within the listener, and the combined
+// condition-VALUE count (hosts + paths + admin-VPN source CIDRs) stays within the
+// AWS ALB 5-values-per-rule quota — all hard plan-time errors, never silent
+// truncation. The quota is enforced uniformly so the plan is provider-portable.
+func validateRoutingRules(provider string, listenerIdx int, rules []LBRoutingRule) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	seenPriority := map[int]bool{}
+	for j, r := range rules {
+		if len(r.HostHeaders) == 0 && len(r.PathPatterns) == 0 {
+			return fmt.Errorf(
+				"load-balancer: listener %d rule %d must match on at least one host_header or path_pattern "+
+					"(a layer-7 routing rule with no condition is not expressible)", listenerIdx, j)
+		}
+		if r.Priority < awsListenerRulePriorityMin || r.Priority > awsListenerRulePriorityMax {
+			return fmt.Errorf(
+				"load-balancer: listener %d rule %d has priority %d out of range (%d-%d); ALB listener-rule "+
+					"priority is required and must be unique per listener (hard plan-time error)",
+				listenerIdx, j, r.Priority, awsListenerRulePriorityMin, awsListenerRulePriorityMax)
+		}
+		if seenPriority[r.Priority] {
+			return fmt.Errorf(
+				"load-balancer: listener %d has duplicate routing-rule priority %d; ALB rejects duplicate "+
+					"priorities on a listener (hard plan-time error, never a silent reorder)", listenerIdx, r.Priority)
+		}
+		seenPriority[r.Priority] = true
+
+		// The AWS ALB caps the TOTAL condition values per rule at 5. The admin-VPN
+		// source-IP gate (source_ip) consumes condition values too, so it is counted
+		// here — a rule that combines many hosts/paths AND a wide CIDR allow-list can
+		// breach the quota and must fail at plan time, never be silently truncated.
+		if strings.ToLower(strings.TrimSpace(provider)) == ProviderAWS {
+			total := len(r.HostHeaders) + len(r.PathPatterns) + len(r.AdminVPNCIDRs)
+			if total > awsListenerConditionValuesMax {
+				return fmt.Errorf(
+					"load-balancer: listener %d rule %d has %d total condition values "+
+						"(%d host + %d path + %d admin-VPN CIDR), exceeding the AWS ALB limit of %d "+
+						"per listener rule (hard plan-time error, never a silent truncation)",
+					listenerIdx, j, total, len(r.HostHeaders), len(r.PathPatterns), len(r.AdminVPNCIDRs),
+					awsListenerConditionValuesMax)
+			}
 		}
 	}
 	return nil
