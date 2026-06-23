@@ -99,34 +99,139 @@ func TestTranslateScaleGroupGCP(t *testing.T) {
 	}
 }
 
-// TestScaleGroupDOIsUnsupported asserts DigitalOcean returns a clean plan-time
-// error (no native VM ASG primitive) rather than inventing a resource.
-func TestScaleGroupDOIsUnsupported(t *testing.T) {
+// TestTranslateScaleGroupDO asserts a DigitalOcean scale-group maps to a DOKS
+// node pool: DO has no native VM ASG primitive, so the AWS->DO migration renders
+// it as a digitalocean_kubernetes_cluster node_pool (the canonical DO autoscaling
+// answer), reusing the SAME droplet SKU resolution as the VM component.
+func TestTranslateScaleGroupDO(t *testing.T) {
+	t.Parallel()
+	// Frankfurt -> fra1; 2 vCPU / 4 GiB x86_64 -> a concrete DO droplet size.
+	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
+		Name: "web", Region: "Frankfurt", Provider: "digitalocean",
+		Architecture: "x86_64", CPU: 2, RAM: 4, OS: "ubuntu",
+		Min: 2, Max: 6, Desired: 3, Network: "production",
+	})
+	if err != nil {
+		t.Fatalf("DO scale-group should map to DOKS, got error: %v", err)
+	}
+	if plan.CSPRegion != "fra1" {
+		t.Errorf("csp_region = %q, want fra1", plan.CSPRegion)
+	}
+	if plan.ResourceType != "digitalocean_kubernetes_cluster" {
+		t.Errorf("resource_type = %q, want digitalocean_kubernetes_cluster", plan.ResourceType)
+	}
+	if plan.InstanceType == "" {
+		t.Errorf("DO node size should be a catalog-resolved droplet SKU, got empty")
+	}
+	if plan.Min != 2 || plan.Max != 6 || plan.Desired != 3 {
+		t.Errorf("bounds = %d/%d/%d, want 2/6/3", plan.Min, plan.Max, plan.Desired)
+	}
+	// DO clusters are region-scoped: no derived sub-zones.
+	if len(plan.Zones) != 0 {
+		t.Errorf("DO should have no zones (region-scoped), got %v", plan.Zones)
+	}
+}
+
+// TestTranslateScaleGroupDOSelfHealFloor asserts the canonical self-healing
+// ASG-of-1 pattern: a DO scale-group with min=0 is lifted to min=1 (DOKS node
+// pools cannot scale to zero), keeping at least one healthy node.
+func TestTranslateScaleGroupDOSelfHealFloor(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
+		Name: "box", Region: "Frankfurt", Provider: "digitalocean",
+		CPU: 2, RAM: 4, Min: 0, Max: 0, Desired: 0, Network: "production",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Min != 1 {
+		t.Errorf("DO self-heal floor: min = %d, want 1 (ASG-of-1)", plan.Min)
+	}
+	if plan.Max < plan.Min {
+		t.Errorf("max (%d) must be >= min (%d) after floor", plan.Max, plan.Min)
+	}
+	if plan.Desired < plan.Min {
+		t.Errorf("desired (%d) must be >= min (%d) after floor", plan.Desired, plan.Min)
+	}
+}
+
+// TestScaleGroupLinodeStillUnsupported asserts Linode (no node-pool mapping wired
+// for scale-group) still returns the clean ErrAutoscaleUnsupported — only DO got
+// the DOKS mapping.
+func TestScaleGroupLinodeStillUnsupported(t *testing.T) {
 	t.Parallel()
 	_, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
-		Name: "box", Region: "Frankfurt", Provider: "digitalocean",
+		Name: "box", Region: "Frankfurt", Provider: "linode",
 		Architecture: "x86_64", CPU: 2, RAM: 4, OS: "ubuntu",
 		Min: 1, Max: 3, Network: "production",
 	})
 	if err == nil {
-		t.Fatal("expected unsupported error for DigitalOcean autoscaling, got nil")
+		t.Fatal("expected unsupported error for Linode autoscaling, got nil")
 	}
 	var unsup ErrAutoscaleUnsupported
 	if !errors.As(err, &unsup) {
 		t.Fatalf("expected ErrAutoscaleUnsupported, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), "managed-kubernetes") {
-		t.Errorf("DO error should point to managed-kubernetes, got %v", err)
+		t.Errorf("Linode error should point to managed-kubernetes, got %v", err)
 	}
 }
 
-// TestScaleGroupDORenderRejected asserts the renderer also refuses DO, defence
-// in depth for a hand-built plan.
-func TestScaleGroupDORenderRejected(t *testing.T) {
+// TestRenderScaleGroupDO asserts the DO scale-group renders to a DOKS cluster
+// with an auto-scaling node pool, the VPC wired, and the self-heal min/max/desired.
+func TestRenderScaleGroupDO(t *testing.T) {
 	t.Parallel()
-	_, err := RenderScaleGroupHCL(ScaleGroupPlan{Provider: ProviderDigitalOcean})
-	if err == nil {
-		t.Fatal("expected render error for DigitalOcean scale group, got nil")
+	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
+		Name: "web", Region: "Frankfurt", Provider: "digitalocean",
+		Architecture: "x86_64", CPU: 2, RAM: 4, OS: "ubuntu",
+		Min: 1, Max: 5, Desired: 2, Network: "production",
+		KubernetesVersion: "1.30",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hcl, err := RenderScaleGroupHCL(plan)
+	if err != nil {
+		t.Fatalf("DO scale-group render should succeed, got: %v", err)
+	}
+	for _, want := range []string{
+		`resource "digitalocean_kubernetes_cluster" "web"`,
+		`region  = "fra1"`,
+		`version = "1.30"`,
+		`vpc_uuid = digitalocean_vpc.production.id`,
+		`node_pool {`,
+		`name       = "web-pool"`,
+		`auto_scale = true`,
+		`min_nodes  = 1`,
+		`max_nodes  = 5`,
+		`node_count = 2`,
+	} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("DO DOKS HCL missing %q:\n%s", want, hcl)
+		}
+	}
+	if !IsASCII(hcl) {
+		t.Errorf("rendered HCL is not ASCII:\n%s", hcl)
+	}
+}
+
+// TestRenderScaleGroupDODefaultVersion asserts the DOKS version defaults to
+// "latest" when unset.
+func TestRenderScaleGroupDODefaultVersion(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
+		Name: "api", Region: "Frankfurt", Provider: "digitalocean",
+		CPU: 2, RAM: 4, Min: 1, Max: 2, Network: "production",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hcl, err := RenderScaleGroupHCL(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(hcl, `version = "latest"`) {
+		t.Errorf("unset DOKS version should default to latest:\n%s", hcl)
 	}
 }
 

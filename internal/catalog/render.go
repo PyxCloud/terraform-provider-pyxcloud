@@ -473,9 +473,13 @@ func renderVMDO(p VMPlan) string {
 //   - GCP: google_compute_instance_template +
 //     google_compute_region_instance_group_manager +
 //     google_compute_region_autoscaler (min/max replicas, health check).
+//   - DigitalOcean: digitalocean_kubernetes_cluster + an auto-scaling node_pool
+//     (DO has no native VM ASG primitive, so the scale-group maps to a DOKS node
+//     pool — the canonical DO autoscaling answer; min_nodes>=1 self-heal).
 //
-// DigitalOcean never reaches here: TranslateScaleGroup rejects it with
-// ErrAutoscaleUnsupported (no native VM ASG primitive).
+// Linode and StackIt still never reach here for a scale-group: TranslateScaleGroup
+// rejects them with ErrAutoscaleUnsupported (no native VM ASG primitive and no
+// node-pool mapping wired).
 func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 	switch plan.Provider {
 	case ProviderAWS:
@@ -497,9 +501,11 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 	case ProviderAlibaba:
 		return renderASGAlibaba(plan), nil
 	case ProviderDigitalOcean:
-		return "", fmt.Errorf(
-			"render: virtual-machine-scale-group is unsupported on digitalocean " +
-				"(no native VM autoscaling primitive; use managed-kubernetes)")
+		// DO has no native VM ASG primitive; the scale-group is mapped to a DOKS
+		// cluster with an auto-scaling node pool (the canonical DO autoscaling
+		// answer). Self-heal: min_nodes >= 1 (DOKS keeps >=1 healthy node and
+		// replaces failed ones — the ASG-of-1 pattern).
+		return renderScaleGroupDO(plan), nil
 	case ProviderLinode:
 		return "", fmt.Errorf(
 			"render: virtual-machine-scale-group is unsupported on linode " +
@@ -592,6 +598,49 @@ func renderASGAWS(p ScaleGroupPlan) string {
 	b.WriteString("    value               = \"true\"\n")
 	b.WriteString("    propagate_at_launch = true\n")
 	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// renderScaleGroupDO maps an abstract scale-group onto DigitalOcean. DO has no
+// native VM autoscaling primitive, so the group renders to a
+// digitalocean_kubernetes_cluster with an auto-scaling node_pool (DOKS) — the
+// canonical DO autoscaling answer the old ErrAutoscaleUnsupported pointed to.
+//
+// Self-heal semantics are preserved: auto_scale=true with min_nodes>=1 keeps at
+// least one healthy node and lets DOKS replace failed ones — the production
+// ASG-of-1 pattern. The node SIZE is the catalog-resolved droplet SKU (the same
+// virtual_machine SKU resolution the VM/ASG components use), and the pool joins
+// the place's VPC (vpc_uuid). DO clusters are region-scoped (no sub-zones), which
+// is why ScaleGroupPlan.Zones is empty for DO.
+func renderScaleGroupDO(p ScaleGroupPlan) string {
+	name := tfName(p.GroupName)
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "resource \"digitalocean_kubernetes_cluster\" %q {\n", name)
+	fmt.Fprintf(&b, "  name    = %q\n", name)
+	fmt.Fprintf(&b, "  region  = %q\n", p.CSPRegion)
+	ver := p.KubernetesVersion
+	if ver == "" {
+		ver = "latest"
+	}
+	fmt.Fprintf(&b, "  version = %q\n", ver)
+	if p.NetworkName != "" {
+		fmt.Fprintf(&b, "  vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+	}
+	// Auto-scaling node pool: the scale-group's compute. auto_scale + min/max map
+	// the abstract bounds; desired seeds node_count within [min, max]. min>=1 is
+	// the self-healing floor (enforced in TranslateScaleGroup for DO).
+	b.WriteString("  node_pool {\n")
+	fmt.Fprintf(&b, "    name       = \"%s-pool\"\n", name)
+	fmt.Fprintf(&b, "    size       = %q\n", p.InstanceType)
+	b.WriteString("    auto_scale = true\n")
+	fmt.Fprintf(&b, "    min_nodes  = %d\n", p.Min)
+	fmt.Fprintf(&b, "    max_nodes  = %d\n", p.Max)
+	fmt.Fprintf(&b, "    node_count = %d\n", p.Desired)
+	b.WriteString("    tags = [\"pyxcloud\"]\n")
+	b.WriteString("  }\n")
+	fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
 	b.WriteString("}\n")
 	return b.String()
 }
