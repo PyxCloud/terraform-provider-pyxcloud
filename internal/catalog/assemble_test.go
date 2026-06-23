@@ -381,3 +381,40 @@ func TestAssembleHCLMigrationScheduledTriggerAndKVDO(t *testing.T) {
 		}
 	}
 }
+
+// TestAssembleHCLDONetNewComponents proves a DO topology using the net-new
+// migration components (container-registry + reserved-ip) assembles into valid
+// DO HCL — the plan-only round-trip for EPIC-AWS-TO-DO-MIGRATION. It also asserts
+// the digitalocean provider source is pinned (required for `terraform plan`).
+func TestAssembleHCLDONetNewComponents(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "do-mig", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "app-images", Type: "container-registry",
+				ContainerRegistry: &AssembleContainerRegistry{Tier: "professional", GarbageCollection: true}},
+			{Name: "vpn-endpoint", Type: "reserved-ip",
+				ReservedIP: &AssembleReservedIP{}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL DO net-new: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`digitalocean = {`,                           // provider source pinned
+		`source = "digitalocean/digitalocean"`,       //
+		`resource "digitalocean_container_registry"`, // container-registry target
+		`subscription_tier_slug = "professional"`,    //
+		`region                 = "fra1"`,            //
+		`resource "digitalocean_reserved_ip"`,        // reserved-ip target
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("DO net-new HCL missing %q\n%s", want, all)
+		}
+	}
+	// region-scoped components must NOT synthesise a VPC.
+	if strings.Contains(all, "digitalocean_vpc") {
+		t.Errorf("registry/reserved-ip-only env must not synthesise a VPC:\n%s", all)
+	}
+}

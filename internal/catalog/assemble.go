@@ -102,6 +102,8 @@ type AssembleComponent struct {
 	Synthetics          *AssembleSynthetics
 	ScheduledTrigger    *AssembleScheduledTrigger
 	KeyValueStore       *AssembleKeyValueStore
+	ContainerRegistry   *AssembleContainerRegistry
+	ReservedIP          *AssembleReservedIP
 }
 
 // AssembleScheduledTrigger is the config for a `scheduled-trigger` component
@@ -121,6 +123,21 @@ type AssembleKeyValueStore struct {
 	PartitionKey string
 	MemoryGB     int
 	HA           bool
+}
+
+// AssembleContainerRegistry is the config for a `container-registry` /
+// `image-registry` component (region-scoped; DO is the AWS-ECR migration target).
+type AssembleContainerRegistry struct {
+	Tier              string // DO subscription tier: starter | basic | professional
+	GarbageCollection bool   // DO server-side garbage collection (opt-in)
+	ImmutableTags     bool   // AWS ECR IMMUTABLE image tags (opt-in)
+}
+
+// AssembleReservedIP is the config for a `reserved-ip` / `static-ip` /
+// `elastic-ip` component (region-scoped; DO is the AWS-EIP migration target for
+// the VPN stable endpoint).
+type AssembleReservedIP struct {
+	AttachTo string // canonical compute target name to bind the IP to ("" = unattached)
 }
 
 // AssembleSynthetics is the config for a `synthetics` / `uptime-check` component.
@@ -595,6 +612,36 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, osHCL)
+		case "container-registry", "image-registry":
+			crSpec := ContainerRegistrySpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.ContainerRegistry != nil {
+				crSpec.Tier = c.ContainerRegistry.Tier
+				crSpec.GarbageCollection = c.ContainerRegistry.GarbageCollection
+				crSpec.ImmutableTags = c.ContainerRegistry.ImmutableTags
+			}
+			crPlan, err := TranslateContainerRegistry(ctx, cat, crSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			crHCL, err := RenderContainerRegistryHCL(crPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, crHCL)
+		case "reserved-ip", "static-ip", "elastic-ip":
+			ripSpec := ReservedIPSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.ReservedIP != nil {
+				ripSpec.AttachTo = c.ReservedIP.AttachTo
+			}
+			ripPlan, err := TranslateReservedIP(ctx, cat, ripSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			ripHCL, err := RenderReservedIPHCL(ripPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, ripHCL)
 		case "secrets-manager":
 			secSpec := SecretsSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.Secrets != nil {
