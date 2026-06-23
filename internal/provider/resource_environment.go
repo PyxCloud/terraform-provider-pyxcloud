@@ -70,6 +70,7 @@ type environmentModel struct {
 	PyxPrefixList                   []envComponentModel    `tfsdk:"pyx_prefix_list"`
 	PyxSynthetics                   []envComponentModel    `tfsdk:"pyx_synthetics"`
 	PyxALBAttachment                []envComponentModel    `tfsdk:"pyx_alb_attachment"`
+	PyxVPNAccess                    []envComponentModel    `tfsdk:"pyx_vpn_access"`
 	AccountBinding                  types.String           `tfsdk:"account_binding"`
 	WorkDir                         types.String           `tfsdk:"work_dir"`
 	Outputs                         types.Map              `tfsdk:"outputs"`
@@ -164,6 +165,12 @@ type envComponentModel struct {
 	ScheduleExpr             types.String          `tfsdk:"schedule_expr"`
 	ArtifactBucket           types.String          `tfsdk:"artifact_bucket"`
 	ExecRoleARN              types.String          `tfsdk:"exec_role_arn"`
+	VPC                      types.String          `tfsdk:"vpc"`
+	KeycloakRole             types.String          `tfsdk:"keycloak_role"`
+	WireGuardPort            types.Int64           `tfsdk:"wireguard_port"`
+	BreakGlassCIDRs          []types.String        `tfsdk:"break_glass_cidrs"`
+	AllowlistTable           types.String          `tfsdk:"allowlist_table"`
+	PITR                     types.Bool            `tfsdk:"point_in_time_recovery"`
 }
 
 type envScaleGroupModel struct {
@@ -453,6 +460,7 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"pyx_prefix_list":                     pyxEnvironmentComponentBlock("PyxCloud prefix list component."),
 			"pyx_synthetics":                      pyxEnvironmentComponentBlock("PyxCloud synthetics component."),
 			"pyx_alb_attachment":                  pyxEnvironmentComponentBlock("PyxCloud existing ALB attachment component."),
+			"pyx_vpn_access":                      pyxEnvironmentComponentBlock("PyxCloud JIT VPN-access signal: declares that this place needs corporate WireGuard VPN access, and the provider auto-wires the Just-In-Time door (wg-jit security group with SPI-owned ingress + DynamoDB allowlist table + Keycloak-role IAM policy) instead of the manual internal-vpn add-peer.sh / jit-backing terraform. AWS-only. Set keycloak_role to the Keycloak instance's IAM role name."),
 			"work_dir": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
@@ -557,6 +565,12 @@ func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 		"schedule_expr":              schema.StringAttribute{Optional: true},
 		"artifact_bucket":            schema.StringAttribute{Optional: true},
 		"exec_role_arn":              schema.StringAttribute{Optional: true},
+		"vpc":                        schema.StringAttribute{Optional: true, MarkdownDescription: "vpn-access: name of a sibling pyx_vpc the JIT security group attaches to (defaults to the account default VPC)."},
+		"keycloak_role":              schema.StringAttribute{Optional: true, MarkdownDescription: "vpn-access: IAM role NAME of the Keycloak instance running the JIT SPI; the generated SG-ingress + DynamoDB policy is attached to it. Required for a vpn-access signal."},
+		"wireguard_port":             schema.Int64Attribute{Optional: true, MarkdownDescription: "vpn-access: UDP port the JIT door gates (defaults to 51820)."},
+		"break_glass_cidrs":          schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "vpn-access: optional CIDRs allowed to reach the WireGuard port regardless of JIT (admin lockout safety). Empty = pure JIT (dark at rest)."},
+		"allowlist_table":            schema.StringAttribute{Optional: true, MarkdownDescription: "vpn-access: DynamoDB allowlist table name the SPI uses (defaults to jit-allowlist)."},
+		"point_in_time_recovery":     schema.BoolAttribute{Optional: true, MarkdownDescription: "vpn-access: enable DynamoDB point-in-time recovery on the allowlist table (defaults to true)."},
 	}
 }
 
@@ -803,6 +817,22 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		if typed.canonicalType == "synthetics" || nonEmptyString(cm.TargetURL) || nonEmptyString(cm.ScheduleExpr) {
 			comp.Synthetics = &catalog.AssembleSynthetics{TargetURL: cm.TargetURL.ValueString(), Runtime: cm.Runtime.ValueString(), Handler: cm.Handler.ValueString(), ScheduleExpr: cm.ScheduleExpr.ValueString(), ArtifactBucket: cm.ArtifactBucket.ValueString(), ExecRoleARN: cm.ExecRoleARN.ValueString()}
 		}
+		if typed.canonicalType == "vpn-access" {
+			va := &catalog.AssembleVPNAccess{
+				VPC:            cm.VPC.ValueString(),
+				KeycloakRole:   cm.KeycloakRole.ValueString(),
+				WireGuardPort:  int(cm.WireGuardPort.ValueInt64()),
+				AllowlistTable: cm.AllowlistTable.ValueString(),
+			}
+			for _, c := range cm.BreakGlassCIDRs {
+				va.BreakGlassCIDRs = append(va.BreakGlassCIDRs, c.ValueString())
+			}
+			if !cm.PITR.IsNull() && !cm.PITR.IsUnknown() {
+				pitr := cm.PITR.ValueBool()
+				va.PITR = &pitr
+			}
+			comp.VPNAccess = va
+		}
 		in.Components = append(in.Components, comp)
 	}
 	return in
@@ -848,6 +878,7 @@ func environmentComponentsFromModel(m environmentModel) []typedEnvComponentModel
 	appendComponents("prefix-list", m.PyxPrefixList)
 	appendComponents("synthetics", m.PyxSynthetics)
 	appendComponents("attach-to-existing-alb", m.PyxALBAttachment)
+	appendComponents("vpn-access", m.PyxVPNAccess)
 	return out
 }
 
@@ -887,6 +918,7 @@ func normalizeEnvironmentComputedValues(m *environmentModel) {
 	normalizeComponentCounts(m.PyxPrefixList)
 	normalizeComponentCounts(m.PyxSynthetics)
 	normalizeComponentCounts(m.PyxALBAttachment)
+	normalizeComponentCounts(m.PyxVPNAccess)
 }
 
 func intSet(v types.Int64) bool {

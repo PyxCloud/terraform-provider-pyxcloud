@@ -73,6 +73,7 @@ tables in `core/database/sql/provider-catalog-inventory`.
 | `secrets-manager`, `access-policy` | resp. tables | `pd-TF-REST-LAMBDA` |
 | `scheduled-trigger` / `cron-job` / `scheduled-task` | (region only) | `pd-MIG-SCHEDULED-TRIGGER` |
 | `key-value-store` / `kv-store` / `dynamodb` | (region only) | `pd-MIG-KV-STORE-DYNAMODB` |
+| `vpn-access` / `jit-access` / `vpn-door` | (region only) | `pd-DEP-VPN-ACCESS-SIGNAL` |
 
 ### 3.2 Abstract region + macro logical place
 
