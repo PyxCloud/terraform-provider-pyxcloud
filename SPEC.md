@@ -151,10 +151,23 @@ alarms mapped to Prometheus alerts, routed through Alertmanager instead of SNS),
 `Tempo` datasources (the Tempo datasource reuses the tracing component's Tempo operator). The AWS
 managed‑service path (X‑Ray, ACM, CloudWatch + SNS) is unchanged.
 
-**Pending replacements MUST follow this convention:**
+**Implemented replacements following this convention:**
 
-- **Vault‑HA** (Secrets Manager, when the single‑droplet mitigation is upgraded to HA) → the
-  HashiCorp **Vault** Helm chart / Vault operator (CORE) + Vault config CRs (EXTRA).
+- **Vault‑HA** (`vaultha.go`, `render_vaultha.go` — pd‑MIG‑VAULT‑HA‑HARDEN). The
+  Secrets‑Manager + KMS replacement, upgraded from the single‑droplet mitigation to HA. CORE =
+  the official **hashicorp/vault** Helm chart in **HA Raft** mode (`helm_release`, integrated
+  storage, odd quorum ≥ 3 enforced at plan time) with **Transit auto‑unseal**; the chart also
+  installs the Vault Secrets Operator. EXTRA = a `VaultConnection` + a default `VaultAuthGlobal`
+  per enabled auth method (approle / kubernetes). AWS peer = `aws_kms_key` (+ alias, rotation) +
+  `aws_secretsmanager_secret` (KMS is the seal/unseal peer of Transit auto‑unseal).
+- **Workload‑identity** (`workloadidentity.go`, `render_workloadidentity.go` —
+  pd‑MIG‑WORKLOAD‑IDENTITY). Replaces the AWS IAM instance role with a Vault identity on DO
+  (DO has no IAM‑role primitive). AWS peer = `aws_iam_role` + inline/managed policies +
+  `aws_iam_instance_profile`. DO = the operator pattern's EXTRA only (the Vault config operator
+  CORE is owned by the Vault‑HA component): a `VaultPolicy` per inline policy + a `VaultAuth`
+  role, delivered two ways — `approle` (droplet cloud‑init `user_data`, output, logs in with a
+  response‑wrapped SecretID; no static keys) or `kubernetes` (a DOKS `ServiceAccount` bound to a
+  Vault Kubernetes‑auth role). Tokens are short‑lived (TTL bounded).
 
 ## 5. Per‑component specification (wave‑1: AWS, GCP, DigitalOcean)
 

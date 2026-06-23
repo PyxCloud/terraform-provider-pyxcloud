@@ -698,3 +698,127 @@ func TestAssembleHCLLoadBalancerL7DOPinsKubernetes(t *testing.T) {
 		}
 	}
 }
+
+// TestAssembleHCLWorkloadIdentityAWS asserts the workload-identity component
+// assembles an AWS IAM role + instance profile (the peer being migrated from).
+func TestAssembleHCLWorkloadIdentityAWS(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "app", Provider: "aws", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "wid", Type: "workload-identity", WorkloadIdentity: &AssembleWorkloadIdentity{
+				InlinePolicies: []IAMPolicy{{Name: "read", Document: `{"Version":"2012-10-17","Statement":[]}`}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL workload-identity aws: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`resource "aws_iam_role" "wid"`,
+		`resource "aws_iam_instance_profile" "wid"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("aws workload-identity env missing %q:\n%s", want, all)
+		}
+	}
+	// AWS-only env: no kubernetes/helm provider pin.
+	if strings.Contains(all, `source = "hashicorp/kubernetes"`) {
+		t.Errorf("aws workload-identity must not pin kubernetes:\n%s", all)
+	}
+}
+
+// TestAssembleHCLWorkloadIdentityDOPinsKubernetes asserts the DO workload-identity
+// component assembles the Vault AppRole CRs and pins hashicorp/kubernetes (the CR
+// EXTRA); the CORE helm operator is owned by the vault-ha component.
+func TestAssembleHCLWorkloadIdentityDOPinsKubernetes(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "app", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "wid", Type: "workload-identity", WorkloadIdentity: &AssembleWorkloadIdentity{
+				ClusterName: "prod-doks",
+				InlinePolicies: []IAMPolicy{{Name: "read",
+					Document: "path \"secret/data/app/*\" { capabilities = [\"read\"] }"}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL workload-identity do: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`data "digitalocean_kubernetes_cluster" "wid_cluster"`,
+		`kind       = "VaultPolicy"`,
+		`kind       = "VaultAuth"`,
+		`output "wid_user_data"`,
+		`source = "hashicorp/kubernetes"`, // needsKubernetes pin (CR EXTRA)
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("DO workload-identity env missing %q:\n%s", want, all)
+		}
+	}
+}
+
+// TestAssembleHCLVaultHADOPinsHelm asserts the vault-ha component assembles the
+// official Vault Helm chart (HA Raft) CORE + config CRs EXTRA and pins both the
+// helm and kubernetes providers.
+func TestAssembleHCLVaultHADOPinsHelm(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "sec", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "vault", Type: "vault-ha", VaultHA: &AssembleVaultHA{
+				ClusterName: "prod-doks", TransitUnseal: true,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL vault-ha do: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`data "digitalocean_kubernetes_cluster" "vault_cluster"`,
+		`resource "helm_release" "vault_operator"`, // CORE official Vault chart
+		`chart      = "vault"`,
+		`{ name = "server.ha.raft.enabled", value = "true" }`,
+		`kind       = "VaultConnection"`,  // EXTRA CR
+		`kind       = "VaultAuthGlobal"`,  // EXTRA CR
+		`source = "hashicorp/kubernetes"`, // needsKubernetes pin (CR EXTRA)
+		`source = "hashicorp/helm"`,       // needsHelm pin (operator CORE)
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("DO vault-ha env missing %q:\n%s", want, all)
+		}
+	}
+}
+
+// TestAssembleHCLVaultHAAndWorkloadIdentityDO asserts the two components compose:
+// the vault-ha CORE operator + the workload-identity that binds to it.
+func TestAssembleHCLVaultHAAndWorkloadIdentityDO(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "platform", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "vault", Type: "vault-ha", VaultHA: &AssembleVaultHA{ClusterName: "prod-doks", TransitUnseal: true}},
+			{Name: "wid", Type: "workload-identity", WorkloadIdentity: &AssembleWorkloadIdentity{
+				ClusterName: "prod-doks", DeliveryMode: "kubernetes",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL vault-ha + workload-identity do: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`resource "helm_release" "vault_operator"`, // vault-ha CORE
+		`kind       = "ServiceAccount"`,            // workload-identity k8s SA
+		`kind       = "VaultAuth"`,                 // workload-identity auth role
+		`source = "hashicorp/helm"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("composed DO env missing %q:\n%s", want, all)
+		}
+	}
+}
