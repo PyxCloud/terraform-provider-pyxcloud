@@ -556,3 +556,59 @@ func TestAssembleHCLObjectStorageParityAWS(t *testing.T) {
 		}
 	}
 }
+
+// TestAssembleHCLScaleGroupDOKS is the plan-only round-trip for
+// pd-MIG-SCALEGROUP-DOKS: an abstract virtual-machine-scale-group placed on
+// DigitalOcean assembles into a valid digitalocean_kubernetes_cluster with an
+// auto-scaling node_pool (the AWS->DO migration keystone — DO has no native VM
+// ASG, so the scale-group maps to a DOKS node pool). It asserts the provider
+// source is pinned, the place's VPC is synthesised and wired, and the self-heal
+// min/max/desired bounds carry through.
+func TestAssembleHCLScaleGroupDOKS(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "sg-mig", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{
+				Name: "web",
+				Type: "virtual-machine-scale-group",
+				ScaleGroup: &AssembleScaleGroup{
+					Architecture:      "x86_64",
+					CPU:               "2",
+					RAM:               "4",
+					OS:                "ubuntu",
+					Min:               1,
+					Max:               5,
+					Desired:           2,
+					Health:            "elb",
+					KubernetesVersion: "1.30",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL scale-group DOKS: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`source = "digitalocean/digitalocean"`,            // provider source pinned
+		`resource "digitalocean_vpc" "sg-mig-net"`,        // place VPC synthesised
+		`resource "digitalocean_kubernetes_cluster" "web"`, // scale-group -> DOKS
+		`vpc_uuid = digitalocean_vpc.sg-mig-net.id`,       // node pool joins the VPC
+		`node_pool {`,
+		`auto_scale = true`,
+		`min_nodes  = 1`, // self-heal: ASG-of-1 floor
+		`max_nodes  = 5`,
+		`node_count = 2`,
+		`version = "1.30"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("DO scale-group DOKS HCL missing %q\n%s", want, all)
+		}
+	}
+	// DO has no native VM ASG: the AWS launch-template / autoscaling-group must
+	// NOT appear.
+	if strings.Contains(all, "aws_autoscaling_group") || strings.Contains(all, "aws_launch_template") {
+		t.Errorf("DO scale-group must not emit AWS ASG resources:\n%s", all)
+	}
+}

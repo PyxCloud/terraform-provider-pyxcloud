@@ -144,7 +144,10 @@ on the previous (`pd-TF-*` deps).
 - **Abstract:** `virtual-machine-scale-group { min, max, desired, health }` over a VM spec.
 - **AWS:** `aws_launch_template` + `aws_autoscaling_group` (ELB health). **GCP:**
   `google_compute_instance_template` + `google_compute_region_instance_group_manager` +
-  autoscaler. **DO:** droplet autoscale pool / managed via API. (Mirror the proven MCP/SSO ASG.)
+  autoscaler. **DO:** no native VM ASG primitive, so the scale-group maps to a
+  `digitalocean_kubernetes_cluster` with an auto-scaling `node_pool` (DOKS — the canonical DO
+  autoscaling answer); `min_nodes>=1` preserves the self-healing ASG-of-1 pattern. (Mirror the
+  proven MCP/SSO ASG.)
 
 ### 5.5 `pd-TF-LB` — load‑balancer
 - **Abstract:** `load-balancer { listeners, target = <place/asg>, stickiness }`.

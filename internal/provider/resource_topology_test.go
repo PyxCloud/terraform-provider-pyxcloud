@@ -409,11 +409,14 @@ func TestResourceTranslateScaleGroupNil(t *testing.T) {
 	}
 }
 
-// TestResourceTranslateScaleGroupDOUnsupported surfaces the DO hard error.
-func TestResourceTranslateScaleGroupDOUnsupported(t *testing.T) {
+// TestResourceTranslateScaleGroupDOKS asserts a DigitalOcean scale-group maps to
+// a DOKS node pool (the AWS->DO migration keystone) rather than hard-failing: DO
+// has no native VM ASG primitive, so the scale-group resolves to a
+// digitalocean_kubernetes_cluster with self-heal bounds preserved.
+func TestResourceTranslateScaleGroupDOKS(t *testing.T) {
 	t.Parallel()
 	r := &topologyResource{catalog: catalog.MustEmbedded()}
-	_, err := r.translateScaleGroup(context.Background(), topologyModel{
+	plan, err := r.translateScaleGroup(context.Background(), topologyModel{
 		Name:     types.StringValue("x"),
 		Provider: types.StringValue("digitalocean"),
 		Region:   types.StringValue("Frankfurt"),
@@ -422,8 +425,14 @@ func TestResourceTranslateScaleGroupDOUnsupported(t *testing.T) {
 			Min: types.Int64Value(1), Max: types.Int64Value(3),
 		},
 	})
-	if err == nil {
-		t.Fatal("expected DO unsupported error, got nil")
+	if err != nil {
+		t.Fatalf("DO scale-group should map to DOKS, got error: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected a DOKS plan for DO scale-group, got nil")
+	}
+	if plan.ResourceType.ValueString() != "digitalocean_kubernetes_cluster" {
+		t.Errorf("resource_type = %q, want digitalocean_kubernetes_cluster", plan.ResourceType.ValueString())
 	}
 }
 

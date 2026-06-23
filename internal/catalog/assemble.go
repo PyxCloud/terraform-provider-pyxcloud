@@ -50,6 +50,10 @@ type AssembleScaleGroup struct {
 	UserData        string
 	InstanceProfile string
 	RootDiskGB      int
+	// KubernetesVersion pins the DOKS control-plane version when the scale-group
+	// is placed on DigitalOcean (mapped to a digitalocean_kubernetes_cluster
+	// node_pool). Empty -> "latest". Other providers ignore it.
+	KubernetesVersion string
 }
 
 // AssembleAttachToExistingALB is the config for an `attach-to-existing-alb` component.
@@ -496,7 +500,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				OS: sg.OS, OSVersion: sg.OSVersion,
 				Min: sg.Min, Max: sg.Max, Desired: sg.Desired, Health: sg.Health,
 				UserData: sg.UserData, InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
-				Network: netName, SecurityGroup: vmSG, Subnets: subnetNames,
+				KubernetesVersion: sg.KubernetesVersion,
+				Network:           netName, SecurityGroup: vmSG, Subnets: subnetNames,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
