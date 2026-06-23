@@ -382,6 +382,41 @@ func TestAssembleHCLMigrationScheduledTriggerAndKVDO(t *testing.T) {
 	}
 }
 
+// TestAssembleHCLVPNAccessSignal proves the pyx_vpn_access signal assembles into
+// the AWS JIT door (wg-jit SG + DynamoDB allowlist + Keycloak-role IAM policy)
+// without synthesising a VPC — the catalog-driven replacement for internal-vpn's
+// manual add-peer.sh / jit-backing terraform.
+func TestAssembleHCLVPNAccessSignal(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "corp-vpn", Provider: "aws", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "vpn", Type: "vpn-access",
+				VPNAccess: &AssembleVPNAccess{KeycloakRole: "beta-keycloak-ec2-role"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL vpn-access: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`resource "aws_security_group" "vpn_jit"`,
+		`resource "aws_dynamodb_table" "vpn_jit_allowlist"`,
+		`resource "aws_iam_role_policy_attachment" "vpn_jit_policy"`,
+		`role       = "beta-keycloak-ec2-role"`,
+		`output "vpn_jit_sg_id"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("vpn-access env HCL missing %q\n%s", want, all)
+		}
+	}
+	// The signal is region-scoped (uses the default VPC) — it must NOT synthesise a
+	// VPC of its own.
+	if strings.Contains(all, `resource "aws_vpc"`) {
+		t.Errorf("vpn-access-only env must not synthesise a VPC:\n%s", all)
+	}
+}
+
 // TestAssembleHCLDONetNewComponents proves a DO topology using the net-new
 // migration components (container-registry + reserved-ip) assembles into valid
 // DO HCL — the plan-only round-trip for EPIC-AWS-TO-DO-MIGRATION. It also asserts
