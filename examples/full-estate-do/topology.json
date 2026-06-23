@@ -1,0 +1,23 @@
+{
+  "_comment": "Human-readable mirror of catalog.FullEstateInput(\"digitalocean\", \"Frankfurt\", ...). The authoritative source is internal/catalog/full_estate.go; this JSON is documentation only. pd-MIG-PLAN-DRYRUN-ESTATE.",
+  "name": "passo-estate",
+  "provider": "digitalocean",
+  "region": "Frankfurt",
+  "expose": [443],
+  "components": [
+    { "name": "sso",     "type": "virtual-machine-scale-group", "size": "2vCPU/4GiB", "min": 1, "max": 1, "desired": 1, "note": "Keycloak SSO" },
+    { "name": "vpn",     "type": "virtual-machine-scale-group", "size": "2vCPU/2GiB", "min": 1, "max": 1, "desired": 1, "note": "WireGuard gateway" },
+    { "name": "obs",     "type": "virtual-machine-scale-group", "size": "4vCPU/8GiB", "min": 1, "max": 1, "desired": 1, "note": "observability aggregator" },
+    { "name": "sast",    "type": "virtual-machine-scale-group", "size": "2vCPU/4GiB", "min": 1, "max": 1, "desired": 1, "note": "SAST scanner" },
+    { "name": "backend", "type": "virtual-machine-scale-group", "size": "2vCPU/4GiB", "min": 1, "max": 1, "desired": 1, "note": "pyx-backend (native)" },
+    { "name": "app-images",   "type": "container-registry", "tier": "professional", "garbage_collection": true, "note": "AWS ECR -> DO Container Registry" },
+    { "name": "jit-allowlist","type": "key-value-store", "memory_gb": 1, "ha": true, "note": "DynamoDB -> DO Managed Redis (private)" },
+    { "name": "assets",       "type": "object-storage", "versioning": true, "lifecycle": true, "sse": "AES256", "bucket_policy": true, "access_logs": true, "note": "S3 -> Spaces parity" },
+    { "name": "edge-lb",      "type": "load-balancer", "target": "backend (scale-group)", "listeners": ["443/https"], "l7_rules": ["admin.passo.build->sso (VPN-gated 10.8.0.0/24)", "app.passo.build->backend"], "note": "ALB L7 -> DO LB + ingress" },
+    { "name": "app-traces",   "type": "tracing", "sampling_rate": 0.2, "retention_hours": 168, "cluster": "backend", "note": "X-Ray -> Grafana Tempo + OTel on DOKS" },
+    { "name": "app-tls",      "type": "tls-certificate", "domains": ["app.passo.build", "admin.passo.build"], "production": true, "cluster": "backend", "note": "ACM -> cert-manager + Let's Encrypt on DOKS" },
+    { "name": "nightly",      "type": "scheduled-trigger", "schedule": "cron(0 3 * * ? *)", "cluster": "backend", "note": "EventBridge cron -> DOKS CronJob" },
+    { "name": "vpn-endpoint", "type": "reserved-ip", "note": "Elastic IP -> DO Reserved IP (VPN stable endpoint)" },
+    { "name": "app-secrets",  "type": "secrets-manager", "rotation_days": 30, "note": "Secrets Manager -> self-hosted Vault on DO (mitigation)" }
+  ]
+}
