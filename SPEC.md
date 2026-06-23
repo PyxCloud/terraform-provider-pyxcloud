@@ -71,6 +71,8 @@ tables in `core/database/sql/provider-catalog-inventory`.
 | `managed-kubernetes`, `container-service` | resp. tables | `pd-TF-REST-LAMBDA` |
 | `serverless-function` (lambda) | `serverless_function` | `pd-TF-REST-LAMBDA` |
 | `secrets-manager`, `access-policy` | resp. tables | `pd-TF-REST-LAMBDA` |
+| `scheduled-trigger` / `cron-job` / `scheduled-task` | (region only) | `pd-MIG-SCHEDULED-TRIGGER` |
+| `key-value-store` / `kv-store` / `dynamodb` | (region only) | `pd-MIG-KV-STORE-DYNAMODB` |
 
 ### 3.2 Abstract region + macro logical place
 

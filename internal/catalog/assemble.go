@@ -100,6 +100,27 @@ type AssembleComponent struct {
 	BlockStorage        *AssembleBlockStorage
 	PrefixList          *AssemblePrefixList
 	Synthetics          *AssembleSynthetics
+	ScheduledTrigger    *AssembleScheduledTrigger
+	KeyValueStore       *AssembleKeyValueStore
+}
+
+// AssembleScheduledTrigger is the config for a `scheduled-trigger` component
+// (EventBridge cron -> DOKS CronJob).
+type AssembleScheduledTrigger struct {
+	Schedule     string
+	Image        string
+	Command      []string
+	ClusterName  string
+	Namespace    string
+	InvokeTarget string
+}
+
+// AssembleKeyValueStore is the config for a `key-value-store` component
+// (DynamoDB -> DO Managed Redis).
+type AssembleKeyValueStore struct {
+	PartitionKey string
+	MemoryGB     int
+	HA           bool
 }
 
 // AssembleSynthetics is the config for a `synthetics` / `uptime-check` component.
@@ -299,7 +320,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		switch c.Type {
 		case "virtual-machine", "virtual-machine-scale-group":
 			hasVM, hasNetworked = true, true
-		case "managed-database", "cache", "managed-kubernetes", "container-service", "load-balancer", "attach-to-existing-alb":
+		case "managed-database", "cache", "managed-kubernetes", "container-service", "load-balancer", "attach-to-existing-alb",
+			"key-value-store", "kv-store", "keyvalue-store", "dynamodb":
+			// key-value-store on DO is a private Managed Redis cluster wired to the
+			// place's VPC; on AWS DynamoDB is networkless but a VPC does no harm.
 			hasNetworked = true
 		}
 	}
@@ -833,6 +857,41 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, synHCL)
+		case "scheduled-trigger", "cron-job", "scheduled-task":
+			stSpec := ScheduledTriggerSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.ScheduledTrigger != nil {
+				stSpec.Schedule = c.ScheduledTrigger.Schedule
+				stSpec.Image = c.ScheduledTrigger.Image
+				stSpec.Command = c.ScheduledTrigger.Command
+				stSpec.ClusterName = c.ScheduledTrigger.ClusterName
+				stSpec.Namespace = c.ScheduledTrigger.Namespace
+				stSpec.InvokeTarget = c.ScheduledTrigger.InvokeTarget
+			}
+			stPlan, err := TranslateScheduledTrigger(ctx, cat, stSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			stHCL, err := RenderScheduledTriggerHCL(stPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, stHCL)
+		case "key-value-store", "kv-store", "keyvalue-store", "dynamodb":
+			kvSpec := KeyValueStoreSpec{Name: c.Name, Region: in.Region, Provider: in.Provider, Network: netName}
+			if c.KeyValueStore != nil {
+				kvSpec.PartitionKey = c.KeyValueStore.PartitionKey
+				kvSpec.MemoryGB = c.KeyValueStore.MemoryGB
+				kvSpec.HA = c.KeyValueStore.HA
+			}
+			kvPlan, err := TranslateKeyValueStore(ctx, cat, kvSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			kvHCL, err := RenderKeyValueStoreHCL(kvPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, kvHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

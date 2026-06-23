@@ -319,3 +319,65 @@ func TestAssembleHCLAttachToExistingALB(t *testing.T) {
 		}
 	}
 }
+
+// TestAssembleHCLMigrationScheduledTriggerAndKVAWS is the plan-only round-trip for
+// the two AWS->DO migration components on the SOURCE (AWS) side: a scheduled
+// trigger (EventBridge cron) plus a key-value store (DynamoDB) assemble together.
+func TestAssembleHCLMigrationScheduledTriggerAndKVAWS(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "mig", Provider: "aws", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "nightly", Type: "scheduled-trigger", ScheduledTrigger: &AssembleScheduledTrigger{
+				Schedule: "cron(0 3 * * ? *)", InvokeTarget: "arn:aws:lambda:eu-central-1:123:function:f"}},
+			{Name: "jit-allowlist", Type: "key-value-store", KeyValueStore: &AssembleKeyValueStore{PartitionKey: "user_id"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL scheduled-trigger+kv (aws): %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`resource "aws_cloudwatch_event_rule"`,
+		`schedule_expression = "cron(0 3 * * ? *)"`,
+		`resource "aws_dynamodb_table"`,
+		`billing_mode = "PAY_PER_REQUEST"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %q\n---\n%s", want, all)
+		}
+	}
+}
+
+// TestAssembleHCLMigrationScheduledTriggerAndKVDO is the plan-only round-trip for
+// the two components on the TARGET (DigitalOcean) side: the scheduled trigger
+// becomes a DOKS CronJob and the KV store becomes Managed Redis, with the synthesised
+// VPC the Redis cluster attaches to.
+func TestAssembleHCLMigrationScheduledTriggerAndKVDO(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "mig", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "nightly", Type: "scheduled-trigger", ScheduledTrigger: &AssembleScheduledTrigger{
+				Schedule: "cron(0 3 * * ? *)", Image: "registry.example/job:latest", ClusterName: "prod-doks"}},
+			{Name: "jit-allowlist", Type: "key-value-store", KeyValueStore: &AssembleKeyValueStore{MemoryGB: 1}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL scheduled-trigger+kv (do): %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`resource "kubernetes_cron_job_v1"`,
+		`schedule                      = "0 3 * * *"`,
+		`image = "registry.example/job:latest"`,
+		`resource "digitalocean_database_cluster"`,
+		`engine     = "redis"`,
+		`resource "digitalocean_vpc"`,
+		`private_network_uuid = digitalocean_vpc.mig-net.id`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %q\n---\n%s", want, all)
+		}
+	}
+}
