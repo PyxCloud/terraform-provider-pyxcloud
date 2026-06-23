@@ -418,3 +418,77 @@ func TestAssembleHCLDONetNewComponents(t *testing.T) {
 		t.Errorf("registry/reserved-ip-only env must not synthesise a VPC:\n%s", all)
 	}
 }
+
+// TestAssembleHCLObjectStorageParityDO is the plan-only round-trip for
+// pd-MIG-OBJSTORE-PARITY: an object-store carrying lifecycle + SSE + bucket-policy
+// + access-logs assembles into valid DO Spaces HCL (the S3->Spaces migration),
+// with the provider source pinned for `terraform plan`.
+func TestAssembleHCLObjectStorageParityDO(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "os-mig", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "assets", Type: "object-storage", ObjectStorage: &AssembleObjectStorage{
+				Versioning: true,
+				Lifecycle: []LifecycleRule{
+					{ID: "expire-tmp", Prefix: "tmp/", Enabled: true, ExpireDays: 30},
+					{ID: "abort-mpu", Enabled: true, AbortIncompleteMultipartDays: 7},
+				},
+				SSE:          &SSEConfig{Algorithm: SSEAlgoAES256},
+				BucketPolicy: `{"Version":"2012-10-17","Statement":[]}`,
+				AccessLogs:   &AccessLogConfig{TargetBucket: "audit-logs"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL object-storage parity (do): %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`source = "digitalocean/digitalocean"`,
+		`resource "digitalocean_spaces_bucket" "assets"`,
+		`lifecycle_rule {`,
+		`abort_incomplete_multipart_upload_days = 7`,
+		`resource "digitalocean_spaces_bucket_policy" "assets"`,
+		`# server-side encryption (AES256)`,
+		`# NOTE: server access logging`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("DO object-storage parity HCL missing %q\n%s", want, all)
+		}
+	}
+}
+
+// TestAssembleHCLObjectStorageParityAWS is the AWS-peer plan-only round-trip:
+// the same canonical parity intent renders the four AWS v4+ sub-resources.
+func TestAssembleHCLObjectStorageParityAWS(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "os-aws", Provider: "aws", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "assets", Type: "object-storage", ObjectStorage: &AssembleObjectStorage{
+				Versioning:   true,
+				Lifecycle:    []LifecycleRule{{ID: "expire-tmp", Enabled: true, ExpireDays: 30}},
+				SSE:          &SSEConfig{Algorithm: SSEAlgoKMS, KMSKeyID: "arn:aws:kms:eu-central-1:111:key/abc"},
+				BucketPolicy: `{"Version":"2012-10-17","Statement":[]}`,
+				AccessLogs:   &AccessLogConfig{TargetBucket: "audit-logs", TargetPrefix: "s3/"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL object-storage parity (aws): %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`resource "aws_s3_bucket_server_side_encryption_configuration" "assets"`,
+		`sse_algorithm     = "aws:kms"`,
+		`kms_master_key_id = "arn:aws:kms:eu-central-1:111:key/abc"`,
+		`resource "aws_s3_bucket_lifecycle_configuration" "assets"`,
+		`resource "aws_s3_bucket_policy" "assets"`,
+		`resource "aws_s3_bucket_logging" "assets"`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("AWS object-storage parity HCL missing %q\n%s", want, all)
+		}
+	}
+}

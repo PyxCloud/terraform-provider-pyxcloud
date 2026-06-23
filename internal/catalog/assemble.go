@@ -239,6 +239,12 @@ type AssembleDNS struct {
 type AssembleObjectStorage struct {
 	Versioning bool
 	Public     bool
+
+	// pd-MIG-OBJSTORE-PARITY: S3->Spaces feature parity carried through the assembler.
+	Lifecycle    []LifecycleRule  // object-lifecycle rules
+	SSE          *SSEConfig       // server-side encryption at rest
+	BucketPolicy string           // bucket-policy JSON
+	AccessLogs   *AccessLogConfig // server access logging
 }
 
 // AssembleSecrets is the config for a `secrets-manager` component.
@@ -602,6 +608,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if c.ObjectStorage != nil {
 				osSpec.Versioning = c.ObjectStorage.Versioning
 				osSpec.Public = c.ObjectStorage.Public
+				osSpec.Lifecycle = c.ObjectStorage.Lifecycle
+				osSpec.SSE = c.ObjectStorage.SSE
+				osSpec.BucketPolicy = c.ObjectStorage.BucketPolicy
+				osSpec.AccessLogs = c.ObjectStorage.AccessLogs
 			}
 			osPlan, err := TranslateObjectStorage(ctx, cat, osSpec)
 			if err != nil {

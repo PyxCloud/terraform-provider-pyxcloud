@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -45,7 +46,68 @@ type ObjectStorageSpec struct {
 	// just-created bucket tears down cleanly. Pointer so an unset value takes the
 	// production-safe default.
 	ForceDestroy *bool
+
+	// ── pd-MIG-OBJSTORE-PARITY: AWS S3 -> DO Spaces feature parity ──
+	// These four features all exist on S3 as first-class sub-resources and ALSO
+	// on DO Spaces (which is S3-compatible). Migrating an S3 bucket to Spaces must
+	// carry them over rather than silently dropping them.
+
+	// Lifecycle is the set of object-lifecycle rules (expiration / version
+	// expiration / abort-incomplete-multipart). Empty = no lifecycle management.
+	Lifecycle []LifecycleRule
+
+	// SSE requests server-side encryption at rest. S3 supports AES256 (SSE-S3) and
+	// aws:kms; DO Spaces encrypts at rest by default and only honours AES256 on the
+	// bucket resource. Nil = provider default (no explicit SSE block).
+	SSE *SSEConfig
+
+	// BucketPolicy is a raw IAM/S3 bucket-policy JSON document attached to the
+	// bucket. Empty = no policy. Carried verbatim to the S3-compatible Spaces
+	// bucket-policy resource on DO.
+	BucketPolicy string
+
+	// AccessLogs enables server access logging to a target bucket. Nil = disabled.
+	AccessLogs *AccessLogConfig
 }
+
+// LifecycleRule is one abstract object-lifecycle rule. It is provider-neutral and
+// maps onto S3 / Spaces lifecycle_rule blocks (both S3-compatible).
+type LifecycleRule struct {
+	ID     string // stable rule identifier (required so plans are idempotent)
+	Prefix string // optional key prefix the rule applies to ("" = whole bucket)
+	Enabled bool  // rule enabled
+
+	// ExpireDays expires current object versions after N days (0 = no expiration).
+	ExpireDays int
+	// NoncurrentVersionExpireDays expires NON-current versions after N days
+	// (0 = no noncurrent expiration). Only meaningful with versioning on.
+	NoncurrentVersionExpireDays int
+	// AbortIncompleteMultipartDays aborts dangling multipart uploads after N days
+	// (0 = no abort). A cost-hygiene default many S3 buckets carry.
+	AbortIncompleteMultipartDays int
+}
+
+// SSEConfig is server-side encryption-at-rest configuration.
+type SSEConfig struct {
+	// Algorithm is "AES256" (SSE-S3 / Spaces default) or "aws:kms" (AWS only).
+	Algorithm string
+	// KMSKeyID is the KMS key ARN/id; only valid with Algorithm "aws:kms" on AWS.
+	KMSKeyID string
+}
+
+// AccessLogConfig enables server access logging.
+type AccessLogConfig struct {
+	// TargetBucket is the concrete bucket name that receives the logs. Required.
+	TargetBucket string
+	// TargetPrefix is the key prefix for delivered logs ("" = bucket root).
+	TargetPrefix string
+}
+
+// SSE algorithm tokens.
+const (
+	SSEAlgoAES256 = "AES256"
+	SSEAlgoKMS    = "aws:kms"
+)
 
 // ObjectStoragePlan is the deterministic, catalog-resolved concrete translation
 // of an ObjectStorageSpec for one provider. STRUCTURED plan (not rendered .tf) —
@@ -67,6 +129,12 @@ type ObjectStoragePlan struct {
 	Public     bool `json:"public"`     // public read (opt-in; false = private + access-block enforced)
 
 	ForceDestroy bool `json:"force_destroy"` // resolved (default false)
+
+	// ── pd-MIG-OBJSTORE-PARITY resolved fields ──
+	Lifecycle    []LifecycleRule  `json:"lifecycle,omitempty"`     // resolved, sorted-by-ID lifecycle rules
+	SSE          *SSEConfig       `json:"sse,omitempty"`           // resolved SSE config (nil = none)
+	BucketPolicy string           `json:"bucket_policy,omitempty"` // bucket-policy JSON (verbatim)
+	AccessLogs   *AccessLogConfig `json:"access_logs,omitempty"`   // access-log target (nil = off)
 
 	ResourceType string `json:"resource_type"` // top provider resource, e.g. aws_s3_bucket
 }
@@ -123,6 +191,22 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 		forceDestroy = *spec.ForceDestroy
 	}
 
+	// pd-MIG-OBJSTORE-PARITY: resolve + validate lifecycle / SSE / policy / logs.
+	// Provider-specific capability gaps surface as HARD plan-time errors (never a
+	// silent drop) — the AWS->DO migration must not lose data-protection settings.
+	lifecycle, err := resolveLifecycle(spec.Lifecycle)
+	if err != nil {
+		return ObjectStoragePlan{}, err
+	}
+	sse, err := resolveSSE(provider, spec.SSE)
+	if err != nil {
+		return ObjectStoragePlan{}, err
+	}
+	accessLogs, err := resolveAccessLogs(spec.AccessLogs)
+	if err != nil {
+		return ObjectStoragePlan{}, err
+	}
+
 	plan := ObjectStoragePlan{
 		Provider:     provider,
 		CSP:          row.CSP,
@@ -133,6 +217,10 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 		Versioning:   spec.Versioning,
 		Public:       spec.Public, // defaults false via validation; private-by-default
 		ForceDestroy: forceDestroy,
+		Lifecycle:    lifecycle,
+		SSE:          sse,
+		BucketPolicy: strings.TrimSpace(spec.BucketPolicy),
+		AccessLogs:   accessLogs,
 	}
 
 	switch provider {
@@ -215,6 +303,85 @@ func sanitiseBucketPrefix(s string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+// resolveLifecycle validates and canonicalises the lifecycle rules: every rule
+// needs a stable ID (idempotent plans), at least one action, and the set is
+// sorted by ID so the rendered HCL is deterministic. S3 and DO Spaces both accept
+// the same lifecycle_rule shape (Spaces is S3-compatible), so there is no
+// provider gating here — only validation.
+func resolveLifecycle(rules []LifecycleRule) ([]LifecycleRule, error) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	out := make([]LifecycleRule, 0, len(rules))
+	for _, r := range rules {
+		id := strings.TrimSpace(r.ID)
+		if id == "" {
+			return nil, fmt.Errorf("object-storage: lifecycle rule needs a stable id (for idempotent plans)")
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("object-storage: duplicate lifecycle rule id %q", id)
+		}
+		seen[id] = true
+		if r.ExpireDays < 0 || r.NoncurrentVersionExpireDays < 0 || r.AbortIncompleteMultipartDays < 0 {
+			return nil, fmt.Errorf("object-storage: lifecycle rule %q has a negative day count", id)
+		}
+		if r.ExpireDays == 0 && r.NoncurrentVersionExpireDays == 0 && r.AbortIncompleteMultipartDays == 0 {
+			return nil, fmt.Errorf("object-storage: lifecycle rule %q has no action "+
+				"(set expire_days, noncurrent_version_expire_days, or abort_incomplete_multipart_days)", id)
+		}
+		rr := r
+		rr.ID = id
+		rr.Prefix = strings.TrimSpace(r.Prefix)
+		out = append(out, rr)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// resolveSSE validates the SSE config against provider capability. DO Spaces
+// encrypts at rest by default and the resource only honours AES256; an aws:kms
+// request on DO is a HARD error (never silently downgraded to AES256), per SPEC
+// §4 (no silent fallback).
+func resolveSSE(provider string, sse *SSEConfig) (*SSEConfig, error) {
+	if sse == nil {
+		return nil, nil
+	}
+	algo := strings.TrimSpace(sse.Algorithm)
+	if algo == "" {
+		algo = SSEAlgoAES256
+	}
+	switch algo {
+	case SSEAlgoAES256:
+		if strings.TrimSpace(sse.KMSKeyID) != "" {
+			return nil, fmt.Errorf("object-storage: sse kms_key_id is only valid with algorithm %q", SSEAlgoKMS)
+		}
+		return &SSEConfig{Algorithm: SSEAlgoAES256}, nil
+	case SSEAlgoKMS:
+		if provider != ProviderAWS {
+			return nil, fmt.Errorf("object-storage: sse algorithm %q (KMS) is AWS-only; "+
+				"%s object storage supports only %q. Choose AES256 or keep the data on AWS "+
+				"(hard plan-time error, never a silent downgrade)", SSEAlgoKMS, provider, SSEAlgoAES256)
+		}
+		return &SSEConfig{Algorithm: SSEAlgoKMS, KMSKeyID: strings.TrimSpace(sse.KMSKeyID)}, nil
+	default:
+		return nil, fmt.Errorf("object-storage: unknown sse algorithm %q (want %q or %q)",
+			algo, SSEAlgoAES256, SSEAlgoKMS)
+	}
+}
+
+// resolveAccessLogs validates the access-log target.
+func resolveAccessLogs(al *AccessLogConfig) (*AccessLogConfig, error) {
+	if al == nil {
+		return nil, nil
+	}
+	target := strings.TrimSpace(al.TargetBucket)
+	if target == "" {
+		return nil, fmt.Errorf("object-storage: access-logs require a target_bucket")
+	}
+	return &AccessLogConfig{TargetBucket: target, TargetPrefix: strings.TrimSpace(al.TargetPrefix)}, nil
 }
 
 func validateObjectStorageSpec(spec ObjectStorageSpec) error {
