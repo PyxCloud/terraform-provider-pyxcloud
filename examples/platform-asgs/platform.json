@@ -1,0 +1,14 @@
+{
+  "_comment": "pd-MIG-PORT-ASGS-CANONICAL — the 5 PyxCloud platform-service ASGs (SSO/VPN/obs/SAST/backend) expressed in the CANONICAL vocabulary as virtual-machine-scale-groups of 1 (self-heal). The same abstract topology descends to a DOKS node-pool on DigitalOcean (auto_scale, min_nodes=1) and an aws_autoscaling_group on AWS. This file is the canonical mapping; the authoritative, executable version is catalog.PlatformServices() / PlatformScaleGroupComponents() with the plan-only round-trip in platform_asgs_test.go.",
+  "name": "platform",
+  "provider": "digitalocean",
+  "region": "Frankfurt",
+  "apply_security_baseline": true,
+  "services": [
+    { "name": "sso",     "cpu": 2, "ram": 4, "min": 1, "max": 1, "desired": 1, "health": "elb", "note": "Keycloak SSO — self-heal closes the random-502 outage class" },
+    { "name": "vpn",     "cpu": 2, "ram": 2, "min": 1, "max": 1, "desired": 1, "health": "ec2", "note": "WireGuard VPN gateway (UDP, instance-liveness health)" },
+    { "name": "obs",     "cpu": 4, "ram": 8, "min": 1, "max": 1, "desired": 1, "health": "elb", "note": "observability aggregator" },
+    { "name": "sast",    "cpu": 2, "ram": 4, "min": 1, "max": 1, "desired": 1, "health": "ec2", "note": "SAST scanner (Semgrep/SonarQube)" },
+    { "name": "backend", "cpu": 2, "ram": 4, "min": 1, "max": 1, "desired": 1, "health": "elb", "note": "pyx-backend (native), LB health-replace" }
+  ]
+}

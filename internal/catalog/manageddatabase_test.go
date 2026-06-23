@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// boolPtr is a test helper for the *bool override fields.
-func boolPtr(b bool) *bool { return &b }
-
 // TestTranslateManagedDatabaseAWS asserts the resolved structured plan for AWS:
 // catalog-resolved csp_region + DB class, production-safe defaults
 // (deletion_protection true, skip_final_snapshot false), multi-AZ zones, and the
