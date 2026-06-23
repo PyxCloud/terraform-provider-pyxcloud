@@ -264,10 +264,17 @@ type AssembleK8s struct {
 	DesiredNodes int
 }
 
-// AssembleMonitoring is the canonical monitoring config for a `monitoring` component.
+// AssembleMonitoring is the canonical monitoring config for a `monitoring` component
+// (CloudWatch+SNS on AWS -> the LGTM stack on DOKS).
 type AssembleMonitoring struct {
 	LogGroups []LogGroup
 	Alarms    []MetricAlarm
+
+	// ── LGTM stack (DigitalOcean) ──
+	ClusterName         string
+	Namespace           string
+	ScrapeTargets       []ScrapeTarget
+	TempoDatasourceName string
 }
 
 // AssembleDNS is the canonical Cloudflare DNS config for a `dns` component.
@@ -650,6 +657,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			monPlan, err := TranslateMonitoring(ctx, cat, MonitoringSpec{
 				Name: c.Name, Region: in.Region, Provider: in.Provider,
 				LogGroups: c.Monitoring.LogGroups, Alarms: c.Monitoring.Alarms,
+				ClusterName: c.Monitoring.ClusterName, Namespace: c.Monitoring.Namespace,
+				ScrapeTargets: c.Monitoring.ScrapeTargets, TempoDatasourceName: c.Monitoring.TempoDatasourceName,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
@@ -657,6 +666,15 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			monHCL, err := RenderMonitoringHCL(monPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			// DO LGTM emits operator-pattern resources (kube-prometheus-stack + Loki via
+			// helm_release CORE, ServiceMonitor/PrometheusRule/datasource CRs via
+			// kubernetes_manifest EXTRA) — pin the helm + kubernetes providers.
+			if monPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
+			}
+			if monPlan.RendersHelm {
+				needsHelm = true
 			}
 			docs = append(docs, monHCL)
 		case "dns":

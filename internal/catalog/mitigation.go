@@ -114,9 +114,11 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
 		ProviderIBM: true, ProviderAlibaba: true,
 	},
-	"kms":                 {ProviderAWS: true, ProviderGCP: true},
-	"encryption-key":      {ProviderAWS: true, ProviderGCP: true},
-	"monitoring":          {ProviderAWS: true, ProviderGCP: true},
+	"kms":            {ProviderAWS: true, ProviderGCP: true},
+	"encryption-key": {ProviderAWS: true, ProviderGCP: true},
+	// monitoring is native on DO via the LGTM operator-pattern stack (kube-prometheus-stack
+	// + Loki + Grafana + Alertmanager), not a self-hosted-VM mitigation (pd-MIG-LGTM-MONITORING).
+	"monitoring":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	"synthetics":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	"uptime-check":        {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	"waf-service":         {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},

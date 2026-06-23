@@ -66,10 +66,11 @@ correct. With a `DIGITALOCEAN_TOKEN` exported the test additionally runs `plan`.
 | 8 | object-storage (S3 + lifecycle/SSE/policy/logs) | object-storage             | `digitalocean_spaces_bucket{,_policy}.assets`        |    ✅    |  ✅  |
 | 9 | load-balancer L7 (ALB + listener rules)      | load-balancer                 | `digitalocean_loadbalancer.edge-lb` + `kubernetes_manifest.edge-lb_ingress` |    ✅    |  ⚠️¹  |
 | 10| tracing (X-Ray)                              | tracing                       | `kubernetes_manifest.app-traces_*` (Tempo + OTel) + cluster data-source |    ✅    |  ⚠️²  |
-| 11| tls-certificate (ACM)                        | tls-certificate               | `kubernetes_manifest.app-tls_{issuer,certificate}` (cert-manager) |    ✅    |  ⚠️²  |
-| 12| scheduled-trigger (EventBridge cron)         | scheduled-trigger             | `kubernetes_cron_job_v1.nightly` + cluster data-source |    ✅    |  ⚠️²  |
-| 13| reserved-ip (Elastic IP)                     | reserved-ip                   | `digitalocean_reserved_ip.vpn-endpoint`              |    ✅    |  ✅  |
-| 14| secrets-manager (Secrets Manager)            | secrets-manager *(mitigated)* | `digitalocean_droplet.app-secrets-1` (self-hosted Vault) |    ✅    |  ✅  |
+| 11| monitoring (CloudWatch + SNS)                | monitoring                    | `helm_release.app-monitoring_{kube_prometheus_stack,loki}` (CORE operators) + `kubernetes_manifest.app-monitoring_{alerts,scrape_backend,ds_loki,ds_tempo}` (EXTRA CRs) |    ✅    |  ⚠️²  |
+| 12| tls-certificate (ACM)                        | tls-certificate               | `kubernetes_manifest.app-tls_{issuer,certificate}` (cert-manager) |    ✅    |  ⚠️²  |
+| 13| scheduled-trigger (EventBridge cron)         | scheduled-trigger             | `kubernetes_cron_job_v1.nightly` + cluster data-source |    ✅    |  ⚠️²  |
+| 14| reserved-ip (Elastic IP)                     | reserved-ip                   | `digitalocean_reserved_ip.vpn-endpoint`              |    ✅    |  ✅  |
+| 15| secrets-manager (Secrets Manager)            | secrets-manager *(mitigated)* | `digitalocean_droplet.app-secrets-1` (self-hosted Vault) |    ✅    |  ✅  |
 | – | network (the estate VPC)                     | *(synthesised)*               | `digitalocean_vpc.passo-estate-net`                  |    ✅    |  ✅  |
 | – | security-group (estate firewall, :443)       | *(synthesised)*               | `digitalocean_firewall.passo-estate-sg`              |    ✅    |  ✅  |
 
@@ -78,7 +79,7 @@ correct. With a `DIGITALOCEAN_TOKEN` exported the test additionally runs `plan`.
  ¹ the L7 ingress is a `kubernetes_manifest` (needs live cluster endpoint);
  ² needs a `DIGITALOCEAN_TOKEN` + an existing DOKS cluster to read/construct.
 
-**14 canonical components (+2 synthesised infra) → 28 concrete DO resources, all
+**15 canonical components (+2 synthesised infra) → concrete DO resources, all
 valid.** The same `FullEstateInput("aws", ...)` topology re-renders to AWS
 (`aws_autoscaling_group` ×5, `aws_ecr_repository`, `aws_s3_bucket`,
 `aws_secretsmanager_secret`, `aws_acm_certificate`, …) — the migration is a

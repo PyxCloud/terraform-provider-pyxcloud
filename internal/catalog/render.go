@@ -1867,14 +1867,22 @@ func gcpAccountID(name string) string {
 	return id
 }
 
-// RenderMonitoringHCL renders a MonitoringPlan into provider HCL. DO never reaches
-// here (TranslateMonitoring rejects it).
+// RenderMonitoringHCL renders a MonitoringPlan into provider HCL.
+//
+//   - AWS: aws_cloudwatch_log_group + aws_cloudwatch_metric_alarm (the CloudWatch+SNS
+//     peer being migrated away from).
+//   - GCP: google_logging_project_bucket_config.
+//   - DigitalOcean: the LGTM operator-pattern stack — kube-prometheus-stack + Loki
+//     as upstream helm_release CORE plus our ServiceMonitor/PrometheusRule/Grafana
+//     datasource custom resources (EXTRA). See render_monitoring_lgtm.go.
 func RenderMonitoringHCL(p MonitoringPlan) (string, error) {
 	switch p.Provider {
 	case ProviderAWS:
 		return renderMonitoringAWS(p), nil
 	case ProviderGCP:
 		return renderMonitoringGCP(p), nil
+	case ProviderDigitalOcean:
+		return renderMonitoringDO(p), nil
 	default:
 		return "", fmt.Errorf("monitoring: render unsupported for provider %q", p.Provider)
 	}
