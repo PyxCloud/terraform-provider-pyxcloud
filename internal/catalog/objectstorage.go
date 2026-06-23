@@ -73,9 +73,9 @@ type ObjectStorageSpec struct {
 // LifecycleRule is one abstract object-lifecycle rule. It is provider-neutral and
 // maps onto S3 / Spaces lifecycle_rule blocks (both S3-compatible).
 type LifecycleRule struct {
-	ID     string // stable rule identifier (required so plans are idempotent)
-	Prefix string // optional key prefix the rule applies to ("" = whole bucket)
-	Enabled bool  // rule enabled
+	ID      string // stable rule identifier (required so plans are idempotent)
+	Prefix  string // optional key prefix the rule applies to ("" = whole bucket)
+	Enabled bool   // rule enabled
 
 	// ExpireDays expires current object versions after N days (0 = no expiration).
 	ExpireDays int
