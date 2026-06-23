@@ -223,6 +223,11 @@ func TestRenderTLSCertificateDOHTTP01(t *testing.T) {
 	}
 	for _, want := range []string{
 		`data "digitalocean_kubernetes_cluster" "app-tls_cluster"`,
+		// CORE: the cert-manager operator via its upstream Helm chart (self-contained)
+		`resource "helm_release" "app-tls_certmanager_operator"`,
+		`chart      = "cert-manager"`,
+		`{ name = "installCRDs", value = "true" }`,
+		// EXTRA: our ClusterIssuer + Certificate custom resources
 		`kind       = "ClusterIssuer"`,
 		`server = "` + letsEncryptStagingACME + `"`,
 		`email  = "ops@example.com"`,
@@ -232,7 +237,8 @@ func TestRenderTLSCertificateDOHTTP01(t *testing.T) {
 		`secretName = "app-tls-tls"`,
 		`name = "letsencrypt-staging"`,
 		`dnsNames = ["app.example.com"]`,
-		`depends_on = [kubernetes_manifest.app-tls_issuer]`,
+		// the Certificate depends on the operator (its CRD) AND its issuer
+		`depends_on = [helm_release.app-tls_certmanager_operator, kubernetes_manifest.app-tls_issuer]`,
 	} {
 		if !strings.Contains(hcl, want) {
 			t.Errorf("do cert-manager HCL missing %q:\n%s", want, hcl)

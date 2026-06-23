@@ -47,6 +47,17 @@ const (
 	letsEncryptStagingACME = "https://acme-staging-v02.api.letsencrypt.org/directory"
 )
 
+// Operator-pattern CORE chart (pd-MIG-OPERATOR-PATTERN-CONVENTION): the
+// cert-manager operator, installed via Jetstack's official Helm chart. The chart
+// owns the controller + the cert-manager CRDs; we render the ClusterIssuer +
+// Certificate custom resources (EXTRA). Repo/chart/version pinned for determinism.
+const (
+	certManagerNamespace    = "cert-manager"
+	certManagerRepo         = "https://charts.jetstack.io"
+	certManagerChart        = "cert-manager"
+	certManagerChartVersion = "v1.15.1"
+)
+
 // TLSCertificateSpec is the abstract description of a TLS certificate.
 // Provider-neutral.
 type TLSCertificateSpec struct {
@@ -101,6 +112,10 @@ type TLSCertificatePlan struct {
 	Namespace     string `json:"namespace,omitempty"`
 	IssuerName    string `json:"issuer_name,omitempty"`    // derived ClusterIssuer name
 	ChallengeKind string `json:"challenge_kind,omitempty"` // http-01 | dns-01
+
+	// RendersHelm is true when the render emits a helm_release (the operator-pattern
+	// CORE — the cert-manager operator chart) so assemble.go pins hashicorp/helm.
+	RendersHelm bool `json:"renders_helm,omitempty"`
 
 	ResourceType string `json:"resource_type"` // top provider resource
 }
@@ -185,6 +200,9 @@ func TranslateTLSCertificate(ctx context.Context, cat RegionCatalog, spec TLSCer
 			env = "prod"
 		}
 		plan.IssuerName = "letsencrypt-" + env
+		// Operator pattern: CORE = the cert-manager operator (helm_release); EXTRA =
+		// our ClusterIssuer + Certificate CRs (kubernetes_manifest). Self-contained.
+		plan.RendersHelm = true
 		plan.ResourceType = "kubernetes_manifest"
 	default:
 		return TLSCertificatePlan{}, ErrComponentUnsupported{

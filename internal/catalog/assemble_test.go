@@ -482,6 +482,12 @@ func TestAssembleHCLTLSCertManagerDO(t *testing.T) {
 		`source = "digitalocean/digitalocean"`, // cloud provider pinned
 		`kubernetes = {`,                       // kubernetes provider pinned
 		`source = "hashicorp/kubernetes"`,      //
+		`source = "hashicorp/helm"`,            // needsHelm pin (operator CORE)
+		// CORE: the cert-manager operator installed via its upstream Helm chart
+		`resource "helm_release" "app-tls_certmanager_operator"`,
+		`chart      = "cert-manager"`,
+		`{ name = "installCRDs", value = "true" }`,
+		// EXTRA: our ClusterIssuer + Certificate custom resources
 		`resource "kubernetes_manifest" "app-tls_issuer"`,
 		`kind       = "ClusterIssuer"`,
 		`resource "kubernetes_manifest" "app-tls_certificate"`,
@@ -651,8 +657,11 @@ func TestAssembleHCLTracingDOPinsKubernetes(t *testing.T) {
 	all := strings.Join(docs, "\n")
 	for _, want := range []string{
 		`data "digitalocean_kubernetes_cluster" "traces_cluster"`,
-		`kind       = "Deployment"`,
-		`source = "hashicorp/kubernetes"`, // needsKubernetes pin
+		`resource "helm_release" "traces_otel_operator"`, // CORE upstream operator
+		`kind       = "TempoStack"`,                      // EXTRA custom resource
+		`kind       = "OpenTelemetryCollector"`,          // EXTRA custom resource
+		`source = "hashicorp/kubernetes"`,                // needsKubernetes pin
+		`source = "hashicorp/helm"`,                      // needsHelm pin (operator CORE)
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("DO tracing env missing %q:\n%s", want, all)

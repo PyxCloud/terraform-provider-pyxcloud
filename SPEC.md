@@ -117,6 +117,43 @@ Translation is **deterministic** and **catalog‑driven**: no hard‑coded provi
 provider binary. Missing catalog data (e.g. a provider lacking a region/SKU) surfaces as a
 clear plan‑time error, never a silent fallback.
 
+### 4.1 The operator pattern — THE convention for self‑hosted‑on‑k8s replacements
+
+When an AWS managed service has **no managed equivalent** on the target cloud and the canonical
+replacement is a CNCF / de‑facto‑OSS project that ships a **Kubernetes operator** (X‑Ray → Tempo,
+ACM → cert‑manager, CloudWatch metrics → Prometheus, Secrets Manager → Vault, …), the render
+**MUST** follow the Kubernetes **operator pattern** — never a hand‑rolled `Deployment` /
+`Service` / `ConfigMap`. The replacement is split in two halves:
+
+- **CORE (maintained upstream):** the operator's controller + CRDs, installed via the project's
+  **official Helm chart**. Rendered as a `helm_release` (chart repo + pinned version). The chart
+  owns the controller, RBAC, CRDs and version lifecycle — we do not reimplement them.
+- **EXTRA (maintained by us):** our **custom resources (CRs)** + config — the things the operator
+  reconciles (e.g. an `OpenTelemetryCollector`, a `TempoStack`, a `ClusterIssuer`). Rendered as
+  `kubernetes_manifest` of the operator's CRDs, with `depends_on` the CORE operator that owns the CRD.
+
+Both halves reuse the shared in‑cluster wiring (`data "digitalocean_kubernetes_cluster"`) so they
+land on the right cluster's credentials. The reusable helper is `internal/catalog/operator.go`
+(`renderHelmRelease` = CORE, `renderOperatorCR` = EXTRA, `renderOperatorComponent` = the full
+component in dependency order). Provider pins are flipped automatically: `kubernetes_manifest`
+sets `needsKubernetes` (→ `hashicorp/kubernetes`) and any `helm_release` sets `needsHelm`
+(→ `hashicorp/helm`) in `assemble.go` — the `needsHelm` pin mirrors the existing `needsKubernetes`
+pin. A component signals it renders Helm via `RendersHelm` on its plan.
+
+**Reference implementation:** tracing (`internal/catalog/tracing.go`, `render_tracing.go`) — CORE =
+the OpenTelemetry Operator + the Tempo Operator (`helm_release`); EXTRA = an `OpenTelemetryCollector`
++ a `TempoStack` CR. cert‑manager (`tlscertificate.go`, `render_tlscertificate.go`) is self‑contained
+the same way: CORE = the cert‑manager Helm chart (`installCRDs=true`); EXTRA = `ClusterIssuer` +
+`Certificate`. The AWS managed‑service path (X‑Ray, ACM) is unchanged.
+
+**Pending replacements MUST follow this convention:**
+
+- **LGTM / monitoring** (CloudWatch metrics/dashboards) → the **Prometheus Operator** /
+  `kube-prometheus-stack` Helm chart (CORE) + `Prometheus` / `ServiceMonitor` / `PrometheusRule`
+  / Grafana dashboard CRs (EXTRA).
+- **Vault‑HA** (Secrets Manager, when the single‑droplet mitigation is upgraded to HA) → the
+  HashiCorp **Vault** Helm chart / Vault operator (CORE) + Vault config CRs (EXTRA).
+
 ## 5. Per‑component specification (wave‑1: AWS, GCP, DigitalOcean)
 
 Each component below defines: the **abstract schema**, the **per‑provider target**, and the

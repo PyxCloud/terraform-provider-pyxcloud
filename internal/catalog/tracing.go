@@ -18,17 +18,18 @@ import (
 //     being migrated AWAY from. X-Ray ingests traces via the X-Ray daemon /
 //     OTel-to-X-Ray exporter and stores them server-side; the group + sampling
 //     rule are the Terraform-expressible control surface.
-//   - DigitalOcean: Grafana Tempo (trace store) + an OpenTelemetry Collector
-//     (ingest/export) deployed to a DOKS cluster. DO has no managed tracing
-//     service, so the canonical, plan-time-expressible replacement is the CNCF
-//     OTel-collector -> Tempo pipeline — exactly the X-Ray replacement this task
-//     asks for. Tempo runs as a Deployment fronted by a Service (the OTLP +
-//     query endpoints); the collector runs as a Deployment that exports to Tempo.
+//   - DigitalOcean: the Kubernetes OPERATOR pattern on DOKS (DO has no managed
+//     tracing service). CORE = the OpenTelemetry Operator + the Tempo Operator,
+//     each installed as an upstream `helm_release` (the charts own the controllers
+//     + CRDs). EXTRA = an `OpenTelemetryCollector` CR (ingest/sample/export) + a
+//     `TempoStack` CR (the operator provisions Tempo's micro-services + storage).
+//     This is the canonical X-Ray replacement, expressed as operators+CRs rather
+//     than hand-rolled Deployments — see operator.go.
 //
-// The DO path emits kubernetes_manifest resources (a Deployment + Service for
-// Tempo, a ConfigMap + Deployment for the collector), reusing the SAME
-// kubernetes/DOKS-cluster data-source convention the cert-manager / scheduled-
-// trigger DOKS paths already use — no new cluster-wiring vocabulary is forked.
+// The DO path emits helm_release (CORE) + kubernetes_manifest (EXTRA) resources,
+// reusing the SAME kubernetes/DOKS-cluster data-source convention the cert-manager
+// / scheduled-trigger DOKS paths already use — no new cluster-wiring vocabulary is
+// forked — via the shared renderOperatorComponent helper.
 
 // Canonical tracing type tokens. `tracing` is canonical; `distributed-tracing`,
 // `tempo`, and `trace-collector` are accepted aliases (all name the same component).
@@ -49,6 +50,21 @@ const (
 	defaultOTLPGRPCPort   = 4317
 	defaultOTLPHTTPPort   = 4318
 	defaultTempoQueryPort = 3200
+)
+
+// Operator-pattern CORE charts (pd-MIG-OPERATOR-PATTERN-CONVENTION). The DO
+// tracing replacement follows the k8s OPERATOR pattern: the controllers + CRDs
+// come from the upstream Helm charts (CORE), and we render the OpenTelemetryCollector
+// + TempoStack custom resources (EXTRA). Chart repos/versions are pinned so the
+// rendered plan is deterministic.
+const (
+	otelOperatorRepo    = "https://open-telemetry.github.io/opentelemetry-helm-charts"
+	otelOperatorChart   = "opentelemetry-operator"
+	otelOperatorVersion = "0.62.0"
+
+	tempoOperatorRepo    = "https://grafana.github.io/helm-charts"
+	tempoOperatorChart   = "tempo-operator"
+	tempoOperatorVersion = "0.10.0"
 )
 
 // TracingSpec is the abstract description of a tracing backend. Provider-neutral.
@@ -99,6 +115,11 @@ type TracingPlan struct {
 	OTLPGRPCPort   int    `json:"otlp_grpc_port,omitempty"`
 	OTLPHTTPPort   int    `json:"otlp_http_port,omitempty"`
 	TempoQueryPort int    `json:"tempo_query_port,omitempty"`
+
+	// RendersHelm is true when the render emits a helm_release (the operator-pattern
+	// CORE) — assemble.go pins hashicorp/helm (needsHelm) when set, mirroring how
+	// kubernetes_manifest drives the needsKubernetes pin.
+	RendersHelm bool `json:"renders_helm,omitempty"`
 
 	ResourceType string `json:"resource_type"` // top provider resource
 }
@@ -171,6 +192,9 @@ func TranslateTracing(ctx context.Context, cat RegionCatalog, spec TracingSpec) 
 		plan.OTLPGRPCPort = defaultOTLPGRPCPort
 		plan.OTLPHTTPPort = defaultOTLPHTTPPort
 		plan.TempoQueryPort = defaultTempoQueryPort
+		// Operator pattern: CORE = OTel Operator + Tempo Operator (helm_release);
+		// EXTRA = OpenTelemetryCollector + TempoStack CRs (kubernetes_manifest).
+		plan.RendersHelm = true
 		plan.ResourceType = "kubernetes_manifest"
 	default:
 		return TracingPlan{}, ErrComponentUnsupported{
