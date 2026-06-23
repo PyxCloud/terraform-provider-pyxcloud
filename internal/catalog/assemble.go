@@ -110,6 +110,36 @@ type AssembleComponent struct {
 	ReservedIP          *AssembleReservedIP
 	TLSCertificate      *AssembleTLSCertificate
 	Tracing             *AssembleTracing
+	WorkloadIdentity    *AssembleWorkloadIdentity
+	VaultHA             *AssembleVaultHA
+}
+
+// AssembleWorkloadIdentity is the config for a `workload-identity` component
+// (AWS IAM role + instance profile -> a HashiCorp Vault identity on DO:
+// AppRole via droplet user_data, or Kubernetes-auth via a DOKS ServiceAccount).
+type AssembleWorkloadIdentity struct {
+	AssumeService     string
+	InlinePolicies    []IAMPolicy
+	ManagedPolicyARNs []string
+	DeliveryMode      string // approle | kubernetes (DO)
+	ClusterName       string
+	Namespace         string
+	VaultRole         string
+	TokenTTL          string
+}
+
+// AssembleVaultHA is the config for a `vault-ha` component (AWS Secrets
+// Manager/KMS -> a HashiCorp Vault HA Raft cluster with Transit auto-unseal on
+// DOKS, via the operator pattern: the official Vault Helm chart (CORE) + our
+// config CRs (EXTRA)).
+type AssembleVaultHA struct {
+	ClusterName    string
+	Namespace      string
+	Replicas       int
+	ChartVersion   string
+	TransitUnseal  bool
+	TransitKeyName string
+	AuthMethods    []string // approle | kubernetes — auth backends to enable
 }
 
 // AssembleTracing is the config for a `tracing` component (X-Ray -> Grafana Tempo
@@ -1112,6 +1142,64 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				needsHelm = true
 			}
 			docs = append(docs, trHCL)
+		case "workload-identity", "instance-identity", "workload-id":
+			wiSpec := WorkloadIdentitySpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.WorkloadIdentity != nil {
+				wiSpec.AssumeService = c.WorkloadIdentity.AssumeService
+				wiSpec.InlinePolicies = c.WorkloadIdentity.InlinePolicies
+				wiSpec.ManagedPolicyARNs = c.WorkloadIdentity.ManagedPolicyARNs
+				wiSpec.DeliveryMode = c.WorkloadIdentity.DeliveryMode
+				wiSpec.ClusterName = c.WorkloadIdentity.ClusterName
+				wiSpec.Namespace = c.WorkloadIdentity.Namespace
+				wiSpec.VaultRole = c.WorkloadIdentity.VaultRole
+				wiSpec.TokenTTL = c.WorkloadIdentity.TokenTTL
+			}
+			wiPlan, err := TranslateWorkloadIdentity(ctx, cat, wiSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			wiHCL, err := RenderWorkloadIdentityHCL(wiPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			// The DO Vault-identity peer emits operator-pattern CRs (kubernetes_manifest);
+			// pin the kubernetes provider. The Vault config operator CORE itself is
+			// installed by the vault-ha component, so workload-identity emits no helm_release.
+			if wiPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
+			}
+			if wiPlan.RendersHelm {
+				needsHelm = true
+			}
+			docs = append(docs, wiHCL)
+		case "vault-ha", "vault", "vault-cluster":
+			vhSpec := VaultHASpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.VaultHA != nil {
+				vhSpec.ClusterName = c.VaultHA.ClusterName
+				vhSpec.Namespace = c.VaultHA.Namespace
+				vhSpec.Replicas = c.VaultHA.Replicas
+				vhSpec.ChartVersion = c.VaultHA.ChartVersion
+				vhSpec.TransitUnseal = c.VaultHA.TransitUnseal
+				vhSpec.TransitKeyName = c.VaultHA.TransitKeyName
+				vhSpec.AuthMethods = c.VaultHA.AuthMethods
+			}
+			vhPlan, err := TranslateVaultHA(ctx, cat, vhSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			vhHCL, err := RenderVaultHAHCL(vhPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			// DO Vault-HA emits the operator pattern: the official Vault Helm chart
+			// (helm_release CORE) + config CRs (kubernetes_manifest EXTRA) — pin both.
+			if vhPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
+			}
+			if vhPlan.RendersHelm {
+				needsHelm = true
+			}
+			docs = append(docs, vhHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
