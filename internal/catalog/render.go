@@ -1576,3 +1576,148 @@ func renderMonitoringGCP(p MonitoringPlan) string {
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
+
+// RenderContainerRegistryHCL renders a resolved ContainerRegistryPlan into
+// concrete cloud-provider Terraform HCL. Mirrors RenderObjectStorageHCL:
+// translation returns a structured plan, rendering to .tf happens here and drives
+// the per-provider round-trip tests (SPEC §6).
+//
+//   - AWS:          aws_ecr_repository (the ECR being migrated FROM); image tag
+//     mutability honours ImmutableTags.
+//   - GCP:          google_artifact_registry_repository (DOCKER format).
+//   - DigitalOcean: digitalocean_container_registry with subscription_tier_slug
+//     and, when GarbageCollection is requested, a digitalocean_container_registry
+//     docker-credentials-free GC is not a TF resource — DO runs GC server-side —
+//     so we surface the request as a documented note (the registry resource has
+//     no gc block); the tier IS a first-class attribute.
+//
+// container-registry is a wave-1 (aws/gcp/do) component: any other provider is a
+// hard render-time error (no silent fallback).
+func RenderContainerRegistryHCL(plan ContainerRegistryPlan) (string, error) {
+	switch plan.Provider {
+	case ProviderAWS:
+		return renderContainerRegistryAWS(plan), nil
+	case ProviderGCP:
+		return renderContainerRegistryGCP(plan), nil
+	case ProviderDigitalOcean:
+		return renderContainerRegistryDO(plan), nil
+	default:
+		return "", fmt.Errorf(
+			"render: container-registry is unsupported on %q; PyxCloud maps it to "+
+				"aws_ecr_repository / google_artifact_registry_repository / "+
+				"digitalocean_container_registry only (this is a hard plan-time error, "+
+				"never a silent fallback)", plan.Provider)
+	}
+}
+
+func renderContainerRegistryAWS(p ContainerRegistryPlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+	mutability := "MUTABLE"
+	if p.ImmutableTags {
+		mutability = "IMMUTABLE"
+	}
+	fmt.Fprintf(&b, "resource \"aws_ecr_repository\" %q {\n", label)
+	fmt.Fprintf(&b, "  name                 = %q\n", p.RegistryName)
+	fmt.Fprintf(&b, "  image_tag_mutability = %q\n", mutability)
+	b.WriteString("  image_scanning_configuration {\n")
+	b.WriteString("    scan_on_push = true\n")
+	b.WriteString("  }\n")
+	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.RegistryName)
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func renderContainerRegistryGCP(p ContainerRegistryPlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"google_artifact_registry_repository\" %q {\n", label)
+	fmt.Fprintf(&b, "  repository_id = %q\n", p.RegistryName)
+	fmt.Fprintf(&b, "  location      = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "  format        = \"DOCKER\"\n")
+	fmt.Fprintf(&b, "  labels = { pyxcloud = \"true\" }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func renderContainerRegistryDO(p ContainerRegistryPlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+	// DO runs garbage collection server-side (POST /registry/{name}/garbage-collection
+	// / the doctl/API path), not via a Terraform sub-resource. When the user opts
+	// in we record it as a comment on the resource so the intent is visible in the
+	// plan; the registry resource itself carries name + region + tier.
+	if p.GarbageCollection {
+		b.WriteString("# garbage_collection = true (DO runs GC server-side via the registry API;\n")
+		b.WriteString("# there is no Terraform sub-resource — trigger it out-of-band post-apply).\n")
+	}
+	fmt.Fprintf(&b, "resource \"digitalocean_container_registry\" %q {\n", label)
+	fmt.Fprintf(&b, "  name                   = %q\n", p.RegistryName)
+	fmt.Fprintf(&b, "  subscription_tier_slug = %q\n", p.Tier)
+	fmt.Fprintf(&b, "  region                 = %q\n", p.CSPRegion)
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// RenderReservedIPHCL renders a resolved ReservedIPPlan into concrete
+// cloud-provider Terraform HCL. Mirrors RenderContainerRegistryHCL.
+//
+//   - AWS:          aws_eip (the EIP being migrated FROM); when AttachTo is set,
+//     wires instance = aws_instance.<target>.id.
+//   - GCP:          google_compute_address (a regional static external IP).
+//   - DigitalOcean: digitalocean_reserved_ip; when AttachTo is set, binds
+//     droplet_id = digitalocean_droplet.<target>.id (the stable VPN endpoint).
+//
+// reserved-ip is a wave-1 (aws/gcp/do) component: any other provider is a hard
+// render-time error (no silent fallback).
+func RenderReservedIPHCL(plan ReservedIPPlan) (string, error) {
+	switch plan.Provider {
+	case ProviderAWS:
+		return renderReservedIPAWS(plan), nil
+	case ProviderGCP:
+		return renderReservedIPGCP(plan), nil
+	case ProviderDigitalOcean:
+		return renderReservedIPDO(plan), nil
+	default:
+		return "", fmt.Errorf(
+			"render: reserved-ip is unsupported on %q; PyxCloud maps it to "+
+				"aws_eip / google_compute_address / digitalocean_reserved_ip only "+
+				"(this is a hard plan-time error, never a silent fallback)", plan.Provider)
+	}
+}
+
+func renderReservedIPAWS(p ReservedIPPlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"aws_eip\" %q {\n", label)
+	b.WriteString("  domain = \"vpc\"\n")
+	if p.AttachTo != "" {
+		fmt.Fprintf(&b, "  instance = aws_instance.%s.id\n", tfName(p.AttachTo))
+	}
+	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.LogicalName)
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func renderReservedIPGCP(p ReservedIPPlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"google_compute_address\" %q {\n", label)
+	fmt.Fprintf(&b, "  name         = %q\n", tfName(p.LogicalName))
+	fmt.Fprintf(&b, "  region       = %q\n", p.CSPRegion)
+	b.WriteString("  address_type = \"EXTERNAL\"\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func renderReservedIPDO(p ReservedIPPlan) string {
+	label := tfName(p.LogicalName)
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"digitalocean_reserved_ip\" %q {\n", label)
+	fmt.Fprintf(&b, "  region = %q\n", p.CSPRegion)
+	if p.AttachTo != "" {
+		fmt.Fprintf(&b, "  droplet_id = digitalocean_droplet.%s.id\n", tfName(p.AttachTo))
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
