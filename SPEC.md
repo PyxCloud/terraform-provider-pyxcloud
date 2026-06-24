@@ -74,6 +74,7 @@ tables in `core/database/sql/provider-catalog-inventory`.
 | `scheduled-trigger` / `cron-job` / `scheduled-task` | (region only) | `pd-MIG-SCHEDULED-TRIGGER` |
 | `key-value-store` / `kv-store` / `dynamodb` | (region only) | `pd-MIG-KV-STORE-DYNAMODB` |
 | `pipeline-control-plane` / `pyx-lambda-control-plane` / `pipeline-runner` | (region only) | `pd-DEP-PYXLAMBDA-CONTROLPLANE` |
+| `vpn-access` / `jit-access` / `vpn-door` | (region only) | `pd-DEP-VPN-ACCESS-SIGNAL` |
 
 ### 3.2 Abstract region + macro logical place
 

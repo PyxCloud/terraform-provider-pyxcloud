@@ -112,6 +112,7 @@ type AssembleComponent struct {
 	Tracing              *AssembleTracing
 	WorkloadIdentity     *AssembleWorkloadIdentity
 	VaultHA              *AssembleVaultHA
+	VPNAccess            *AssembleVPNAccess
 	PipelineControlPlane *AssemblePipelineControlPlane
 }
 
@@ -132,6 +133,18 @@ type AssemblePipelineControlPlane struct {
 	CodeBuildImage         string
 	GitHubOIDC             bool
 	GitHubOwnerRepo        string
+}
+
+// AssembleVPNAccess is the config for a `vpn-access` signal — the JIT VPN door
+// (wg-jit security group + DynamoDB allowlist + Keycloak-role IAM policy) that
+// replaces internal-vpn's manual add-peer.sh / jit-backing wiring. AWS-only.
+type AssembleVPNAccess struct {
+	VPC             string   // network the wg-jit SG attaches to ("" = default VPC)
+	KeycloakRole    string   // IAM role name of the Keycloak instance running the JIT SPI
+	WireGuardPort   int      // UDP port to gate (0 -> 51820)
+	BreakGlassCIDRs []string // optional static-allow CIDRs (admin lockout safety)
+	AllowlistTable  string   // DynamoDB table name ("" -> jit-allowlist)
+	PITR            *bool    // DynamoDB point-in-time recovery (nil -> true)
 }
 
 // AssembleWorkloadIdentity is the config for a `workload-identity` component
@@ -792,6 +805,25 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, ripHCL)
+		case "vpn-access", "jit-access", "vpn-door":
+			vpnSpec := VPNAccessSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.VPNAccess != nil {
+				vpnSpec.VPC = c.VPNAccess.VPC
+				vpnSpec.KeycloakRole = c.VPNAccess.KeycloakRole
+				vpnSpec.WireGuardPort = c.VPNAccess.WireGuardPort
+				vpnSpec.BreakGlassCIDRs = c.VPNAccess.BreakGlassCIDRs
+				vpnSpec.AllowlistTable = c.VPNAccess.AllowlistTable
+				vpnSpec.PointInTimeRecovery = c.VPNAccess.PITR
+			}
+			vpnPlan, err := TranslateVPNAccess(ctx, cat, vpnSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			vpnHCL, err := RenderVPNAccessHCL(vpnPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, vpnHCL)
 		case "secrets-manager":
 			secSpec := SecretsSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.Secrets != nil {

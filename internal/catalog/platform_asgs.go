@@ -85,7 +85,30 @@ func PlatformServices() []PlatformService {
 // placement pins the DOKS control-plane version on the node-pool.
 //
 // arch/os/kubernetesVersion may be empty to take the canonical defaults.
+//
+// The platform-service BOOTSTRAP (the substance of each hand-written module — the
+// Keycloak install for SSO, the WireGuard config for VPN, the native-binary pull
+// for the backend, …) is threaded per service via PlatformBootstraps. A service
+// with no entry there gets a bare scale-group (size + self-heal only). Slice 1
+// (pd-DEP-MIGRATE-PLATFORM-MODULES) ports the SSO bootstrap; the other four
+// follow the same pattern (see MIGRATION-PLATFORM-MODULES.md).
 func PlatformScaleGroupComponents(arch, os, kubernetesVersion string) []AssembleComponent {
+	return PlatformScaleGroupComponentsWithBootstrap(arch, os, kubernetesVersion, nil)
+}
+
+// PlatformBootstraps carries the per-service bootstrap user_data, keyed by the
+// canonical service name ("sso" | "vpn" | "obs" | "sast" | "backend"). A missing
+// key leaves that service's scale-group bare. Build the "sso" entry with
+// RenderSSOBootstrapUserData.
+type PlatformBootstraps map[string]string
+
+// PlatformScaleGroupComponentsWithBootstrap is PlatformScaleGroupComponents plus
+// the per-service bootstrap user_data. This is the wiring point that turns "a
+// scale-group of 1" into "the canonical SSO/VPN/backend service": the bootstrap
+// is baked into the scale-group launch template via AssembleScaleGroup.UserData,
+// which the existing scale-group renderer descends to the provider's
+// launch-template/cloud-init — no new translator (SPEC §1).
+func PlatformScaleGroupComponentsWithBootstrap(arch, os, kubernetesVersion string, bootstraps PlatformBootstraps) []AssembleComponent {
 	arch = strings.TrimSpace(arch)
 	os = strings.TrimSpace(os)
 	kubernetesVersion = strings.TrimSpace(kubernetesVersion)
@@ -109,6 +132,7 @@ func PlatformScaleGroupComponents(arch, os, kubernetesVersion string) []Assemble
 				Desired:           s.MinDesired,
 				Health:            s.Health,
 				KubernetesVersion: kubernetesVersion,
+				UserData:          bootstraps[s.Name],
 			},
 		})
 	}
