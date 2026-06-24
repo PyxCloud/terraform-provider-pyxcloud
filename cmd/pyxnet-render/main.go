@@ -56,6 +56,26 @@ type fixture struct {
 	Kubernetes *k8sFixture        `json:"kubernetes,omitempty"`
 	Secrets    *secretsFixture    `json:"secrets,omitempty"`
 	Serverless *serverlessFixture `json:"serverless,omitempty"`
+	// PipelineControlPlane is the optional pyx-lambda DevOps control-plane
+	// (Step Functions + Lambda + Fargate + CodeBuild + OIDC). AWS-only.
+	PipelineControlPlane *pipelineControlPlaneFixture `json:"pipeline_control_plane,omitempty"`
+}
+
+// pipelineControlPlaneFixture is the canonical pyx-lambda control-plane block.
+type pipelineControlPlaneFixture struct {
+	Name                 string `json:"name"`
+	PipelineName         string `json:"pipeline_name"`
+	StateMachineFile     string `json:"state_machine_file"` // path to the compiled ASL JSON (e.g. aws/ci.json)
+	RunnerMemoryMB       int    `json:"runner_memory_mb"`
+	RunnerTimeoutSecs    int    `json:"runner_timeout_secs"`
+	RunnerRuntime        string `json:"runner_runtime"`
+	RunnerSourceArtifact string `json:"runner_source_artifact"`
+	FargateCPU           string `json:"fargate_cpu"`
+	FargateMemoryMB      string `json:"fargate_memory_mb"`
+	CodeBuildCompute     string `json:"codebuild_compute"`
+	CodeBuildImage       string `json:"codebuild_image"`
+	GitHubOIDC           bool   `json:"github_oidc"`
+	GitHubOwnerRepo      string `json:"github_owner_repo"`
 }
 
 // cacheFixture is the canonical cache description embedded in a fixture.
@@ -297,6 +317,8 @@ func main() {
 		renderSecrets(cat, f, *provider)
 	case "serverless-function", "serverless", "lambda", "function":
 		renderServerless(cat, f, *provider)
+	case "pipeline-control-plane", "pyx-lambda-control-plane", "pipeline-runner":
+		renderPipelineControlPlane(cat, f, *provider)
 	default:
 		fatal(fmt.Errorf("unknown component %q", *component))
 	}
@@ -487,6 +509,47 @@ func renderServerless(cat catalog.RegionCatalog, f fixture, provider string) {
 		fatal(err)
 	}
 	emit(catalog.RenderServerlessHCL(plan))
+}
+
+func renderPipelineControlPlane(cat catalog.RegionCatalog, f fixture, provider string) {
+	if f.PipelineControlPlane == nil {
+		fatal(fmt.Errorf("fixture has no pipeline_control_plane block"))
+	}
+	p := f.PipelineControlPlane
+	name := p.Name
+	if name == "" {
+		name = f.Name
+	}
+	// The Step Functions ASL is the pyx-pipeline-ir compiler output; read it from
+	// the referenced file when supplied so the dogfood wires the REAL compiled ASL
+	// (e.g. aws/ci.json) into the provisioned state machine.
+	asl := ""
+	if p.StateMachineFile != "" {
+		raw, err := os.ReadFile(p.StateMachineFile)
+		if err != nil {
+			fatal(fmt.Errorf("read state_machine_file %q: %w", p.StateMachineFile, err))
+		}
+		asl = string(raw)
+	}
+	plan, err := catalog.TranslatePipelineControlPlane(context.Background(), cat, catalog.PipelineControlPlaneSpec{
+		Name: name, Region: f.Region, Provider: provider,
+		PipelineName:           p.PipelineName,
+		StateMachineDefinition: asl,
+		RunnerMemoryMB:         p.RunnerMemoryMB,
+		RunnerTimeoutSecs:      p.RunnerTimeoutSecs,
+		RunnerRuntime:          p.RunnerRuntime,
+		RunnerSourceArtifact:   p.RunnerSourceArtifact,
+		FargateCPU:             p.FargateCPU,
+		FargateMemoryMB:        p.FargateMemoryMB,
+		CodeBuildCompute:       p.CodeBuildCompute,
+		CodeBuildImage:         p.CodeBuildImage,
+		GitHubOIDC:             p.GitHubOIDC,
+		GitHubOwnerRepo:        p.GitHubOwnerRepo,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	emit(catalog.RenderPipelineControlPlaneHCL(plan))
 }
 
 // emit prints rendered HCL or dies on a render error.

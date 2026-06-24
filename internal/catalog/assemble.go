@@ -78,41 +78,61 @@ type AssembleIAM struct {
 
 // AssembleComponent is one canonical component in the environment.
 type AssembleComponent struct {
-	Path                string
-	Name                string
-	Type                string
-	Count               int
-	VM                  *AssembleVM
-	ScaleGroup          *AssembleScaleGroup
-	AttachToExistingALB *AssembleAttachToExistingALB
-	IAM                 *AssembleIAM
-	Monitoring          *AssembleMonitoring
-	DNS                 *AssembleDNS
-	ObjectStorage       *AssembleObjectStorage
-	Secrets             *AssembleSecrets
-	MDB                 *AssembleMDB
-	Queue               *AssembleQueue
-	Stream              *AssembleStream
-	Serverless          *AssembleServerless
-	KMS                 *AssembleKMS
-	Cache               *AssembleCache
-	CDN                 *AssembleCDN
-	WAF                 *AssembleWAF
-	K8s                 *AssembleK8s
-	LB                  *AssembleLB
-	Email               *AssembleEmail
-	BlockStorage        *AssembleBlockStorage
-	PrefixList          *AssemblePrefixList
-	Synthetics          *AssembleSynthetics
-	ScheduledTrigger    *AssembleScheduledTrigger
-	KeyValueStore       *AssembleKeyValueStore
-	ContainerRegistry   *AssembleContainerRegistry
-	ReservedIP          *AssembleReservedIP
-	TLSCertificate      *AssembleTLSCertificate
-	Tracing             *AssembleTracing
-	WorkloadIdentity    *AssembleWorkloadIdentity
-	VaultHA             *AssembleVaultHA
-	VPNAccess           *AssembleVPNAccess
+	Path                 string
+	Name                 string
+	Type                 string
+	Count                int
+	VM                   *AssembleVM
+	ScaleGroup           *AssembleScaleGroup
+	AttachToExistingALB  *AssembleAttachToExistingALB
+	IAM                  *AssembleIAM
+	Monitoring           *AssembleMonitoring
+	DNS                  *AssembleDNS
+	ObjectStorage        *AssembleObjectStorage
+	Secrets              *AssembleSecrets
+	MDB                  *AssembleMDB
+	Queue                *AssembleQueue
+	Stream               *AssembleStream
+	Serverless           *AssembleServerless
+	KMS                  *AssembleKMS
+	Cache                *AssembleCache
+	CDN                  *AssembleCDN
+	WAF                  *AssembleWAF
+	K8s                  *AssembleK8s
+	LB                   *AssembleLB
+	Email                *AssembleEmail
+	BlockStorage         *AssembleBlockStorage
+	PrefixList           *AssemblePrefixList
+	Synthetics           *AssembleSynthetics
+	ScheduledTrigger     *AssembleScheduledTrigger
+	KeyValueStore        *AssembleKeyValueStore
+	ContainerRegistry    *AssembleContainerRegistry
+	ReservedIP           *AssembleReservedIP
+	TLSCertificate       *AssembleTLSCertificate
+	Tracing              *AssembleTracing
+	WorkloadIdentity     *AssembleWorkloadIdentity
+	VaultHA              *AssembleVaultHA
+	VPNAccess            *AssembleVPNAccess
+	PipelineControlPlane *AssemblePipelineControlPlane
+}
+
+// AssemblePipelineControlPlane is the config for a `pipeline-control-plane`
+// component — the pyx-lambda DevOps control-plane (Step Functions + PyxRunner
+// Lambda + Fargate + CodeBuild + optional GitHub OIDC). AWS-only (see
+// pipelinecontrolplane.go). Dogfood: pd-DEP-PYXLAMBDA-CONTROLPLANE.
+type AssemblePipelineControlPlane struct {
+	PipelineName           string
+	StateMachineDefinition string
+	RunnerMemoryMB         int
+	RunnerTimeoutSecs      int
+	RunnerRuntime          string
+	RunnerSourceArtifact   string
+	FargateCPU             string
+	FargateMemoryMB        string
+	CodeBuildCompute       string
+	CodeBuildImage         string
+	GitHubOIDC             bool
+	GitHubOwnerRepo        string
 }
 
 // AssembleVPNAccess is the config for a `vpn-access` signal — the JIT VPN door
@@ -1232,6 +1252,31 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				needsHelm = true
 			}
 			docs = append(docs, vhHCL)
+		case "pipeline-control-plane", "pyx-lambda-control-plane", "pipeline-runner":
+			pcpSpec := PipelineControlPlaneSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.PipelineControlPlane != nil {
+				pcpSpec.PipelineName = c.PipelineControlPlane.PipelineName
+				pcpSpec.StateMachineDefinition = c.PipelineControlPlane.StateMachineDefinition
+				pcpSpec.RunnerMemoryMB = c.PipelineControlPlane.RunnerMemoryMB
+				pcpSpec.RunnerTimeoutSecs = c.PipelineControlPlane.RunnerTimeoutSecs
+				pcpSpec.RunnerRuntime = c.PipelineControlPlane.RunnerRuntime
+				pcpSpec.RunnerSourceArtifact = c.PipelineControlPlane.RunnerSourceArtifact
+				pcpSpec.FargateCPU = c.PipelineControlPlane.FargateCPU
+				pcpSpec.FargateMemoryMB = c.PipelineControlPlane.FargateMemoryMB
+				pcpSpec.CodeBuildCompute = c.PipelineControlPlane.CodeBuildCompute
+				pcpSpec.CodeBuildImage = c.PipelineControlPlane.CodeBuildImage
+				pcpSpec.GitHubOIDC = c.PipelineControlPlane.GitHubOIDC
+				pcpSpec.GitHubOwnerRepo = c.PipelineControlPlane.GitHubOwnerRepo
+			}
+			pcpPlan, err := TranslatePipelineControlPlane(ctx, cat, pcpSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			pcpHCL, err := RenderPipelineControlPlaneHCL(pcpPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, pcpHCL)
 		default:
 			return nil, fmt.Errorf("component %q: type %q is not yet supported by local assembly "+
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)

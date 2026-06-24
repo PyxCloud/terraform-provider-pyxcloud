@@ -1,0 +1,16 @@
+{
+  "name": "pyx-ci",
+  "region": "Frankfurt",
+  "pipeline_control_plane": {
+    "name": "pyx-ci",
+    "pipeline_name": "ci",
+    "state_machine_file": "../../aws/ci.json",
+    "runner_memory_mb": 512,
+    "runner_timeout_secs": 900,
+    "fargate_cpu": "1024",
+    "fargate_memory_mb": "2048",
+    "codebuild_compute": "BUILD_GENERAL1_SMALL",
+    "github_oidc": true,
+    "github_owner_repo": "PyxCloud/terraform-provider-pyxcloud"
+  }
+}
