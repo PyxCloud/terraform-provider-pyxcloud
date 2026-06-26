@@ -348,3 +348,49 @@ resource "aws_security_group_rule" "beta-api-sg_ingress_0" {
 		t.Fatalf("missing import candidate: %#v; got %#v", missing, got)
 	}
 }
+
+func TestTFRunnerPlan(t *testing.T) {
+	dir := t.TempDir()
+	r, err := newTFRunner(dir)
+	if err != nil {
+		t.Skipf("skipping TestTFRunnerPlan since terraform is not on PATH or setup failed: %v", err)
+	}
+
+	docs := []string{
+		`resource "terraform_data" "foo" {
+  input = "bar"
+}`,
+	}
+
+	ctx := context.Background()
+	hasChanges, rawPlan, parsedPlan, err := r.plan(ctx, docs)
+	if err != nil {
+		t.Fatalf("plan failed: %v", err)
+	}
+
+	if !hasChanges {
+		t.Error("expected plan to have changes")
+	}
+
+	if rawPlan == "" {
+		t.Error("expected non-empty raw plan output")
+	}
+
+	if parsedPlan == nil {
+		t.Fatal("expected non-nil parsed plan representation")
+	}
+
+	found := false
+	for _, rc := range parsedPlan.ResourceChanges {
+		if rc.Address == "terraform_data.foo" {
+			found = true
+			if len(rc.Change.Actions) != 1 || rc.Change.Actions[0] != "create" {
+				t.Errorf("expected create action, got %v", rc.Change.Actions)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected to find resource change for terraform_data.foo")
+	}
+}
+
