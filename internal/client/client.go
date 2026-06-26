@@ -48,6 +48,7 @@ type Client interface {
 	DeployEnvironment(ctx context.Context, envID string, accountBindingID string, hclDocs []string) (map[string]string, error)
 	RefreshEnvironment(ctx context.Context, envID string, accountBindingID string) (map[string]string, error)
 	DestroyEnvironment(ctx context.Context, envID string, accountBindingID string) error
+	FireEvent(ctx context.Context, eventType string, payload map[string]interface{}) error
 }
 
 // Config holds the provider-level connection settings.
@@ -197,6 +198,11 @@ func (c *StubClient) RefreshEnvironment(ctx context.Context, envID string, accou
 }
 
 func (c *StubClient) DestroyEnvironment(ctx context.Context, envID string, accountBindingID string) error {
+	return nil
+}
+
+func (c *StubClient) FireEvent(ctx context.Context, eventType string, payload map[string]interface{}) error {
+	// Stub implementation: do-op (could log or save in-memory if needed)
 	return nil
 }
 
