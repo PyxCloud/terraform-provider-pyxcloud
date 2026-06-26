@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-exec/tfexec"
+	tfjson "github.com/hashicorp/terraform-json"
 )
 
 // tfRunner executes the backend-translated concrete terraform in a work dir,
@@ -99,6 +100,40 @@ func (r *tfRunner) apply(ctx context.Context, docs []string) (map[string]string,
 	}
 	r.pruneOrphanedSGRules(ctx, docs)
 	return r.outputs(ctx, tf)
+}
+
+// plan writes the config, inits, and runs plan. It returns (hasChanges, rawPlan, parsedPlan, error).
+func (r *tfRunner) plan(ctx context.Context, docs []string) (bool, string, *tfjson.Plan, error) {
+	if err := r.writeConfig(docs); err != nil {
+		return false, "", nil, err
+	}
+	tf, err := r.tf()
+	if err != nil {
+		return false, "", nil, err
+	}
+	if err := tf.Init(ctx, tfexec.Upgrade(false)); err != nil {
+		return false, "", nil, fmt.Errorf("terraform init: %w", err)
+	}
+
+	planPath := filepath.Join(r.workDir, "pyx_drift.tfplan")
+	defer os.Remove(planPath)
+
+	hasChanges, err := tf.Plan(ctx, tfexec.Out(planPath))
+	if err != nil {
+		return false, "", nil, fmt.Errorf("terraform plan: %w", err)
+	}
+
+	rawPlan, err := tf.ShowPlanFileRaw(ctx, planPath)
+	if err != nil {
+		return false, "", nil, fmt.Errorf("terraform show raw: %w", err)
+	}
+
+	parsedPlan, err := tf.ShowPlanFile(ctx, planPath)
+	if err != nil {
+		return false, "", nil, fmt.Errorf("terraform show parsed: %w", err)
+	}
+
+	return hasChanges, rawPlan, parsedPlan, nil
 }
 
 // refresh reads current outputs without changing infrastructure (best-effort).

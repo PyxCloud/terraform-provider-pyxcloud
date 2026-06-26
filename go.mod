@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/hashicorp/terraform-exec v0.25.2
+	github.com/hashicorp/terraform-json v0.27.2
 	github.com/hashicorp/terraform-plugin-framework v1.13.0
 	github.com/hf/nsm v0.0.0-20220930140112-cd181bd646b9
 	github.com/veraison/go-cose v1.3.0
@@ -19,7 +20,6 @@ require (
 	github.com/hashicorp/go-plugin v1.6.2 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/hashicorp/go-version v1.9.0 // indirect
-	github.com/hashicorp/terraform-json v0.27.2 // indirect
 	github.com/hashicorp/terraform-plugin-go v0.25.0 // indirect
 	github.com/hashicorp/terraform-plugin-log v0.9.0 // indirect
 	github.com/hashicorp/terraform-registry-address v0.2.3 // indirect
