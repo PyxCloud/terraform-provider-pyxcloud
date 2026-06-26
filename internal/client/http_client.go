@@ -328,6 +328,21 @@ func (c *HTTPClient) DestroyEnvironment(ctx context.Context, envID string, accou
 	return nil
 }
 
+func (c *HTTPClient) FireEvent(ctx context.Context, eventType string, payload map[string]interface{}) error {
+	reqBody := map[string]any{
+		"type":    eventType,
+		"payload": payload,
+	}
+	resp, data, err := c.do(ctx, http.MethodPost, "/api/events", reqBody)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		return apiError("fire event", resp.StatusCode, data)
+	}
+	return nil
+}
+
 
 func newFeeRequiredError(status int, out ImportTopologyResponse) *FeeRequiredError {
 	reason := out.FeeReason
