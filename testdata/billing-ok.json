@@ -1,0 +1,4 @@
+{
+  "current":  { "compute": 5000.0, "storage": 200.0 },
+  "baseline": { "compute": 5000.0, "storage": 200.0 }
+}
