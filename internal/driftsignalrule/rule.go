@@ -1,4 +1,4 @@
-package driftsignalrule
+// Package driftsignalrule defines drift detection rule types and built-in rules.
 
 import (
 	"context"
