@@ -1,4 +1,4 @@
-package iacsecscan
+// Package iacsecscan provides IaC security scanning capabilities.
 
 import (
 	"fmt"
