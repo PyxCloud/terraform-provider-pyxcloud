@@ -1,3 +1,23 @@
+# Deploy Gates
+
+This document describes the deploy gates enforced by the Passo delivery pipeline. Each gate must pass before a deployment proceeds to the next stage.
+
+## IaC Security Scan Gate
+
+**Purpose:** Prevent deployment of infrastructure-as-code (IaC) templates that contain known security misconfigurations, exposed secrets, or policy violations.
+
+**Implementation:** The gate is implemented in `internal/iacsecscan/scanner.go` and invoked by `internal/driftdeploygate/gate.go`. It runs a static analysis scan against the rendered Terraform plan (JSON) produced by the `pyxenv-render` or `pyxnet-render` commands.
+
+**Scan Rules:** The scanner applies a set of built-in rules defined in `internal/iacsecscan/scanner.go` and extensible via `internal/driftsignalrule/rule.go`. Rules cover:
+- Hardcoded secrets (AWS access keys, database passwords, API tokens)
+- Publicly exposed S3 buckets / storage containers
+- Overly permissive security group rules (0.0.0.0/0 on sensitive ports)
+- Use of default KMS keys
+- Missing encryption at rest / in transit
+- IAM roles with wildcard actions
+- Use of deprecated or insecure resource types
+
+**Integration:** The gate is triggered automatically during the CI pipeline (`ci.pipeline.json`) after the plan is generated and before the apply step. It can also be run manually via:
 # PyxCloud Provider — Topology Deployment Specification
 
 This document describes how a `pyxcloud_topology` resource is provisioned into a real cloud environment during `terraform apply`.
