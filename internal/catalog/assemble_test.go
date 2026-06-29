@@ -893,3 +893,182 @@ func TestAssembleHCLPipelineControlPlane(t *testing.T) {
 		}
 	}
 }
+
+// ── Architecture-mismatch detector tests (pd-ONTO-CAP-JR-COPYARCH) ───────────
+
+func TestDetectArchitectureMismatches_CargoCultOperator(t *testing.T) {
+	// Tracing component present but NO managed-kubernetes/container-service.
+	in := AssembleInput{
+		Name: "myenv", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "app", Type: "virtual-machine", VM: &AssembleVM{CPU: "2", RAM: "4", OS: "ubuntu"}},
+			{Name: "traces", Type: "tracing"},
+		},
+	}
+	findings := DetectArchitectureMismatches(in)
+	found := false
+	for _, f := range findings {
+		if f.RuleID == "CARGO-CULT-OPERATOR" && f.ComponentName == "traces" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected CARGO-CULT-OPERATOR finding for tracing without k8s cluster, got %+v", findings)
+	}
+}
+
+func TestDetectArchitectureMismatches_CargoCultOperator_ClusterPresent(t *testing.T) {
+	// Tracing + managed-kubernetes -> NOT a cargo-cult.
+	in := AssembleInput{
+		Name: "myenv", Provider: "digitalocean", Region: "EU West",
+		Components: []AssembleComponent{
+			{Name: "cluster", Type: "managed-kubernetes", K8s: &AssembleK8s{NodeCPU: 4, NodeRAM: 8}},
+			{Name: "traces", Type: "tracing"},
+		},
+	}
+	findings := DetectArchitectureMismatches(in)
+	for _, f := range findings {
+		if f.RuleID == "CARGO-CULT-OPERATOR" {
+			t.Errorf("unexpected CARGO-CULT-OPERATOR finding when cluster is present: %+v", f)
+		}
+	}
+}
+
+func TestDetectArchitectureMismatches_PrematureSplit(t *testing.T) {
+	// Four tiny VMs -> premature microservices split.
+	comps := []AssembleComponent{}
+	for i := 0; i < PrematureSplitVMThreshold; i++ {
+		comps = append(comps, AssembleComponent{
+			Name: "svc", Type: "virtual-machine",
+			VM: &AssembleVM{CPU: "1", RAM: "2", OS: "ubuntu"},
+		})
+	}
+	findings := DetectArchitectureMismatches(AssembleInput{
+		Name: "split", Provider: "aws", Region: "Dublin",
+		Components: comps,
+	})
+	found := false
+	for _, f := range findings {
+		if f.RuleID == "PREMATURE-MICROSERVICES-SPLIT" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected PREMATURE-MICROSERVICES-SPLIT finding for %d tiny VMs, got %+v", PrematureSplitVMThreshold, findings)
+	}
+}
+
+func TestDetectArchitectureMismatches_PrematureSplit_BelowThreshold(t *testing.T) {
+	// Three tiny VMs -> below threshold, no finding.
+	comps := []AssembleComponent{}
+	for i := 0; i < PrematureSplitVMThreshold-1; i++ {
+		comps = append(comps, AssembleComponent{
+			Name: "svc", Type: "virtual-machine",
+			VM: &AssembleVM{CPU: "2", RAM: "4", OS: "ubuntu"},
+		})
+	}
+	findings := DetectArchitectureMismatches(AssembleInput{
+		Name: "ok", Provider: "aws", Region: "Dublin",
+		Components: comps,
+	})
+	for _, f := range findings {
+		if f.RuleID == "PREMATURE-MICROSERVICES-SPLIT" {
+			t.Errorf("unexpected PREMATURE-MICROSERVICES-SPLIT finding below threshold: %+v", f)
+		}
+	}
+}
+
+func TestDetectArchitectureMismatches_KubernetesForSingleVM(t *testing.T) {
+	// One VM + managed-kubernetes, no scale-group -> KUBERNETES-FOR-SINGLE-VM.
+	in := AssembleInput{
+		Name: "overkill", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "cluster", Type: "managed-kubernetes", K8s: &AssembleK8s{NodeCPU: 4, NodeRAM: 8}},
+			{Name: "app", Type: "virtual-machine", VM: &AssembleVM{CPU: "2", RAM: "4", OS: "ubuntu"}},
+		},
+	}
+	findings := DetectArchitectureMismatches(in)
+	found := false
+	for _, f := range findings {
+		if f.RuleID == "KUBERNETES-FOR-SINGLE-VM" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected KUBERNETES-FOR-SINGLE-VM finding, got %+v", findings)
+	}
+}
+
+func TestDetectArchitectureMismatches_KubernetesWithScaleGroup_NoFinding(t *testing.T) {
+	// K8s + scale-group is a legitimate pattern; no finding expected.
+	in := AssembleInput{
+		Name: "ok", Provider: "digitalocean", Region: "EU West",
+		Components: []AssembleComponent{
+			{Name: "cluster", Type: "managed-kubernetes", K8s: &AssembleK8s{NodeCPU: 4, NodeRAM: 8}},
+			{Name: "workers", Type: "virtual-machine-scale-group",
+				ScaleGroup: &AssembleScaleGroup{CPU: "4", RAM: "8", OS: "ubuntu", Min: 2, Max: 10}},
+		},
+	}
+	findings := DetectArchitectureMismatches(in)
+	for _, f := range findings {
+		if f.RuleID == "KUBERNETES-FOR-SINGLE-VM" {
+			t.Errorf("unexpected KUBERNETES-FOR-SINGLE-VM finding when scale-group present: %+v", f)
+		}
+	}
+}
+
+func TestDetectArchitectureMismatches_CleanTopology_NoFindings(t *testing.T) {
+	// A normal AWS topology should produce no architecture findings.
+	in := AssembleInput{
+		Name: "clean", Provider: "aws", Region: "Dublin",
+		Components: []AssembleComponent{
+			{Name: "app", Type: "virtual-machine", VM: &AssembleVM{CPU: "4", RAM: "8", OS: "ubuntu"}},
+			{Name: "db", Type: "managed-database", MDB: &AssembleMDB{Engine: "postgres", CPU: 2, RAM: 4}},
+		},
+	}
+	findings := DetectArchitectureMismatches(in)
+	if len(findings) != 0 {
+		t.Errorf("expected no architecture findings for clean topology, got %+v", findings)
+	}
+}
+
+func TestIsCargoCultOperator(t *testing.T) {
+	cases := []struct {
+		cType    string
+		envTypes []string
+		want     bool
+	}{
+		{"tracing", []string{"virtual-machine"}, true},
+		{"tracing", []string{"virtual-machine", "managed-kubernetes"}, false},
+		{"vault-ha", []string{"object-storage"}, true},
+		{"vault-ha", []string{"container-service"}, false},
+		{"virtual-machine", []string{"object-storage"}, false}, // not operator type
+		{"monitoring", []string{}, true},
+		{"monitoring", []string{"managed-kubernetes"}, false},
+	}
+	for _, tc := range cases {
+		got := IsCargoCultOperator(tc.cType, tc.envTypes)
+		if got != tc.want {
+			t.Errorf("IsCargoCultOperator(%q, %v) = %v, want %v", tc.cType, tc.envTypes, got, tc.want)
+		}
+	}
+}
+
+func TestHasOperatorAlternative(t *testing.T) {
+	yes := []string{"monitoring", "tracing", "vault-ha", "tls-certificate", "workload-identity",
+		"distributed-tracing", "cert-manager", "vault", "vault-cluster", "synthetics", "uptime-check",
+		"tempo", "trace-collector", "otel-tracing", "certificate", "managed-certificate",
+		"instance-identity", "workload-id"}
+	no := []string{"virtual-machine", "managed-database", "cache", "object-storage",
+		"managed-kubernetes", "load-balancer", "secrets-manager", "kms", "dns"}
+	for _, v := range yes {
+		if !HasOperatorAlternative(v) {
+			t.Errorf("HasOperatorAlternative(%q) = false, want true", v)
+		}
+	}
+	for _, v := range no {
+		if HasOperatorAlternative(v) {
+			t.Errorf("HasOperatorAlternative(%q) = true, want false", v)
+		}
+	}
+}
