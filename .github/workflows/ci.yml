@@ -18,3 +18,9 @@ jobs:
           go-version: "1.25"
       - name: build/vet/test
         run: go vet ./... && go test ./...
+      - name: build billing signal scanner
+        run: go build -o /tmp/pyxcost-scan ./cmd/pyxcost-scan
+      - name: billing signal gate
+        # Scan the committed ok fixture to validate the gate binary.
+        # Replace testdata/billing-ok.json with your real billing snapshot in production.
+        run: /tmp/pyxcost-scan -in testdata/billing-ok.json

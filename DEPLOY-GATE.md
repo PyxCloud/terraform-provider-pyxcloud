@@ -2,6 +2,45 @@
 
 This document describes the deploy gates enforced by the Passo delivery pipeline. Each gate must pass before a deployment proceeds to the next stage.
 
+## Billing Signal Gate
+
+**Purpose:** Block or warn when a deployment's projected cost exceeds configured thresholds, catching cost blowouts before they hit production.
+
+**Implementation:** The gate is implemented across two packages:
+
+- `internal/costsignalrule/rule.go` — rule types (`BudgetOverrun`, `CostSpike`, `ResourceCostAnomaly`) and three built-in rules:
+  - `budget-overrun-monthly` — total monthly cost > $10,000
+  - `cost-spike-24h` — cost increase > 50 % over a 24-hour window
+  - `resource-cost-anomaly` — per-resource deviation > 30 % from 7-day baseline
+- `internal/billingscan/scanner.go` — `Scanner` struct that applies rules to a billing `Input` (current + baseline cost maps) and emits `Result.Signals`.
+
+**CLI entry point:** `cmd/pyxcost-scan/main.go`
+
+```
+# Scan a billing snapshot file (exits 1 if any signal fires)
+pyxcost-scan -in billing.json
+
+# Scan from stdin
+cat billing.json | pyxcost-scan
+
+# Machine-readable JSON output (always emitted, exit code still 0/1)
+pyxcost-scan -in billing.json -json
+```
+
+**Input JSON schema:**
+
+```json
+{
+  "current":  { "compute": 11000.0, "storage": 500.0 },
+  "baseline": { "compute":  8000.0, "storage": 490.0 }
+}
+```
+
+`current` is the resource-type → current monthly cost map (USD).
+`baseline` is the resource-type → previous/expected monthly cost map (USD). Omitting `baseline` disables spike and anomaly rules.
+
+**CI wiring:** The gate runs as a separate step in `.github/workflows/ci.yml` after build/vet/test. It requires a `billing.json` fixture to be present in the repository root (or the step is skipped when the file is absent). The step exits 1 on any signal, blocking the pipeline.
+
 ## IaC Security Scan Gate
 
 **Purpose:** Prevent deployment of infrastructure-as-code (IaC) templates that contain known security misconfigurations, exposed secrets, or policy violations.
