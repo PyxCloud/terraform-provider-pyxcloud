@@ -1,0 +1,17 @@
+# PR gate: compiles + tests the provider on every pull request. This is the
+# authoritative check the cheap-actuator pool waits on before auto-merging
+# (the actuator host has no toolchain). Check-only — no deploy.
+name: pr-check
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  go-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - run: go vet ./...
+      - run: go test ./...
