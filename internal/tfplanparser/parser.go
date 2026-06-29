@@ -97,6 +97,20 @@ func ExtractCostSignals(planJSON []byte) ([]CostSignal, error) {
 		} else {
 			signal.Count = 1
 		}
+// CostSignal represents a cost-related signal extracted from a Terraform plan.
+type CostSignal struct {
+	ResourceType  string  `json:"resource_type"`
+	ResourceName  string  `json:"resource_name"`
+	EstimatedCost float64 `json:"estimated_cost"`
+	Currency      string  `json:"currency"`
+	Region        string  `json:"region"`
+}
+
+// ExtractCostSignals extracts cost signals from a parsed Terraform plan.
+func ExtractCostSignals(plan *Plan) ([]CostSignal, error) {
+	// TODO: implement extraction logic
+	return nil, nil
+}
 
 		signals = append(signals, signal)
 	}
