@@ -12,6 +12,12 @@ type PolicyVerdict struct {
 	Allowed bool   `json:"allowed"`
 	Reason  string `json:"reason"`
 	Action  string `json:"action"` // "approve", "open_pr", "block"
+
+	// CostAdvisories is a list of non-blocking cost anomaly messages attached
+	// to this verdict. They are emitted when cost signals extracted from the
+	// Terraform plan exceed configured thresholds. Non-empty advisories do NOT
+	// change Allowed — they are informational and logged alongside the verdict.
+	CostAdvisories []string `json:"cost_advisories,omitempty"`
 }
 
 // EvaluateDriftPolicy evaluates whether drift is allowed to proceed to deployment.
@@ -58,6 +64,47 @@ func EvaluateDriftPolicy(summary *tfplanparser.PlanSummary) PolicyVerdict {
 		Reason:  "Safe (additive) drift detected; policy permits deployment but recommends opening a PR to codify changes",
 		Action:  "open_pr",
 	}
+}
+
+// EvaluateDriftPolicyWithCost is like EvaluateDriftPolicy but also evaluates
+// cost anomaly signals extracted from the plan. Cost anomalies are ADVISORY and
+// non-blocking: they are attached to the verdict's CostAdvisories slice and do
+// not change the Allowed field. This implements pd-ONTO-CAP-ARCH-INFRA-COST-04.
+//
+// planJSON is the raw terraform plan JSON (from `terraform show -json`). If nil
+// or empty, cost advisory is skipped. overProvisionThreshold is the per-resource
+// monthly USD ceiling (zero = disabled). budgetMonthly is the total plan budget
+// ceiling (zero = disabled).
+func EvaluateDriftPolicyWithCost(
+	summary *tfplanparser.PlanSummary,
+	planJSON []byte,
+	overProvisionThreshold float64,
+	budgetMonthly float64,
+) PolicyVerdict {
+	verdict := EvaluateDriftPolicy(summary)
+
+	if len(planJSON) == 0 {
+		return verdict
+	}
+
+	signals, err := tfplanparser.ExtractCostSignals(planJSON)
+	if err != nil || len(signals) == 0 {
+		return verdict
+	}
+
+	// Over-provisioning rule (per-resource cost).
+	opRule := tfplanparser.OverProvisioningRule{MaxMonthlyCostPerUnit: overProvisionThreshold}
+	for _, msg := range opRule.EvaluateOverProvisioning(signals) {
+		verdict.CostAdvisories = append(verdict.CostAdvisories, "[cost-advisory] over-provisioning: "+msg)
+	}
+
+	// Budget rule (total plan cost).
+	budgetRule := tfplanparser.CostTrendRule{MonthlyBudget: budgetMonthly}
+	for _, msg := range budgetRule.EvaluateCostTrend(signals) {
+		verdict.CostAdvisories = append(verdict.CostAdvisories, "[cost-advisory] budget: "+msg)
+	}
+
+	return verdict
 }
 
 func isSecuritySensitive(resourceType string) bool {

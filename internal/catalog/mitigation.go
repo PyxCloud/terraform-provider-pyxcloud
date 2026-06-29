@@ -201,6 +201,27 @@ func mitigationVMSizing(recipe selfHostRecipe, provider string) (int, int) {
 	return cpu, ram
 }
 
+// HasOperatorAlternative reports whether the given component type has a
+// Kubernetes operator-pattern alternative (i.e. it can be replaced by a
+// self-hosted operator install on DOKS rather than a managed cloud service or a
+// bare-VM mitigation). This is used by the architecture-mismatch detector to
+// identify when an environment is missing the operator layer it should have.
+//
+// Operator-pattern components are those for which the catalog ships a native
+// DOKS rendering path via the operator convention (CORE helm_release + EXTRA
+// kubernetes_manifest CRs) — they are NOT self-hosted on a VM.
+func HasOperatorAlternative(componentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(componentType)) {
+	case "monitoring", "synthetics", "uptime-check",
+		"tracing", "distributed-tracing", "tempo", "trace-collector", "otel-tracing",
+		"tls-certificate", "certificate", "cert-manager", "managed-certificate",
+		"vault-ha", "vault", "vault-cluster",
+		"workload-identity", "instance-identity", "workload-id":
+		return true
+	}
+	return false
+}
+
 // selfHostUserData is the cloud-init that installs Docker and runs the service.
 func selfHostUserData(r selfHostRecipe) string {
 	return fmt.Sprintf(`#!/bin/bash

@@ -1,4 +1,4 @@
-// Package iacsecscan tests for IaC security scanner.
+package iacsecscan
 
 import (
 	"testing"
@@ -115,7 +115,7 @@ func TestScan_PublicStorage(t *testing.T) {
 				{
 					Type: "aws_s3_bucket",
 					Attributes: map[string]interface{}{
-						"name":             "my-bucket",
+						"name":              "my-bucket",
 						"block_public_acls": false,
 					},
 				},

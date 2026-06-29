@@ -134,6 +134,34 @@ func renderOperatorCR(cr ManifestCR) string {
 	return b.String()
 }
 
+// IsCargoCultOperator reports whether a component would be a cargo-cult use of
+// the Kubernetes operator pattern in the given environment context.
+//
+// An operator is "cargo-cult" when:
+//   - The environment has no managed-kubernetes or container-service node (the
+//     operator has nowhere to run), AND
+//   - The component is one that REQUIRES the operator pattern (HasOperatorAlternative).
+//
+// For example, deploying a `tracing` component that renders a Tempo+OTel operator
+// into a cluster that does not exist in the topology is a premature/cargo-cult
+// architecture choice — the operator would never be installed anywhere.
+//
+// providers is the slice of component types present in the environment (the caller
+// supplies []string{c.Type} for each AssembleComponent).
+func IsCargoCultOperator(componentType string, envComponentTypes []string) bool {
+	if !HasOperatorAlternative(componentType) {
+		return false
+	}
+	// Check whether the environment declares a Kubernetes cluster.
+	for _, t := range envComponentTypes {
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "managed-kubernetes", "container-service":
+			return false // cluster present — operator is legitimate
+		}
+	}
+	return true // operator component but no cluster in topology
+}
+
 // renderOperatorComponent renders a full operator-pattern component: the shared
 // DOKS cluster data source, the CORE upstream-operator helm_release(s), then the
 // EXTRA custom resources — in dependency order. This is the single entry point
