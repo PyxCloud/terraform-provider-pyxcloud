@@ -3,6 +3,164 @@ package tfplanparser
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// CostSignal represents a single cost-related signal extracted from a Terraform plan.
+type CostSignal struct {
+	ResourceAddr string  `json:"resource_addr"`
+	ResourceType string  `json:"resource_type"`
+	Action       string  `json:"action"` // "create", "delete", "update", "noop", "read"
+	MonthlyCost  float64 `json:"monthly_cost,omitempty"`
+	HourlyCost   float64 `json:"hourly_cost,omitempty"`
+	Currency     string  `json:"currency,omitempty"`
+	Provider     string  `json:"provider,omitempty"`
+	Region       string  `json:"region,omitempty"`
+	InstanceType string  `json:"instance_type,omitempty"`
+	StorageGB    float64 `json:"storage_gb,omitempty"`
+	Count        int     `json:"count,omitempty"`
+}
+
+// ExtractCostSignals parses a Terraform plan JSON and returns a slice of CostSignal.
+// It extracts cost-related attributes from resource changes.
+func ExtractCostSignals(planJSON []byte) ([]CostSignal, error) {
+	var plan struct {
+		ResourceChanges []struct {
+			Address string `json:"address"`
+			Type    string `json:"type"`
+			Change  struct {
+				Actions []string `json:"actions"`
+				After   map[string]interface{} `json:"after"`
+			} `json:"change"`
+		} `json:"resource_changes"`
+	}
+	if err := json.Unmarshal(planJSON, &plan); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal plan JSON: %w", err)
+	}
+
+	var signals []CostSignal
+	for _, rc := range plan.ResourceChanges {
+		if len(rc.Change.Actions) == 0 {
+			continue
+		}
+		action := rc.Change.Actions[0]
+		after := rc.Change.After
+		if after == nil {
+			continue
+		}
+
+		signal := CostSignal{
+			ResourceAddr: rc.Address,
+			ResourceType: rc.Type,
+			Action:       action,
+		}
+
+		// Extract monthly cost
+		if v, ok := after["monthly_cost"]; ok {
+			signal.MonthlyCost = toFloat64(v)
+		}
+		// Extract hourly cost
+		if v, ok := after["hourly_cost"]; ok {
+			signal.HourlyCost = toFloat64(v)
+		}
+		// Extract currency
+		if v, ok := after["currency"]; ok {
+			signal.Currency = toString(v)
+		}
+		// Extract provider
+		if v, ok := after["provider"]; ok {
+			signal.Provider = toString(v)
+		}
+		// Extract region
+		if v, ok := after["region"]; ok {
+			signal.Region = toString(v)
+		}
+		// Extract instance_type
+		if v, ok := after["instance_type"]; ok {
+			signal.InstanceType = toString(v)
+		}
+		// Extract storage_gb
+		if v, ok := after["storage_gb"]; ok {
+			signal.StorageGB = toFloat64(v)
+		}
+		// Extract count (from count or for_each)
+		if v, ok := after["count"]; ok {
+			signal.Count = toInt(v)
+		} else if v, ok := after["for_each"]; ok {
+			// for_each is a map; count is the number of keys
+			if m, ok := v.(map[string]interface{}); ok {
+				signal.Count = len(m)
+			}
+		} else {
+			signal.Count = 1
+		}
+
+		signals = append(signals, signal)
+	}
+	return signals, nil
+}
+
+// toFloat64 converts an interface{} to float64, handling numbers and strings.
+func toFloat64(v interface{}) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case json.Number:
+		f, _ := val.Float64()
+		return f
+	case string:
+		f, err := strconv.ParseFloat(val, 64)
+		if err == nil {
+			return f
+		}
+		return 0
+	case int:
+		return float64(val)
+	case int64:
+		return float64(val)
+	default:
+		return 0
+	}
+}
+
+// toString converts an interface{} to string.
+func toString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// toInt converts an interface{} to int.
+func toInt(v interface{}) int {
+	switch val := v.(type) {
+	case float64:
+		return int(math.Round(val))
+	case json.Number:
+		i, _ := val.Int64()
+		return int(i)
+	case string:
+		i, err := strconv.Atoi(val)
+		if err == nil {
+			return i
+		}
+		return 0
+	case int:
+		return val
+	case int64:
+		return int(val)
+	default:
+		return 0
+	}
+}
+package tfplanparser
+
+import (
+	"encoding/json"
+	"fmt"
 	"reflect"
 
 	tfjson "github.com/hashicorp/terraform-json"
