@@ -1,4 +1,4 @@
-package iacsecscan
+// Package iacsecscan tests for IaC security scanner.
 
 import (
 	"testing"
