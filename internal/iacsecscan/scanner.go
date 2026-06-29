@@ -1,4 +1,84 @@
-// Package iacsecscan provides IaC security scanning capabilities.
+package iacsecscan
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/pyxcloud/pyxenv/internal/costsignalrule"
+	"github.com/pyxcloud/pyxenv/internal/driftsignalrule"
+	"github.com/pyxcloud/pyxenv/internal/tfplanparser"
+)
+
+// ScannerResult holds the outcome of a scan.
+type ScannerResult struct {
+	Passed      bool
+	CostAlerts  []costsignalrule.CostAlert
+	DriftAlerts []driftsignalrule.DriftAlert
+	Errors      []error
+}
+
+// Scanner performs security and cost anomaly scanning on Terraform plans.
+type Scanner struct {
+	costRule   *costsignalrule.Rule
+	driftRule  *driftsignalrule.Rule
+	planParser *tfplanparser.Parser
+}
+
+// NewScanner creates a new Scanner with the given rules and parser.
+func NewScanner(costRule *costsignalrule.Rule, driftRule *driftsignalrule.Rule, planParser *tfplanparser.Parser) *Scanner {
+	return &Scanner{
+		costRule:   costRule,
+		driftRule:  driftRule,
+		planParser: planParser,
+	}
+}
+
+// ScanPlan runs the full scan pipeline: parse plan, check cost anomalies, check drift.
+func (s *Scanner) ScanPlan(ctx context.Context, planPath string) (*ScannerResult, error) {
+	result := &ScannerResult{Passed: true}
+
+	// Parse the Terraform plan
+	plan, err := s.planParser.ParsePlan(ctx, planPath)
+	if err != nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, fmt.Errorf("plan parse error: %w", err))
+		return result, nil // return partial result
+	}
+
+	// Run cost anomaly detection
+	if s.costRule != nil {
+		costAlerts, err := s.costRule.Evaluate(ctx, plan)
+		if err != nil {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Errorf("cost rule evaluation error: %w", err))
+		} else {
+			result.CostAlerts = costAlerts
+			if len(costAlerts) > 0 {
+				result.Passed = false
+				log.Printf("[WARN] Cost anomalies detected: %d alerts", len(costAlerts))
+			}
+		}
+	}
+
+	// Run drift detection
+	if s.driftRule != nil {
+		driftAlerts, err := s.driftRule.Evaluate(ctx, plan)
+		if err != nil {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Errorf("drift rule evaluation error: %w", err))
+		} else {
+			result.DriftAlerts = driftAlerts
+			if len(driftAlerts) > 0 {
+				result.Passed = false
+				log.Printf("[WARN] Drift anomalies detected: %d alerts", len(driftAlerts))
+			}
+		}
+	}
+
+	return result, nil
+}
 
 import (
 	"fmt"
