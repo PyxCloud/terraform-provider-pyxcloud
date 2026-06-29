@@ -1,4 +1,14 @@
 {
+  "name": "iac-security-scan",
+  "steps": [
+    {
+      "name": "Run IaC Security Scanner",
+      "command": "go run ./internal/iacsecscan/scanner.go --path . --format json",
+      "timeout": 300
+    }
+  ]
+}
+{
   "name": "ci",
   "triggers": [
     {
