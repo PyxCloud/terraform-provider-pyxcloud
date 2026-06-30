@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/iacsecscan"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/tfplanparser"
 )
 
@@ -196,5 +197,109 @@ func TestEvaluateDriftPolicyWithCost_WithinBudget_NoAdvisory(t *testing.T) {
 	verdict := EvaluateDriftPolicyWithCost(summary, planJSON, 100.0, 500.0)
 	if len(verdict.CostAdvisories) != 0 {
 		t.Errorf("expected no advisories within budget, got %v", verdict.CostAdvisories)
+	}
+}
+
+// ── IaC security scan gate tests (pd-ONTO-CAP-OPS-IACSECSCAN) ────────────────
+
+func TestEvaluateDriftPolicyWithSecScan_HighSeverityBlocks(t *testing.T) {
+	// A safe drift (additive) is normally allowed, but a HIGH-severity security
+	// finding (open SSH port) must block the deploy.
+	summary := &tfplanparser.PlanSummary{
+		ResourcesChanged: 1, Added: 1,
+		DriftDetails: []tfplanparser.DriftDetail{
+			{Address: "aws_security_group_rule.ssh", Type: "aws_security_group_rule", ChangeAction: "create"},
+		},
+	}
+	resources := []iacsecscan.Resource{
+		{
+			Type: "aws_security_group_rule",
+			Attributes: map[string]interface{}{
+				"type":        "ingress",
+				"from_port":   22,
+				"to_port":     22,
+				"protocol":    "tcp",
+				"cidr_blocks": []interface{}{"0.0.0.0/0"},
+			},
+		},
+	}
+	verdict := EvaluateDriftPolicyWithSecScan(summary, nil, 0, 0, resources)
+	if verdict.Allowed {
+		t.Error("expected deploy to be blocked by HIGH-severity open-port finding")
+	}
+	if verdict.Action != "block" {
+		t.Errorf("expected action=block, got %q", verdict.Action)
+	}
+	if !strings.Contains(verdict.Reason, "IaC security gate blocked") {
+		t.Errorf("expected reason to mention security gate, got %q", verdict.Reason)
+	}
+}
+
+func TestEvaluateDriftPolicyWithSecScan_NoResources_Passthrough(t *testing.T) {
+	// With no resources supplied the security scan is skipped and the base drift
+	// verdict is returned unchanged.
+	summary := &tfplanparser.PlanSummary{ResourcesChanged: 0}
+	verdict := EvaluateDriftPolicyWithSecScan(summary, nil, 0, 0, nil)
+	if !verdict.Allowed {
+		t.Error("expected allowed=true when no resources supplied")
+	}
+	if verdict.Action != "approve" {
+		t.Errorf("expected action=approve, got %q", verdict.Action)
+	}
+}
+
+func TestEvaluateDriftPolicyWithSecScan_MediumAdvisoryDoesNotBlock(t *testing.T) {
+	// MEDIUM findings (public S3 ACL) must NOT block — only advisory.
+	summary := &tfplanparser.PlanSummary{
+		ResourcesChanged: 1, Added: 1,
+		DriftDetails: []tfplanparser.DriftDetail{
+			{Address: "aws_s3_bucket.data", Type: "aws_s3_bucket", ChangeAction: "create"},
+		},
+	}
+	resources := []iacsecscan.Resource{
+		{
+			Type: "aws_s3_bucket",
+			Attributes: map[string]interface{}{
+				"name": "data",
+				"acl":  "public-read",
+			},
+		},
+	}
+	verdict := EvaluateDriftPolicyWithSecScan(summary, nil, 0, 0, resources)
+	if !verdict.Allowed {
+		t.Errorf("MEDIUM finding must not block deploy, got allowed=false (reason: %q)", verdict.Reason)
+	}
+	if len(verdict.CostAdvisories) == 0 {
+		t.Error("expected at least one advisory for public-read bucket")
+	}
+}
+
+func TestEvaluateDriftPolicyWithSecScan_UnencryptedEBSBlocks(t *testing.T) {
+	// An unencrypted EBS volume is a HIGH-severity finding and must block.
+	summary := &tfplanparser.PlanSummary{
+		ResourcesChanged: 1, Added: 1,
+		DriftDetails: []tfplanparser.DriftDetail{
+			{Address: "aws_ebs_volume.data", Type: "aws_ebs_volume", ChangeAction: "create"},
+		},
+	}
+	resources := []iacsecscan.Resource{
+		{
+			Type:       "aws_ebs_volume",
+			Attributes: map[string]interface{}{"name": "data"},
+		},
+	}
+	verdict := EvaluateDriftPolicyWithSecScan(summary, nil, 0, 0, resources)
+	if verdict.Allowed {
+		t.Error("expected deploy to be blocked by HIGH-severity unencrypted-EBS finding")
+	}
+	found := false
+	for _, a := range verdict.CostAdvisories {
+		if strings.Contains(a, "UNENCRYPTED-EBS") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected UNENCRYPTED-EBS advisory, got %v", verdict.CostAdvisories)
 	}
 }

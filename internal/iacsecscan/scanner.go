@@ -2,8 +2,12 @@
 package iacsecscan
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strings"
+	"time"
 )
 
 // Resource represents a Terraform resource with its type and attributes.
@@ -22,6 +26,22 @@ type Finding struct {
 	Remediation  string
 }
 
+// ScanInput is the JSON-decodable input for file/reader-based scans.
+type ScanInput struct {
+	// Resources is the list of Terraform resources to scan.
+	Resources []Resource `json:"resources"`
+}
+
+// ScanResult is the output of a scanner run, suitable for CI gate use.
+type ScanResult struct {
+	// Findings are all advisory security findings discovered.
+	Findings []Finding `json:"findings"`
+	// OK is true when no HIGH-severity findings were detected.
+	OK bool `json:"ok"`
+	// ScannedAt is the UTC time the scan was performed.
+	ScannedAt time.Time `json:"scanned_at"`
+}
+
 // Scan runs all security checks on the given resources and returns findings.
 func Scan(resources []Resource) []Finding {
 	var findings []Finding
@@ -29,8 +49,48 @@ func Scan(resources []Resource) []Finding {
 		findings = append(findings, checkOpenPorts(r)...)
 		findings = append(findings, checkPublicStorage(r)...)
 		findings = append(findings, checkIAMWildcards(r)...)
+		findings = append(findings, checkUnencryptedStorage(r)...)
 	}
 	return findings
+}
+
+// ScanWithResult runs all security checks and returns a ScanResult suitable
+// for CI gate use. The result is OK when no HIGH-severity findings exist.
+func ScanWithResult(resources []Resource) ScanResult {
+	findings := Scan(resources)
+	ok := true
+	for _, f := range findings {
+		if f.Severity == "HIGH" {
+			ok = false
+			break
+		}
+	}
+	return ScanResult{
+		Findings:  findings,
+		OK:        ok,
+		ScannedAt: time.Now().UTC(),
+	}
+}
+
+// ScanReader reads ScanInput JSON from r, runs the scanner, and returns the
+// ScanResult. Useful for piped or file-based CI gate invocations.
+func ScanReader(r io.Reader) (ScanResult, error) {
+	var in ScanInput
+	if err := json.NewDecoder(r).Decode(&in); err != nil {
+		return ScanResult{}, fmt.Errorf("decode iac security scan input: %w", err)
+	}
+	return ScanWithResult(in.Resources), nil
+}
+
+// ScanFile reads ScanInput JSON from path, runs the scanner, and returns the
+// ScanResult.
+func ScanFile(path string) (ScanResult, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("open iac security scan input file: %w", err)
+	}
+	defer f.Close()
+	return ScanReader(f)
 }
 
 // checkOpenPorts detects security group rules allowing inbound traffic from 0.0.0.0/0 on sensitive ports.
@@ -166,6 +226,30 @@ func checkIAMWildcards(r Resource) []Finding {
 		// Also check for "Action": ["*"] (array form)
 		if strings.Contains(policyStr, `"Action":["*"]`) && strings.Contains(policyStr, `"Resource":"*"`) {
 			findings = append(findings, makeFinding(r, "IAM-WILDCARD-ARRAY", "IAM policy allows all actions on all resources (array form)", "Replace the wildcard Action and Resource with specific permissions following least privilege."))
+		}
+	}
+	return findings
+}
+
+// checkUnencryptedStorage detects EBS volumes and RDS instances without
+// encryption at rest enabled.
+func checkUnencryptedStorage(r Resource) []Finding {
+	var findings []Finding
+	switch r.Type {
+	case "aws_ebs_volume":
+		encrypted, ok := r.Attributes["encrypted"]
+		if !ok || encrypted == false {
+			findings = append(findings, makeFinding(r, "UNENCRYPTED-EBS", "EBS volume does not have encryption at rest enabled", "Set encrypted = true on the aws_ebs_volume resource."))
+		}
+	case "aws_db_instance":
+		encrypted, ok := r.Attributes["storage_encrypted"]
+		if !ok || encrypted == false {
+			findings = append(findings, makeFinding(r, "UNENCRYPTED-RDS", "RDS instance does not have storage encryption enabled", "Set storage_encrypted = true on the aws_db_instance resource."))
+		}
+	case "aws_rds_cluster":
+		encrypted, ok := r.Attributes["storage_encrypted"]
+		if !ok || encrypted == false {
+			findings = append(findings, makeFinding(r, "UNENCRYPTED-RDS-CLUSTER", "RDS cluster does not have storage encryption enabled", "Set storage_encrypted = true on the aws_rds_cluster resource."))
 		}
 	}
 	return findings
