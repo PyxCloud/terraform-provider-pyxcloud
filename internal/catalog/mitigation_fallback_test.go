@@ -28,14 +28,9 @@ func TestAssembleHCLFallbackServicesSelfHostOnVM(t *testing.T) {
 			vmResource: "resource \"ubicloud_vm\"",
 			image:      "minio/minio",
 		},
-		{
-			name:       "digitalocean secrets-manager uses Vault",
-			provider:   ProviderDigitalOcean,
-			region:     "Frankfurt",
-			component:  AssembleComponent{Name: "secrets", Type: "secrets-manager", Secrets: &AssembleSecrets{}},
-			vmResource: "resource \"digitalocean_droplet\"",
-			image:      "hashicorp/vault",
-		},
+		// NOTE: "digitalocean secrets-manager" is no longer a VM mitigation — it is
+		// auto-aliased to the Vault-HA operator (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS).
+		// See TestAssembleHCLB4SecretsVaultAutoAlias in assemble_test.go.
 		{
 			name:       "ubicloud cache uses Redis",
 			provider:   ProviderUbicloud,
@@ -149,9 +144,11 @@ func TestNativeSupportMatchesRendererSurface(t *testing.T) {
 			fallback: []string{ProviderUbicloud},
 		},
 		{
+			// pd-MIG-B4-SECRETS-VAULT-AUTOALIAS: DO is now "native" (auto-alias to
+			// Vault-HA operator) so the VM mitigation is NOT taken.
 			component: "secrets-manager",
-			native:    []string{ProviderAWS, ProviderGCP, ProviderAzure, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderStackIt},
-			fallback:  []string{ProviderDigitalOcean, ProviderLinode, ProviderUbicloud, ProviderOVH},
+			native:    []string{ProviderAWS, ProviderGCP, ProviderAzure, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderStackIt, ProviderDigitalOcean},
+			fallback:  []string{ProviderLinode, ProviderUbicloud, ProviderOVH},
 		},
 		{
 			component: "managed-queue",

@@ -421,6 +421,60 @@ type AssembleInput struct {
 	ApplySecurityBaseline bool
 }
 
+// inferDOKSClusterName scans components for the first managed-kubernetes component
+// and returns its name as the implicit DOKS cluster name. Used by the B4 auto-alias
+// to derive the cluster the Vault-HA operator will run on when a raw
+// secrets-manager/kms component is promoted to vault-ha on DigitalOcean.
+// Returns "" when no managed-kubernetes component is present.
+func inferDOKSClusterName(components []AssembleComponent) string {
+	for _, c := range components {
+		if c.Type == "managed-kubernetes" || c.Type == "container-service" {
+			return c.Name
+		}
+	}
+	return ""
+}
+
+// assembleVaultHAAlias renders a raw secrets-manager or kms component as a
+// vault-ha operator-pattern component on DigitalOcean (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS).
+// clusterName must be non-empty (either inferred from the topology or supplied via VaultHA config).
+func assembleVaultHAAlias(ctx context.Context, cat Catalog, c AssembleComponent, in AssembleInput, clusterName string) ([]string, bool /*needsHelm*/, bool /*needsKubernetes*/, error) {
+	spec := VaultHASpec{
+		Name:          c.Name,
+		Region:        in.Region,
+		Provider:      in.Provider,
+		ClusterName:   clusterName,
+		TransitUnseal: true, // always enable Transit auto-unseal for the aliased path
+	}
+	// Allow the caller to override via VaultHA config (e.g. namespace, replicas).
+	if c.VaultHA != nil {
+		if c.VaultHA.Namespace != "" {
+			spec.Namespace = c.VaultHA.Namespace
+		}
+		if c.VaultHA.Replicas != 0 {
+			spec.Replicas = c.VaultHA.Replicas
+		}
+		if c.VaultHA.ChartVersion != "" {
+			spec.ChartVersion = c.VaultHA.ChartVersion
+		}
+		if c.VaultHA.TransitKeyName != "" {
+			spec.TransitKeyName = c.VaultHA.TransitKeyName
+		}
+		if len(c.VaultHA.AuthMethods) > 0 {
+			spec.AuthMethods = c.VaultHA.AuthMethods
+		}
+	}
+	vhPlan, err := TranslateVaultHA(ctx, cat, spec)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("component %q (auto-alias → vault-ha): %w", c.Name, err)
+	}
+	vhHCL, err := RenderVaultHAHCL(vhPlan)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("component %q render (auto-alias → vault-ha): %w", c.Name, err)
+	}
+	return []string{vhHCL}, vhPlan.RendersHelm, vhPlan.ResourceType == "kubernetes_manifest", nil
+}
+
 // AssembleHCL translates the environment to concrete terraform documents.
 func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, error) {
 	if in.Name == "" {
@@ -825,6 +879,34 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			docs = append(docs, vpnHCL)
 		case "secrets-manager":
+			// B4 auto-alias (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): on DigitalOcean a raw
+			// secrets-manager component routes to the Vault-HA operator-pattern (HA Raft
+			// cluster on DOKS) instead of the native managed path (DO has none) or the
+			// single-VM mitigation. The cluster name is inferred from any managed-kubernetes
+			// component in the same env, or must be supplied via VaultHA config.
+			if lc(in.Provider) == ProviderDigitalOcean {
+				cluster := inferDOKSClusterName(in.Components)
+				if c.VaultHA != nil && strings.TrimSpace(c.VaultHA.ClusterName) != "" {
+					cluster = c.VaultHA.ClusterName
+				}
+				if cluster == "" {
+					return nil, fmt.Errorf("component %q (secrets-manager → vault-ha auto-alias on DO): "+
+						"no managed-kubernetes component found in this environment and no cluster_name "+
+						"supplied via vault_ha config — add a managed-kubernetes component or set vault_ha.cluster_name", c.Name)
+				}
+				aliasHCL, rHelm, rK8s, err := assembleVaultHAAlias(ctx, cat, c, in, cluster)
+				if err != nil {
+					return nil, err
+				}
+				if rHelm {
+					needsHelm = true
+				}
+				if rK8s {
+					needsKubernetes = true
+				}
+				docs = append(docs, aliasHCL...)
+				break
+			}
 			secSpec := SecretsSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.Secrets != nil {
 				secSpec.Description = c.Secrets.Description
@@ -913,6 +995,32 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			docs = append(docs, slHCL)
 		case "kms", "encryption-key":
+			// B4 auto-alias (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): on DigitalOcean a raw
+			// kms/encryption-key component routes to the Vault-HA operator-pattern (Vault
+			// Transit replaces KMS) instead of the hard error or single-VM mitigation.
+			if lc(in.Provider) == ProviderDigitalOcean {
+				cluster := inferDOKSClusterName(in.Components)
+				if c.VaultHA != nil && strings.TrimSpace(c.VaultHA.ClusterName) != "" {
+					cluster = c.VaultHA.ClusterName
+				}
+				if cluster == "" {
+					return nil, fmt.Errorf("component %q (%s → vault-ha auto-alias on DO): "+
+						"no managed-kubernetes component found in this environment and no cluster_name "+
+						"supplied via vault_ha config — add a managed-kubernetes component or set vault_ha.cluster_name", c.Name, c.Type)
+				}
+				aliasHCL, rHelm, rK8s, err := assembleVaultHAAlias(ctx, cat, c, in, cluster)
+				if err != nil {
+					return nil, err
+				}
+				if rHelm {
+					needsHelm = true
+				}
+				if rK8s {
+					needsKubernetes = true
+				}
+				docs = append(docs, aliasHCL...)
+				break
+			}
 			kmsSpec := KMSSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.KMS != nil {
 				kmsSpec.Description = c.KMS.Description
