@@ -44,14 +44,9 @@ func TestAssembleHCLFallbackServicesSelfHostOnVM(t *testing.T) {
 			vmResource: "resource \"ubicloud_vm\"",
 			image:      "redis:7",
 		},
-		{
-			name:       "digitalocean managed-queue uses RabbitMQ",
-			provider:   ProviderDigitalOcean,
-			region:     "Frankfurt",
-			component:  AssembleComponent{Name: "jobs", Type: "managed-queue", Queue: &AssembleQueue{}},
-			vmResource: "resource \"digitalocean_droplet\"",
-			image:      "rabbitmq:3",
-		},
+		// NOTE: digitalocean managed-queue no longer uses the single-VM RabbitMQ
+		// mitigation — it routes to the RabbitMQ Cluster Operator on DOKS (B1:
+		// pd-MIG-B1-QUEUE-STREAM-OPERATORS). See messaging_operators_test.go.
 		{
 			name:       "ubicloud kms uses Vault Transit",
 			provider:   ProviderUbicloud,
@@ -154,14 +149,18 @@ func TestNativeSupportMatchesRendererSurface(t *testing.T) {
 			fallback:  []string{ProviderDigitalOcean, ProviderLinode, ProviderUbicloud, ProviderOVH},
 		},
 		{
+			// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): DO is now natively supported
+			// via the RabbitMQ Cluster Operator on DOKS (not single-VM mitigation).
 			component: "managed-queue",
-			native:    []string{ProviderAWS, ProviderGCP, ProviderAzure, ProviderOracle, ProviderAlibaba},
-			fallback:  []string{ProviderDigitalOcean, ProviderLinode, ProviderUbicloud, ProviderIBM, ProviderOVH, ProviderStackIt},
+			native:    []string{ProviderAWS, ProviderGCP, ProviderAzure, ProviderOracle, ProviderAlibaba, ProviderDigitalOcean},
+			fallback:  []string{ProviderLinode, ProviderUbicloud, ProviderIBM, ProviderOVH, ProviderStackIt},
 		},
 		{
+			// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): DO is now natively supported
+			// via the Strimzi Kafka Operator on DOKS (not single-VM Redpanda mitigation).
 			component: "event-streaming",
-			native:    []string{ProviderAWS, ProviderGCP, ProviderAzure, ProviderOracle, ProviderIBM, ProviderAlibaba},
-			fallback:  []string{ProviderDigitalOcean, ProviderLinode, ProviderUbicloud, ProviderOVH, ProviderStackIt},
+			native:    []string{ProviderAWS, ProviderGCP, ProviderAzure, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderDigitalOcean},
+			fallback:  []string{ProviderLinode, ProviderUbicloud, ProviderOVH, ProviderStackIt},
 		},
 		{
 			component: "managed-database",

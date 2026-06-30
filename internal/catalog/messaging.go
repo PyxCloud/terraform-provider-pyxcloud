@@ -12,14 +12,20 @@ import (
 //     - AWS: aws_sqs_queue (+ a redrive dead-letter queue when retries are set).
 //     - GCP: a google_pubsub_topic + google_pubsub_subscription (pull) pair — the
 //       Pub/Sub analogue of a queue (a subscription is the durable backlog).
-//     - DigitalOcean: UNSUPPORTED. DO has no managed queue/broker primitive
-//       (App Platform workers are not a queue). Clean plan-time error -> SQS/PubSub.
+//     - DigitalOcean: OPERATOR PATTERN on DOKS (B1 — pd-MIG-B1-QUEUE-STREAM-OPERATORS).
+//       DO has no managed queue/broker primitive, so SQS is replaced by the
+//       RabbitMQ Cluster Operator (rabbitmq/cluster-operator Helm chart → CORE)
+//       + a RabbitmqCluster CR (EXTRA). ClusterName is required on DO; without it
+//       a clean plan-time error is returned rather than a silent fallback.
 //
 //   event-streaming / event-bus — an ordered, replayable, multi-consumer stream:
 //     - AWS: aws_kinesis_stream (on-demand) — the streaming primitive.
 //     - GCP: a google_pubsub_topic (Pub/Sub is GCP's stream + bus; consumers
 //       attach their own subscriptions). One topic = the bus.
-//     - DigitalOcean: UNSUPPORTED. No managed streaming primitive. Clean error.
+//     - DigitalOcean: OPERATOR PATTERN on DOKS (B1). DO has no managed streaming
+//       primitive, so Kinesis is replaced by the Strimzi Kafka operator
+//       (strimzi/strimzi-kafka-operator Helm chart → CORE) + a Kafka CR (EXTRA).
+//       ClusterName required.
 //
 // SECURITY: queues/streams are private to the account/project by IAM; PyxCloud
 // never attaches a public access policy. Encryption at rest is on by default
@@ -31,6 +37,27 @@ type MessagingKind string
 const (
 	KindQueue  MessagingKind = "managed-queue"
 	KindStream MessagingKind = "event-streaming"
+)
+
+// Operator-pattern defaults for the DO queue/stream operator components (B1).
+const (
+	// RabbitMQ Cluster Operator defaults.
+	defaultRabbitMQNS      = "rabbitmq-system"
+	defaultRabbitMQReplicas = 3 // HA: 3 nodes (quorum queue needs odd quorum)
+
+	// Strimzi Kafka operator defaults.
+	defaultKafkaNS            = "kafka"
+	defaultKafkaReplicas      = 3 // HA: 3 brokers
+	defaultKafkaRetentionHours = 168 // 7 days
+
+	// Operator chart coordinates — pinned for deterministic plans.
+	rabbitmqOperatorRepo    = "https://charts.bitnami.com/bitnami"
+	rabbitmqOperatorChart   = "rabbitmq-cluster-operator"
+	rabbitmqOperatorVersion = "4.3.27"
+
+	strimziOperatorRepo    = "https://strimzi.io/charts/"
+	strimziOperatorChart   = "strimzi-kafka-operator"
+	strimziOperatorVersion = "0.42.0"
 )
 
 // QueueSpec is the abstract managed-queue description. Provider-neutral.
@@ -47,6 +74,16 @@ type QueueSpec struct {
 	VisibilityTimeoutSeconds int
 	// MaxReceiveCount, when > 0, wires a dead-letter queue (SQS redrive). 0 -> none.
 	MaxReceiveCount int
+
+	// ── DigitalOcean operator-pattern fields (B1) ──
+	// ClusterName is the existing DOKS cluster the RabbitMQ Cluster Operator runs on.
+	// Required for DO; ignored on other providers.
+	ClusterName string
+	// Namespace is the Kubernetes namespace for the RabbitMQ operator + cluster.
+	// Empty -> "rabbitmq-system".
+	Namespace string
+	// Replicas is the number of RabbitmqCluster replicas (HA). 0 -> 3 (default HA).
+	Replicas int
 }
 
 // StreamSpec is the abstract event-streaming description. Provider-neutral.
@@ -61,6 +98,16 @@ type StreamSpec struct {
 	Shards int
 	// RetentionHours is how long records are retained/replayable. 0 -> provider default.
 	RetentionHours int
+
+	// ── DigitalOcean operator-pattern fields (B1) ──
+	// ClusterName is the existing DOKS cluster the Strimzi operator runs on.
+	// Required for DO; ignored on other providers.
+	ClusterName string
+	// Namespace is the Kubernetes namespace for the Strimzi operator + Kafka cluster.
+	// Empty -> "kafka".
+	Namespace string
+	// Replicas is the number of Kafka broker replicas. 0 -> 3 (default HA).
+	Replicas int
 }
 
 // MessagingPlan is the deterministic, catalog-resolved concrete translation of a
@@ -82,6 +129,17 @@ type MessagingPlan struct {
 	// Stream fields.
 	Shards         int `json:"shards,omitempty"`
 	RetentionHours int `json:"retention_hours,omitempty"`
+
+	// ── DigitalOcean operator-pattern fields (B1: pd-MIG-B1-QUEUE-STREAM-OPERATORS) ──
+	// ClusterName is the existing DOKS cluster the operator runs on (DO only).
+	ClusterName string `json:"cluster_name,omitempty"`
+	// Namespace is the Kubernetes namespace for the operator + CR workloads (DO only).
+	Namespace string `json:"namespace,omitempty"`
+	// Replicas is the number of broker/cluster replicas for HA (DO only).
+	Replicas int `json:"replicas,omitempty"`
+	// RendersHelm is true when the render emits a helm_release (the operator-pattern
+	// CORE) — assemble.go pins hashicorp/helm (needsHelm) when set.
+	RendersHelm bool `json:"renders_helm,omitempty"`
 
 	ResourceType string `json:"resource_type"`
 }
@@ -106,14 +164,46 @@ func TranslateQueue(ctx context.Context, cat RegionCatalog, spec QueueSpec) (Mes
 		return MessagingPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean || provider == ProviderLinode {
-		provName := "DigitalOcean"
-		if provider == ProviderLinode {
-			provName = "Linode"
+	if provider == ProviderDigitalOcean {
+		// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): SQS → RabbitMQ Cluster Operator on DOKS.
+		// DO has no managed queue primitive; the operator pattern replaces the single-VM
+		// mitigation. ClusterName is required — the operator must have somewhere to run.
+		cluster := strings.TrimSpace(spec.ClusterName)
+		if cluster == "" {
+			return MessagingPlan{}, fmt.Errorf(
+				"managed-queue: digitalocean replaces SQS with the RabbitMQ Cluster Operator on a " +
+					"DOKS cluster (DO has no managed queue primitive) — cluster_name is required. " +
+					"This is a hard plan-time error, never a silent fallback")
 		}
+		ns := strings.TrimSpace(spec.Namespace)
+		if ns == "" {
+			ns = defaultRabbitMQNS
+		}
+		replicas := spec.Replicas
+		if replicas <= 0 {
+			replicas = defaultRabbitMQReplicas
+		}
+		return MessagingPlan{
+			Kind:                     KindQueue,
+			Provider:                 provider,
+			CSP:                      row.CSP,
+			RegionName:               row.RegionName,
+			CSPRegion:                row.CSPRegion,
+			Name:                     canonicalName(spec.Name, "pyxcloud-queue"),
+			FIFO:                     spec.FIFO,
+			VisibilityTimeoutSeconds: spec.VisibilityTimeoutSeconds,
+			MaxReceiveCount:          spec.MaxReceiveCount,
+			ClusterName:              cluster,
+			Namespace:                ns,
+			Replicas:                 replicas,
+			RendersHelm:              true,
+			ResourceType:             "kubernetes_manifest",
+		}, nil
+	}
+	if provider == ProviderLinode {
 		return MessagingPlan{}, ErrComponentUnsupported{
 			Component: TypeManagedQueue, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: provName + " has no managed message-queue/broker primitive; use a queue on " +
+			Alternative: "Linode has no managed message-queue/broker primitive; use a queue on " +
 				"AWS (SQS) or GCP (Pub/Sub topic+subscription), or run a self-managed broker on a " +
 				"virtual-machine",
 		}
@@ -188,14 +278,49 @@ func TranslateStream(ctx context.Context, cat RegionCatalog, spec StreamSpec) (M
 		return MessagingPlan{}, err
 	}
 	provider := lc(spec.Provider)
-	if provider == ProviderDigitalOcean || provider == ProviderLinode {
-		provName := "DigitalOcean"
-		if provider == ProviderLinode {
-			provName = "Linode"
+	if provider == ProviderDigitalOcean {
+		// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): Kinesis → Strimzi Kafka Operator on DOKS.
+		// DO has no managed streaming primitive; the operator pattern replaces the single-VM
+		// mitigation. ClusterName is required — the operator must have somewhere to run.
+		cluster := strings.TrimSpace(spec.ClusterName)
+		if cluster == "" {
+			return MessagingPlan{}, fmt.Errorf(
+				"event-streaming: digitalocean replaces Kinesis with the Strimzi Kafka operator on a " +
+					"DOKS cluster (DO has no managed streaming primitive) — cluster_name is required. " +
+					"This is a hard plan-time error, never a silent fallback")
 		}
+		ns := strings.TrimSpace(spec.Namespace)
+		if ns == "" {
+			ns = defaultKafkaNS
+		}
+		replicas := spec.Replicas
+		if replicas <= 0 {
+			replicas = defaultKafkaReplicas
+		}
+		retention := spec.RetentionHours
+		if retention <= 0 {
+			retention = defaultKafkaRetentionHours
+		}
+		return MessagingPlan{
+			Kind:           KindStream,
+			Provider:       provider,
+			CSP:            row.CSP,
+			RegionName:     row.RegionName,
+			CSPRegion:      row.CSPRegion,
+			Name:           canonicalName(spec.Name, "pyxcloud-stream"),
+			Shards:         spec.Shards,
+			RetentionHours: retention,
+			ClusterName:    cluster,
+			Namespace:      ns,
+			Replicas:       replicas,
+			RendersHelm:    true,
+			ResourceType:   "kubernetes_manifest",
+		}, nil
+	}
+	if provider == ProviderLinode {
 		return MessagingPlan{}, ErrComponentUnsupported{
 			Component: TypeEventStreaming, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: provName + " has no managed event-streaming primitive; use AWS Kinesis or " +
+			Alternative: "Linode has no managed event-streaming primitive; use AWS Kinesis or " +
 				"GCP Pub/Sub, or run a self-managed broker (Kafka/Redpanda) on a virtual-machine",
 		}
 	}

@@ -99,20 +99,25 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderIBM: true, ProviderAlibaba: true, ProviderStackIt: true,
 	},
 	"managed-queue": {
+		// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): DO now routes through the RabbitMQ
+		// Cluster Operator on DOKS instead of the single-VM mitigation. Mark DO as
+		// natively supported so the mitigation fallback in assemble.go is NOT taken.
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
-		ProviderAlibaba: true,
+		ProviderAlibaba: true, ProviderDigitalOcean: true,
 	},
 	"message-queue": {
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
-		ProviderAlibaba: true,
+		ProviderAlibaba: true, ProviderDigitalOcean: true,
 	},
 	"event-streaming": {
+		// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): DO now routes through the Strimzi
+		// Kafka Operator on DOKS instead of the single-VM Redpanda mitigation.
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
-		ProviderIBM: true, ProviderAlibaba: true,
+		ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true,
 	},
 	"event-bus": {
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
-		ProviderIBM: true, ProviderAlibaba: true,
+		ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true,
 	},
 	"kms":            {ProviderAWS: true, ProviderGCP: true},
 	"encryption-key": {ProviderAWS: true, ProviderGCP: true},
@@ -220,7 +225,10 @@ func HasOperatorAlternative(componentType string) bool {
 		"tracing", "distributed-tracing", "tempo", "trace-collector", "otel-tracing",
 		"tls-certificate", "certificate", "cert-manager", "managed-certificate",
 		"vault-ha", "vault", "vault-cluster",
-		"workload-identity", "instance-identity", "workload-id":
+		"workload-identity", "instance-identity", "workload-id",
+		// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): queue/stream operator-pattern replacements.
+		"managed-queue", "message-queue",
+		"event-streaming", "event-bus":
 		return true
 	}
 	return false

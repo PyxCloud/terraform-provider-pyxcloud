@@ -134,8 +134,10 @@ func renderCacheDO(p CachePlan) string {
 
 // ── managed-queue / event-streaming ──────────────────────────────────────────
 
-// RenderMessagingHCL renders a MessagingPlan (queue or stream) into HCL. DO never
-// reaches here (TranslateQueue/TranslateStream reject it with a clean error).
+// RenderMessagingHCL renders a MessagingPlan (queue or stream) into HCL.
+// DigitalOcean routes through the operator-pattern renderers (B1:
+// pd-MIG-B1-QUEUE-STREAM-OPERATORS): RabbitMQ Cluster Operator for queues and
+// Strimzi Kafka Operator for streams, both installed on DOKS via Helm + CRs.
 func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 	switch plan.Kind {
 	case KindQueue:
@@ -144,6 +146,9 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 			return renderQueueAWS(plan), nil
 		case ProviderGCP:
 			return renderQueueGCP(plan), nil
+		case ProviderDigitalOcean:
+			// B1: SQS → RabbitMQ Cluster Operator on DOKS.
+			return renderQueueDO(plan), nil
 		case ProviderAzure:
 			return renderMessagingAzure(plan), nil
 		case ProviderUbicloud:
@@ -162,6 +167,9 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 			return renderStreamAWS(plan), nil
 		case ProviderGCP:
 			return renderStreamGCP(plan), nil
+		case ProviderDigitalOcean:
+			// B1: Kinesis → Strimzi Kafka Operator on DOKS.
+			return renderStreamDO(plan), nil
 		case ProviderAzure:
 			return renderMessagingAzure(plan), nil
 		case ProviderUbicloud:
