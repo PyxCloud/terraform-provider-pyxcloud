@@ -257,12 +257,24 @@ func TestTranslateCDNAllProviders(t *testing.T) {
 	}
 }
 
-func TestCDNDOLoadBalancerOriginUnsupported(t *testing.T) {
+func TestCDNDOLoadBalancerOriginRoutesViaCloudflare(t *testing.T) {
+	// pd-MIG-B5-CDN-CLOUDFLARE: DO CDN with a non-Spaces origin now routes through
+	// Cloudflare's proxy CDN instead of returning ErrComponentUnsupported. The plan
+	// must have UsesCloudflare = true and render cloudflare_dns_record HCL.
 	t.Parallel()
-	_, err := TranslateCDN(ctx(), MustEmbedded(), CDNSpec{Name: "edge", Region: "Frankfurt", Provider: "digitalocean", OriginKind: "load-balancer", OriginName: "web"})
-	var unsup ErrComponentUnsupported
-	if !errors.As(err, &unsup) {
-		t.Fatalf("DO CDN over an LB origin should be ErrComponentUnsupported, got %T: %v", err, err)
+	plan, err := TranslateCDN(ctx(), MustEmbedded(), CDNSpec{Name: "edge", Region: "Frankfurt", Provider: "digitalocean", OriginKind: "load-balancer", OriginName: "web"})
+	if err != nil {
+		t.Fatalf("DO CDN over an LB origin should succeed via Cloudflare route, got: %v", err)
+	}
+	if !plan.UsesCloudflare {
+		t.Errorf("DO + LB origin CDN plan must have UsesCloudflare = true")
+	}
+	hcl, err := RenderCDNHCL(plan)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(hcl, `resource "cloudflare_dns_record"`) {
+		t.Errorf("DO LB CDN must render cloudflare_dns_record:\n%s", hcl)
 	}
 }
 
