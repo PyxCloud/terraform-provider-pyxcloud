@@ -289,7 +289,9 @@ func TestRenderCDNAWSHTTPSRedirect(t *testing.T) {
 
 // ── waf-service ──────────────────────────────────────────────────────────────
 
-func TestTranslateWAFAWSGCPandDOUnsupported(t *testing.T) {
+func TestTranslateWAFAWSGCPandDOCloudflare(t *testing.T) {
+	// pd-MIG-B2-WAF-CLOUDFLARE: DO waf now resolves to Cloudflare WAF (not an
+	// error), superseding the degraded single-VM ModSecurity mitigation.
 	t.Parallel()
 	cat := MustEmbedded()
 	aws, _ := TranslateWAF(ctx(), cat, WAFSpec{Name: "fw", Region: "Frankfurt", Provider: "aws"})
@@ -300,10 +302,16 @@ func TestTranslateWAFAWSGCPandDOUnsupported(t *testing.T) {
 	if gcp.ResourceType != "google_compute_security_policy" {
 		t.Errorf("gcp waf type = %q", gcp.ResourceType)
 	}
-	_, err := TranslateWAF(ctx(), cat, WAFSpec{Name: "fw", Region: "Frankfurt", Provider: "digitalocean"})
-	var unsup ErrComponentUnsupported
-	if !errors.As(err, &unsup) {
-		t.Fatalf("DO waf should be ErrComponentUnsupported, got %T: %v", err, err)
+	// DigitalOcean has no managed WAF; resolves to Cloudflare WAF.
+	do, err := TranslateWAF(ctx(), cat, WAFSpec{Name: "fw", Region: "Frankfurt", Provider: "digitalocean"})
+	if err != nil {
+		t.Fatalf("DO waf should succeed (Cloudflare WAF path), got: %v", err)
+	}
+	if do.ResourceType != "cloudflare_ruleset" {
+		t.Errorf("DO waf resource_type = %q, want cloudflare_ruleset", do.ResourceType)
+	}
+	if !do.ViaCloudflare {
+		t.Errorf("DO waf plan.ViaCloudflare = false, want true")
 	}
 }
 
@@ -324,6 +332,98 @@ func TestRenderWAFAWSManagedRules(t *testing.T) {
 		if !strings.Contains(hcl, want) {
 			t.Errorf("aws waf HCL missing %q:\n%s", want, hcl)
 		}
+	}
+}
+
+// ── waf-service: Cloudflare WAF path (pd-MIG-B2-WAF-CLOUDFLARE) ─────────────
+
+func TestTranslateWAFCloudflare_DOandLinode(t *testing.T) {
+	// Both DigitalOcean and Linode have no managed WAF; they must resolve to the
+	// Cloudflare WAF path (cloudflare_ruleset), not a single-VM ModSecurity
+	// mitigation and not an ErrComponentUnsupported.
+	t.Parallel()
+	cat := MustEmbedded()
+	for _, tc := range []struct{ provider, region string }{
+		{"digitalocean", "Frankfurt"},
+		{"linode", "Frankfurt"},
+	} {
+		plan, err := TranslateWAF(ctx(), cat, WAFSpec{Name: "edge-waf", Region: tc.region, Provider: tc.provider})
+		if err != nil {
+			t.Errorf("provider=%s: want Cloudflare WAF plan, got error: %v", tc.provider, err)
+			continue
+		}
+		if plan.ResourceType != "cloudflare_ruleset" {
+			t.Errorf("provider=%s: resource_type=%q, want cloudflare_ruleset", tc.provider, plan.ResourceType)
+		}
+		if !plan.ViaCloudflare {
+			t.Errorf("provider=%s: ViaCloudflare=false, want true", tc.provider)
+		}
+	}
+}
+
+func TestRenderWAFCloudflareHCL(t *testing.T) {
+	// The rendered HCL for the Cloudflare WAF path must be a cloudflare_ruleset
+	// resource with the OWASP managed ruleset enabled.
+	t.Parallel()
+	cat := MustEmbedded()
+	plan, err := TranslateWAF(ctx(), cat, WAFSpec{Name: "edge-waf", Region: "Frankfurt", Provider: "digitalocean"})
+	if err != nil {
+		t.Fatalf("TranslateWAF DO: %v", err)
+	}
+	hcl, err := RenderWAFHCL(plan)
+	if err != nil {
+		t.Fatalf("RenderWAFHCL: %v", err)
+	}
+	for _, want := range []string{
+		`resource "cloudflare_ruleset" "edge-waf"`,
+		`kind    = "zone"`,
+		`phase   = "http_request_firewall_managed"`,
+		`zone_id = var.cloudflare_zone_id`,
+		`action = "execute"`,
+		`# Cloudflare OWASP Core Ruleset`,
+	} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("Cloudflare WAF HCL missing %q:\n%s", want, hcl)
+		}
+	}
+}
+
+func TestWAFDOViaCloudflare_NativelySupported(t *testing.T) {
+	// NativelySupported("waf-service", "digitalocean") must be true so assemble.go
+	// does NOT take the single-VM ModSecurity mitigation path for DO WAF.
+	t.Parallel()
+	if !NativelySupported("waf-service", "digitalocean") {
+		t.Error("waf-service should be NativelySupported on digitalocean (Cloudflare WAF path)")
+	}
+	if !NativelySupported("waf", "digitalocean") {
+		t.Error("waf should be NativelySupported on digitalocean (Cloudflare WAF path)")
+	}
+	if !NativelySupported("waf-service", "linode") {
+		t.Error("waf-service should be NativelySupported on linode (Cloudflare WAF path)")
+	}
+}
+
+func TestAssembleWAFDOPinsCloudflareProvider(t *testing.T) {
+	// An AssembleHCL call with a waf-service component on digitalocean must
+	// produce a cloudflare_ruleset resource AND pin the cloudflare/cloudflare
+	// provider source in the terraform required_providers block.
+	t.Parallel()
+	cat := MustEmbedded()
+	docs, err := AssembleHCL(ctx(), cat, AssembleInput{
+		Name: "prod", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "edge-waf", Type: "waf-service", WAF: &AssembleWAF{Scope: "regional"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL waf DO: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, `resource "cloudflare_ruleset"`) {
+		t.Errorf("assembled HCL should contain cloudflare_ruleset:\n%s", all)
+	}
+	if !strings.Contains(all, `cloudflare/cloudflare`) {
+		t.Errorf("assembled HCL should pin cloudflare/cloudflare provider:\n%s", all)
 	}
 }
 

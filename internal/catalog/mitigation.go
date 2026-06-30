@@ -121,8 +121,12 @@ var nativeSupport = map[string]map[string]bool{
 	"monitoring":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	"synthetics":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	"uptime-check":        {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
-	"waf-service":         {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
-	"waf":                 {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
+	// DigitalOcean and Linode have no managed WAF; they route through Cloudflare WAF
+	// (cloudflare_ruleset) instead of the degraded single-VM ModSecurity mitigation
+	// (pd-MIG-B2-WAF-CLOUDFLARE). Mark both as natively supported so the mitigation
+	// fallback in assemble.go is NOT taken for these providers.
+	"waf-service": {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true, ProviderLinode: true},
+	"waf":         {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true, ProviderLinode: true},
 	"serverless-function": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
 	"managed-kubernetes":  {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true},
 	"container-service":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true},
