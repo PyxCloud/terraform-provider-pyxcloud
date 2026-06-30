@@ -107,13 +107,18 @@ func TestTranslateQueueAWSGCPandDOUnsupported(t *testing.T) {
 	if gcp.ResourceType != "google_pubsub_subscription" {
 		t.Errorf("gcp queue type = %q", gcp.ResourceType)
 	}
+	// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): DO now routes to the RabbitMQ Cluster
+	// Operator — it requires cluster_name. Without it a plain error is returned (not
+	// ErrComponentUnsupported, since DO IS supported via the operator pattern).
 	_, err = TranslateQueue(ctx(), cat, QueueSpec{Name: "jobs", Region: "Frankfurt", Provider: "digitalocean"})
-	var unsup ErrComponentUnsupported
-	if !errors.As(err, &unsup) {
-		t.Fatalf("DO queue should be ErrComponentUnsupported, got %T: %v", err, err)
+	if err == nil {
+		t.Fatal("DO queue without cluster_name should return an error")
 	}
-	if unsup.Component != TypeManagedQueue || unsup.CSPRegion != "fra1" {
-		t.Errorf("unsupported error mis-shaped: %+v", unsup)
+	if errors.As(err, &ErrComponentUnsupported{}) {
+		t.Errorf("DO queue error should NOT be ErrComponentUnsupported (DO is operator-supported): %v", err)
+	}
+	if !strings.Contains(err.Error(), "cluster_name") {
+		t.Errorf("DO queue error should mention cluster_name: %v", err)
 	}
 }
 
@@ -168,10 +173,18 @@ func TestTranslateStreamAWSGCPandDOUnsupported(t *testing.T) {
 	if gcp.ResourceType != "google_pubsub_topic" {
 		t.Errorf("gcp stream type = %q", gcp.ResourceType)
 	}
+	// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): DO now routes to the Strimzi Kafka
+	// Operator — it requires cluster_name. Without it a plain error is returned (not
+	// ErrComponentUnsupported, since DO IS supported via the operator pattern).
 	_, err = TranslateStream(ctx(), cat, StreamSpec{Name: "events", Region: "Frankfurt", Provider: "digitalocean"})
-	var unsup ErrComponentUnsupported
-	if !errors.As(err, &unsup) {
-		t.Fatalf("DO stream should be ErrComponentUnsupported, got %T: %v", err, err)
+	if err == nil {
+		t.Fatal("DO stream without cluster_name should return an error")
+	}
+	if errors.As(err, &ErrComponentUnsupported{}) {
+		t.Errorf("DO stream error should NOT be ErrComponentUnsupported (DO is operator-supported): %v", err)
+	}
+	if !strings.Contains(err.Error(), "cluster_name") {
+		t.Errorf("DO stream error should mention cluster_name: %v", err)
 	}
 }
 

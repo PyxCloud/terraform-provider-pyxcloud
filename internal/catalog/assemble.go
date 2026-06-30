@@ -380,12 +380,32 @@ type AssembleQueue struct {
 	FIFO                     bool
 	VisibilityTimeoutSeconds int
 	MaxReceiveCount          int
+
+	// ── DigitalOcean operator-pattern fields (B1: pd-MIG-B1-QUEUE-STREAM-OPERATORS) ──
+	// ClusterName is the existing DOKS cluster the RabbitMQ Cluster Operator runs on.
+	// Required for DO; ignored on other providers.
+	ClusterName string
+	// Namespace is the Kubernetes namespace for the operator + cluster.
+	// Empty -> "rabbitmq-system".
+	Namespace string
+	// Replicas is the number of RabbitmqCluster replicas (HA). 0 -> 3.
+	Replicas int
 }
 
 // AssembleStream is the config for an `event-streaming` / `event-bus` component.
 type AssembleStream struct {
 	Shards         int
 	RetentionHours int
+
+	// ── DigitalOcean operator-pattern fields (B1: pd-MIG-B1-QUEUE-STREAM-OPERATORS) ──
+	// ClusterName is the existing DOKS cluster the Strimzi operator runs on.
+	// Required for DO; ignored on other providers.
+	ClusterName string
+	// Namespace is the Kubernetes namespace for the operator + Kafka cluster.
+	// Empty -> "kafka".
+	Namespace string
+	// Replicas is the number of Kafka broker replicas. 0 -> 3.
+	Replicas int
 }
 
 // AssembleServerless is the config for a `serverless-function` component.
@@ -950,6 +970,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				qSpec.FIFO = c.Queue.FIFO
 				qSpec.VisibilityTimeoutSeconds = c.Queue.VisibilityTimeoutSeconds
 				qSpec.MaxReceiveCount = c.Queue.MaxReceiveCount
+				// B1: DO operator-pattern cluster wiring (pd-MIG-B1-QUEUE-STREAM-OPERATORS).
+				qSpec.ClusterName = c.Queue.ClusterName
+				qSpec.Namespace = c.Queue.Namespace
+				qSpec.Replicas = c.Queue.Replicas
 			}
 			qPlan, err := TranslateQueue(ctx, cat, qSpec)
 			if err != nil {
@@ -959,12 +983,23 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
+			// B1: DO queue operator emits helm_release (CORE) + kubernetes_manifest (EXTRA).
+			if qPlan.RendersHelm {
+				needsHelm = true
+			}
+			if qPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
+			}
 			docs = append(docs, qHCL)
 		case "event-streaming", "event-bus":
 			sSpec := StreamSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.Stream != nil {
 				sSpec.Shards = c.Stream.Shards
 				sSpec.RetentionHours = c.Stream.RetentionHours
+				// B1: DO operator-pattern cluster wiring (pd-MIG-B1-QUEUE-STREAM-OPERATORS).
+				sSpec.ClusterName = c.Stream.ClusterName
+				sSpec.Namespace = c.Stream.Namespace
+				sSpec.Replicas = c.Stream.Replicas
 			}
 			sPlan, err := TranslateStream(ctx, cat, sSpec)
 			if err != nil {
@@ -973,6 +1008,13 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			sHCL, err := RenderMessagingHCL(sPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			// B1: DO stream operator emits helm_release (CORE) + kubernetes_manifest (EXTRA).
+			if sPlan.RendersHelm {
+				needsHelm = true
+			}
+			if sPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
 			}
 			docs = append(docs, sHCL)
 		case "serverless-function":
