@@ -94,9 +94,14 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true,
 		ProviderOVH: true, ProviderStackIt: true,
 	},
+	// secrets-manager on DO is now handled by the vault-ha operator auto-alias
+	// (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): the assembler routes the raw type to the
+	// Vault-HA operator-pattern component on DOKS instead of the single-VM mitigation.
+	// Mark DO as natively supported so the mitigation fallback is NOT taken.
 	"secrets-manager": {
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
 		ProviderIBM: true, ProviderAlibaba: true, ProviderStackIt: true,
+		ProviderDigitalOcean: true,
 	},
 	"managed-queue": {
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
@@ -114,8 +119,11 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
 		ProviderIBM: true, ProviderAlibaba: true,
 	},
-	"kms":            {ProviderAWS: true, ProviderGCP: true},
-	"encryption-key": {ProviderAWS: true, ProviderGCP: true},
+	// kms/encryption-key on DO are also handled by the vault-ha auto-alias
+	// (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): Vault Transit replaces KMS via the
+	// operator-pattern component, not a single-VM fallback.
+	"kms":            {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"encryption-key": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	// monitoring is native on DO via the LGTM operator-pattern stack (kube-prometheus-stack
 	// + Loki + Grafana + Alertmanager), not a self-hosted-VM mitigation (pd-MIG-LGTM-MONITORING).
 	"monitoring":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},

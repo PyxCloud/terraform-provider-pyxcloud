@@ -48,7 +48,10 @@ var wantFullEstateResources = []struct{ component, resource string }{
 	{"tls-certificate (cert-manager)", `resource "kubernetes_manifest" "app-tls_issuer"`},
 	{"scheduled-trigger (CronJob)", `resource "kubernetes_cron_job_v1" "nightly"`},
 	{"reserved-ip", `resource "digitalocean_reserved_ip" "vpn-endpoint"`},
-	{"secrets-manager (Vault mitigation)", `resource "digitalocean_droplet" "app-secrets`},
+	// pd-MIG-B4-SECRETS-VAULT-AUTOALIAS: secrets-manager on DO is now the Vault-HA
+	// operator (helm_release CORE + kubernetes_manifest EXTRA), not a single droplet.
+	{"secrets-manager (Vault-HA operator CORE)", `resource "helm_release" "app-secrets_operator"`},
+	{"secrets-manager (Vault-HA VaultConnection CR)", `resource "kubernetes_manifest" "app-secrets_connection"`},
 	{"network (VPC)", `resource "digitalocean_vpc" "passo-estate-net"`},
 	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-estate-sg"`},
 }

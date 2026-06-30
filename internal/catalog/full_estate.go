@@ -20,7 +20,7 @@ package catalog
 //   - tls-certificate (ACM -> cert-manager + Let's Encrypt on DOKS)
 //   - a scheduled-trigger (EventBridge cron -> DOKS CronJob)
 //   - a reserved-ip (Elastic IP -> DO Reserved IP, the VPN stable endpoint)
-//   - a secrets-manager (mitigated to self-hosted Vault on DO, native on AWS)
+//   - a secrets-manager (auto-aliased to Vault-HA operator on DO, native on AWS)
 //
 // The same constructor targets any provider; the migration dry-run renders it
 // for DigitalOcean and asserts `terraform init/validate` is green with no
@@ -130,10 +130,13 @@ func FullEstateComponents(arch, os, kubernetesVersion string) []AssembleComponen
 			Name: "vpn-endpoint", Type: "reserved-ip",
 			ReservedIP: &AssembleReservedIP{},
 		},
-		// Secrets Manager -> native on AWS; mitigated to self-hosted Vault on DO.
+		// Secrets Manager -> native on AWS; auto-aliased to Vault-HA operator on DO
+		// (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS). VaultHA.ClusterName pins the existing
+		// backend DOKS cluster so the alias resolves without inference.
 		AssembleComponent{
 			Name: "app-secrets", Type: "secrets-manager",
 			Secrets: &AssembleSecrets{Description: "passo.build app secrets", RotationDays: 30},
+			VaultHA: &AssembleVaultHA{ClusterName: fullEstateClusterName},
 		},
 	)
 	return comps
