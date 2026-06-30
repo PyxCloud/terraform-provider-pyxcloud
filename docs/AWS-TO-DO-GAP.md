@@ -184,7 +184,7 @@ What is **blocking a *clean* (no-degraded, no-stay-on-AWS) full cutover:**
   (gaps 1–2). **This is the top blocker.**
 - **B2 — WAF has no managed DO answer.** Must be resolved by routing through **Cloudflare
   WAF** (preferred) rather than the degraded droplet (gap 3). Policy decision needed.
-- **B3 — SES has no DO equivalent.** Email stays on AWS SES (or a SaaS). This is a
+- **B3 — SES has no DO equivalent.** _Ratified: see [ADR 0001](decisions/0001-ses-cross-cloud.md)._ Email stays on AWS SES (or a SaaS). This is a
   *deliberate* cross-cloud dependency, not a defect — but it means "100% off AWS" is not the
   goal for email. Document as accepted.
 - **B4 — Raw secrets/kms still fall to a single-VM** unless the user explicitly declares
