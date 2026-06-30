@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/iacsecscan"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/tfplanparser"
 )
 
@@ -102,6 +103,43 @@ func EvaluateDriftPolicyWithCost(
 	budgetRule := tfplanparser.CostTrendRule{MonthlyBudget: budgetMonthly}
 	for _, msg := range budgetRule.EvaluateCostTrend(signals) {
 		verdict.CostAdvisories = append(verdict.CostAdvisories, "[cost-advisory] budget: "+msg)
+	}
+
+	return verdict
+}
+
+// EvaluateDriftPolicyWithSecScan is like EvaluateDriftPolicyWithCost but also
+// runs the IaC security scanner over the supplied resources. HIGH-severity
+// findings block the deploy (Allowed = false). MEDIUM/LOW findings are
+// appended as non-blocking SecAdvisories. This implements pd-ONTO-CAP-OPS-IACSECSCAN.
+//
+// resources is the list of Terraform resources to scan. An empty slice skips
+// the security scan entirely.
+func EvaluateDriftPolicyWithSecScan(
+	summary *tfplanparser.PlanSummary,
+	planJSON []byte,
+	overProvisionThreshold float64,
+	budgetMonthly float64,
+	resources []iacsecscan.Resource,
+) PolicyVerdict {
+	verdict := EvaluateDriftPolicyWithCost(summary, planJSON, overProvisionThreshold, budgetMonthly)
+
+	if len(resources) == 0 {
+		return verdict
+	}
+
+	result := iacsecscan.ScanWithResult(resources)
+	for _, f := range result.Findings {
+		msg := fmt.Sprintf("[sec-%s] rule=%s resource=%s/%s: %s — remediation: %s",
+			strings.ToLower(f.Severity), f.RuleID, f.ResourceType, f.ResourceName, f.Description, f.Remediation)
+		if f.Severity == "HIGH" {
+			// HIGH findings block the deploy regardless of drift verdict.
+			verdict.Allowed = false
+			verdict.Action = "block"
+			verdict.Reason = fmt.Sprintf("IaC security gate blocked: %s", msg)
+			// Keep going to collect all findings as advisories too.
+		}
+		verdict.CostAdvisories = append(verdict.CostAdvisories, msg)
 	}
 
 	return verdict
