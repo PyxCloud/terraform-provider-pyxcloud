@@ -325,6 +325,11 @@ type WAFPlan struct {
 	Scope         string `json:"scope"`
 	AssociateName string `json:"associate_name"`
 	ResourceType  string `json:"resource_type"`
+	// ViaCloudflare is true when the WAF is routed through Cloudflare WAF
+	// (cloudflare_ruleset) rather than a cloud-native WAF primitive. This is the
+	// preferred path for DigitalOcean and Linode, which have no managed WAF service
+	// of their own (pd-MIG-B2-WAF-CLOUDFLARE).
+	ViaCloudflare bool `json:"via_cloudflare,omitempty"`
 }
 
 // TranslateWAF resolves a WAFSpec. DO is a clean unsupported error.
@@ -348,15 +353,23 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 	}
 	provider := lc(spec.Provider)
 	if provider == ProviderDigitalOcean || provider == ProviderLinode {
-		provName := "DigitalOcean"
-		if provider == ProviderLinode {
-			provName = "Linode"
-		}
-		return WAFPlan{}, ErrComponentUnsupported{
-			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: provName + " has no managed WAF primitive; use AWS WAFv2 or GCP Cloud Armor, " +
-				"or front the app with a self-managed WAF (ModSecurity/Coraza) on a virtual-machine",
-		}
+		// DigitalOcean and Linode have no managed WAF primitive. Per the
+		// AWS→DO migration gap analysis (pd-MIG-B2-WAF-CLOUDFLARE), the preferred
+		// path is to front the load-balancer/ingress with Cloudflare WAF
+		// (cloudflare_ruleset with the OWASP managed ruleset) — the platform already
+		// terminates at Cloudflare, so this is zero additional infrastructure. The
+		// degraded single-VM ModSecurity mitigation is superseded by this path.
+		return WAFPlan{
+			Provider:      provider,
+			CSP:           row.CSP,
+			RegionName:    row.RegionName,
+			CSPRegion:     row.CSPRegion,
+			Name:          canonicalName(spec.Name, "pyxcloud-waf"),
+			Scope:         scope,
+			AssociateName: canonicalName(spec.AssociateName, ""),
+			ResourceType:  "cloudflare_ruleset",
+			ViaCloudflare: true,
+		}, nil
 	}
 	if provider == ProviderGCP && scope == WAFScopeCloudFront {
 		return WAFPlan{}, ErrComponentUnsupported{

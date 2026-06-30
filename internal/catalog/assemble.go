@@ -976,6 +976,11 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
+			if wafPlan.ViaCloudflare {
+				// WAF resolved via Cloudflare WAF (pd-MIG-B2-WAF-CLOUDFLARE):
+				// pin the cloudflare/cloudflare provider source.
+				needsCloudflare = true
+			}
 			docs = append(docs, wafHCL)
 		case "managed-kubernetes", "container-service":
 			kSpec := K8sSpec{Name: c.Name, Region: in.Region, Provider: in.Provider,
