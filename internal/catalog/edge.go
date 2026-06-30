@@ -180,6 +180,12 @@ type CDNPlan struct {
 	OriginKind   string `json:"origin_kind"`
 	OriginName   string `json:"origin_name"`
 	ResourceType string `json:"resource_type"`
+	// UsesCloudflare is true when the CDN layer is provided by Cloudflare rather
+	// than a cloud-native resource — specifically when a DigitalOcean environment
+	// declares a CDN with a non-Spaces (load-balancer) origin (B5 gap). The
+	// assembler uses this flag to set needsCloudflare = true so the
+	// cloudflare/cloudflare provider is declared in required_providers.
+	UsesCloudflare bool `json:"uses_cloudflare,omitempty"`
 }
 
 // TranslateCDN resolves a CDNSpec. AWS/GCP support any origin; DO supports only a
@@ -225,12 +231,17 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 		}
 	}
 	if provider == ProviderDigitalOcean && originKind != CDNOriginObjectStorage {
-		return CDNPlan{}, ErrComponentUnsupported{
-			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean CDN (digitalocean_cdn) can only front a Spaces (object-storage) " +
-				"origin, not an arbitrary load-balancer origin; use AWS CloudFront or GCP Cloud CDN " +
-				"for a dynamic/LB origin, or put a Spaces bucket in front",
-		}
+		// B5 gap: digitalocean_cdn can only front a Spaces origin. For an arbitrary
+		// (load-balancer / custom) origin on DO we route through Cloudflare's proxy
+		// CDN instead of failing with a hard error — Cloudflare is already wired as
+		// a first-class provider here (cloudflare.go / dns component). The assembler
+		// sets needsCloudflare = true when it sees UsesCloudflare on the plan.
+		return CDNPlan{
+			Provider: provider, CSP: row.CSP, RegionName: row.RegionName, CSPRegion: row.CSPRegion,
+			Name: canonicalName(spec.Name, "pyxcloud-cdn"), OriginKind: originKind,
+			OriginName: canonicalName(spec.OriginName, ""), ResourceType: "cloudflare_dns_record",
+			UsesCloudflare: true,
+		}, nil
 	}
 	if provider == ProviderIBM {
 		// IBM Cloud has no origin-scoped CDN distribution resource (CloudFront/Cloud

@@ -378,6 +378,13 @@ func renderDNSDO(p DNSZonePlan) string {
 
 // RenderCDNHCL renders a CDNPlan into HCL.
 func RenderCDNHCL(plan CDNPlan) (string, error) {
+	// B5 gap: DO + non-Spaces origin routes through Cloudflare CDN (arbitrary origin).
+	if plan.UsesCloudflare {
+		return RenderCloudfareCDNHCL(CloudflareCDNPlan{
+			Name: plan.Name, OriginHost: plan.OriginName, Host: plan.Name,
+			ResourceType: "cloudflare_dns_record",
+		})
+	}
 	switch plan.Provider {
 	case ProviderAWS:
 		return renderCDNAWS(plan), nil

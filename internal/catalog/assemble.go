@@ -961,6 +961,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
+			// B5: DO + non-Spaces origin renders through Cloudflare CDN — pin the provider.
+			if cdnPlan.UsesCloudflare {
+				needsCloudflare = true
+			}
 			docs = append(docs, cdnHCL)
 		case "waf-service", "waf":
 			wafSpec := WAFSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
