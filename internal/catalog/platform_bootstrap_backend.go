@@ -261,6 +261,12 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+	// wl emits a line VERBATIM (no printf interpretation). Use it for any line that
+	// contains a literal `%` that must NOT be treated as a fmt verb — notably the
+	// #127 jdbc-normalization Python heredoc, whose `%s`/`%` operator would
+	// otherwise be mangled by fmt.Fprintf into `%!s(MISSING)` sentinels, breaking
+	// the on-box normalizer (F2-02 crash-loop root cause).
+	wl := func(line string) { b.WriteString(line); b.WriteByte('\n') }
 
 	w("#!/bin/bash")
 	w("set -euo pipefail")
@@ -367,30 +373,36 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("# the native binary exits 1 in a crash-loop. Convert it in place to the jdbc:postgresql://")
 	w("# form and split out PYX_MAIN_DATABASE_USERNAME/PASSWORD (idempotent; a no-op if the value")
 	w("# is already jdbc form and the username/password vars already exist).")
-	w("python3 - <<'EONORM'")
-	w("import re")
-	w("p = \"/home/main/env\"")
-	w("lines = open(p).read().splitlines()")
-	w("out, have_user, have_pass = [], False, False")
-	w("for ln in lines:")
-	w("    if ln.startswith(\"PYX_MAIN_DATABASE_USERNAME=\"): have_user = True")
-	w("    if ln.startswith(\"PYX_MAIN_DATABASE_PASSWORD=\"): have_pass = True")
-	w("for ln in lines:")
-	w("    if ln.startswith(\"PYX_MAIN_DATABASE_JDBC_URL=\"):")
-	w("        val = ln.split(\"=\", 1)[1].strip().strip(\"'\\\"\")")
-	w("        m = re.match(r\"postgres(?:ql)?://([^:]+):([^@]+)@([^:/]+):(\\d+)/([^?]+)(\\?.*)?$\", val)")
-	w("        if m:")
-	w("            user, pw, host, port, db, q = m.groups()")
-	w("            q = q or \"\"")
-	w("            out.append(\"PYX_MAIN_DATABASE_JDBC_URL=jdbc:postgresql://%s:%s/%s%s\" % (host, port, db, q))")
-	w("            if not have_user: out.append(\"PYX_MAIN_DATABASE_USERNAME=%s\" % user)")
-	w("            if not have_pass: out.append(\"PYX_MAIN_DATABASE_PASSWORD=%s\" % pw)")
-	w("        else:")
-	w("            out.append(ln)  # already jdbc form (or unrecognized) -> leave as-is")
-	w("    else:")
-	w("        out.append(ln)")
-	w("open(p, \"w\").write(\"\\n\".join(out) + \"\\n\")")
-	w("EONORM")
+	// The EONORM Python heredoc is emitted VERBATIM via wl (NOT through fmt.Fprintf):
+	// it contains literal `%s`/`%u`/`%p` and the Python `%` string-format operator,
+	// which fmt would otherwise mangle into `%!s(MISSING)` sentinels and destroy the
+	// normalizer (F2-02 crash-loop). The heredoc body is single-quoted ('EONORM'), so
+	// the shell performs no expansion either — the Python source arrives on-box exactly
+	// as written here.
+	wl("python3 - <<'EONORM'")
+	wl("import re")
+	wl("p = \"/home/main/env\"")
+	wl("lines = open(p).read().splitlines()")
+	wl("out, have_user, have_pass = [], False, False")
+	wl("for ln in lines:")
+	wl("    if ln.startswith(\"PYX_MAIN_DATABASE_USERNAME=\"): have_user = True")
+	wl("    if ln.startswith(\"PYX_MAIN_DATABASE_PASSWORD=\"): have_pass = True")
+	wl("for ln in lines:")
+	wl("    if ln.startswith(\"PYX_MAIN_DATABASE_JDBC_URL=\"):")
+	wl("        val = ln.split(\"=\", 1)[1].strip().strip(\"'\\\"\")")
+	wl("        m = re.match(r\"postgres(?:ql)?://([^:]+):([^@]+)@([^:/]+):(\\d+)/([^?]+)(\\?.*)?$\", val)")
+	wl("        if m:")
+	wl("            user, pw, host, port, db, q = m.groups()")
+	wl("            q = q or \"\"")
+	wl("            out.append(\"PYX_MAIN_DATABASE_JDBC_URL=jdbc:postgresql://%s:%s/%s%s\" % (host, port, db, q))")
+	wl("            if not have_user: out.append(\"PYX_MAIN_DATABASE_USERNAME=%s\" % user)")
+	wl("            if not have_pass: out.append(\"PYX_MAIN_DATABASE_PASSWORD=%s\" % pw)")
+	wl("        else:")
+	wl("            out.append(ln)  # already jdbc form (or unrecognized) -> leave as-is")
+	wl("    else:")
+	wl("        out.append(ln)")
+	wl("open(p, \"w\").write(\"\\n\".join(out) + \"\\n\")")
+	wl("EONORM")
 	w("")
 	w("# GCP SA key + git deploy key (secrets by variable, never inlined literals).")
 	w("cat > /home/main/gcp-sa-key.json <<'EOGCP'")
