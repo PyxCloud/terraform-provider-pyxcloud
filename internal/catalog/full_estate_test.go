@@ -32,6 +32,7 @@ var wantFullEstateResources = []struct{ component, resource string }{
 	{"platform observability scale-group", `resource "digitalocean_kubernetes_cluster" "obs"`},
 	{"platform SAST scale-group", `resource "digitalocean_kubernetes_cluster" "sast"`},
 	{"platform backend scale-group", `resource "digitalocean_kubernetes_cluster" "backend"`},
+	{"platform mcp scale-group", `resource "digitalocean_kubernetes_cluster" "mcp"`},
 	{"container-registry", `resource "digitalocean_container_registry" "app-images"`},
 	{"key-value-store", `resource "digitalocean_database_cluster" "jit-allowlist"`},
 	{"object-storage (Spaces)", `resource "digitalocean_spaces_bucket" "assets"`},
@@ -108,9 +109,9 @@ func TestFullEstateAssemblesForAWS(t *testing.T) {
 		t.Fatalf("AssembleHCL full estate (AWS): %v", err)
 	}
 	all := strings.Join(docs, "\n")
-	// The 5 platform services -> 5 AWS autoscaling groups.
-	if n := strings.Count(all, `resource "aws_autoscaling_group"`); n != 5 {
-		t.Errorf("want 5 aws_autoscaling_group, got %d", n)
+	// The 6 platform services (sso/vpn/obs/sast/backend/mcp) -> 6 AWS autoscaling groups.
+	if n := strings.Count(all, `resource "aws_autoscaling_group"`); n != 6 {
+		t.Errorf("want 6 aws_autoscaling_group, got %d", n)
 	}
 	for _, want := range []string{
 		`resource "aws_ecr_repository"`,          // container-registry

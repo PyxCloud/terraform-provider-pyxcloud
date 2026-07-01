@@ -8,12 +8,13 @@ import (
 // platform_asgs.go — pd-MIG-PORT-ASGS-CANONICAL (EPIC-AWS-TO-DO-MIGRATION).
 //
 // The PyxCloud platform services (SSO/Keycloak, the WireGuard VPN gateway, the
-// observability aggregator, the SAST scanner, and the backend) were historically
+// observability aggregator, the SAST scanner, the backend, and the board-OS MCP
+// server) were historically
 // each a bespoke, per-cloud autoscaling group: hand-rolled AWS launch templates +
 // aws_autoscaling_group per service, with no single abstract source of truth. That
 // fork is exactly what the abstract-first provider exists to delete.
 //
-// This file expresses those 5 services in the CANONICAL vocabulary: each is a
+// This file expresses those 6 services in the CANONICAL vocabulary: each is a
 // `virtual-machine-scale-group` of 1 (min=desired=1, self-healing) over the
 // existing scale-group translator (scalegroup.go). On DigitalOcean a scale-group
 // descends to a DOKS node-pool with auto_scale and min_nodes>=1 — which IS the
@@ -45,7 +46,7 @@ type PlatformService struct {
 	Note string
 }
 
-// PlatformServices is the canonical mapping for the 5 platform-service ASGs. Each
+// PlatformServices is the canonical mapping for the 6 platform-service ASGs. Each
 // is a scale-group of 1 with load-balancer health (self-healing). Sizes are
 // requested CPU/RAM; the catalog resolves them to a concrete provider SKU
 // (droplet on DigitalOcean), so the same table is correct on every provider.
@@ -74,10 +75,18 @@ func PlatformServices() []PlatformService {
 			Name: "backend", CPU: 2, RAM: 4, Health: HealthELB, MinDesired: 1,
 			Note: "pyx-backend (native) — fronted by the platform load-balancer, LB health-replace",
 		},
+		{
+			Name: "mcp", CPU: 2, RAM: 4, Health: HealthELB, MinDesired: 1,
+			Note: "board-OS MCP server (Go, repo skill-plugin/mcp-go) — replaces the bespoke beta-passobuild-mcp-asg; " +
+				"listens :8080 behind the shared ALB, LB health-replace (matches backend/sso pattern). " +
+				"Prod ASG is min1/max2 self-healing; modelled here as the canonical scale-group of 1 (MinDesired=1), " +
+				"the same ASG-of-1 convention the other services use — scale the fleet by editing the abstract topology. " +
+				"CPU/RAM mirror the backend (closest sibling: Go service fronted by the LB) as the prod droplet size is not pinned here",
+		},
 	}
 }
 
-// PlatformScaleGroupComponents returns the 5 platform services as canonical
+// PlatformScaleGroupComponents returns the 6 platform services as canonical
 // AssembleComponent scale-groups, ready to drop into an AssembleInput. The
 // architecture/OS default to the environment-wide defaults (x86_64/ubuntu) and
 // the bootstrap user_data is threaded per service by the caller (e.g. the native
