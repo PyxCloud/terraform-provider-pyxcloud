@@ -271,51 +271,79 @@ func renderSGGCP(p SecurityGroupPlan) string {
 }
 
 func renderSGDO(p SecurityGroupPlan) string {
-	name := tfName(p.SGName)
+	baseName := tfName(p.SGName)
+
+	// DO firewalls attach to droplets by TAG (there is no VPC-scoped firewall), and
+	// a single digitalocean_firewall may reference AT MOST 5 tags (DO API: 422 "must
+	// have no more than 5 tags"). The estate has one "pyx-<svc>" tag per service, and
+	// there are more than 5 services — so a single firewall carrying every tag is
+	// rejected. Split into ONE firewall PER TAG (per-service), each with an identical
+	// rule set. This keeps every firewall at exactly 1 tag (well under the 5-tag cap)
+	// and mirrors the tag model cleanly: each pool's droplets get their own firewall.
+	//
+	// When there are no droplet tags (no DO scale-group), fall back to a single
+	// tagless firewall so the rules are still rendered.
+	tags := make([]string, len(p.DropletTags))
+	copy(tags, p.DropletTags)
+	sort.Strings(tags)
+
+	renderRules := func(b *strings.Builder) {
+		for _, r := range p.Rules {
+			blockName := "inbound_rule"
+			cidrKey := "source_addresses"
+			tagKey := "source_tags"
+			if r.Direction == DirEgress {
+				blockName = "outbound_rule"
+				cidrKey = "destination_addresses"
+				tagKey = "destination_tags"
+			}
+			fmt.Fprintf(b, "\n  %s {\n", blockName)
+			fmt.Fprintf(b, "    protocol   = %q\n", doProto(r.Protocol))
+			if r.Protocol == ProtoTCP || r.Protocol == ProtoUDP {
+				fmt.Fprintf(b, "    port_range = %q\n", portRangeString(r.FromPort, r.ToPort))
+			}
+			switch {
+			case r.SourceSG != "":
+				// DigitalOcean firewalls have no SG-references-SG primitive: a peer
+				// security-group is migrated to a DO TAG. The referenced SG's droplets
+				// carry that tag, so source_tags/destination_tags reproduce the AWS
+				// "allow from this security group" semantics.
+				fmt.Fprintf(b, "    %s = [%q]\n", tagKey, tfName(r.SourceSG))
+			case r.SourcePrefixList != "":
+				// DO has no managed-prefix-list primitive: inline the resolved CIDRs the
+				// prefix-list expands to (translate populated ResolvedPrefixCIDRs).
+				fmt.Fprintf(b, "    %s = %s\n", cidrKey, hclCIDRList(r.ResolvedPrefixCIDRs))
+			case r.CIDRs != nil:
+				fmt.Fprintf(b, "    %s = %s\n", cidrKey, hclCIDRList(r.CIDRs))
+			}
+			b.WriteString("  }\n")
+		}
+	}
+
 	var b strings.Builder
-	fmt.Fprintf(&b, "resource \"digitalocean_firewall\" %q {\n", name)
-	fmt.Fprintf(&b, "  name = %q\n", p.SGName)
-	// DO firewalls attach to droplets by TAG (there is no VPC-scoped firewall). The
-	// per-service scale-group tags ("pyx-<svc>") are threaded from the assembler, so
-	// the firewall applies to every droplet_autoscale pool droplet — the DO analogue
-	// of an AWS security-group's instance membership.
-	if len(p.DropletTags) > 0 {
-		tags := make([]string, len(p.DropletTags))
-		copy(tags, p.DropletTags)
-		sort.Strings(tags)
-		fmt.Fprintf(&b, "  tags = %s\n", hclStringList(tags))
+
+	if len(tags) == 0 {
+		fmt.Fprintf(&b, "resource \"digitalocean_firewall\" %q {\n", baseName)
+		fmt.Fprintf(&b, "  name = %q\n", p.SGName)
+		renderRules(&b)
+		b.WriteString("}\n")
+		return b.String()
 	}
-	for _, r := range p.Rules {
-		blockName := "inbound_rule"
-		cidrKey := "source_addresses"
-		tagKey := "source_tags"
-		if r.Direction == DirEgress {
-			blockName = "outbound_rule"
-			cidrKey = "destination_addresses"
-			tagKey = "destination_tags"
+
+	for i, tag := range tags {
+		// Per-service resource label/name derived from the tag so each firewall is
+		// stable and unique. Strip the "pyx-" prefix for a compact suffix.
+		svc := tfName(strings.TrimPrefix(tag, "pyx-"))
+		resName := baseName + "_" + svc
+		fmt.Fprintf(&b, "resource \"digitalocean_firewall\" %q {\n", resName)
+		fmt.Fprintf(&b, "  name = \"%s-%s\"\n", p.SGName, svc)
+		fmt.Fprintf(&b, "  tags = %s\n", hclStringList([]string{tag}))
+		renderRules(&b)
+		b.WriteString("}\n")
+		if i < len(tags)-1 {
+			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "\n  %s {\n", blockName)
-		fmt.Fprintf(&b, "    protocol   = %q\n", doProto(r.Protocol))
-		if r.Protocol == ProtoTCP || r.Protocol == ProtoUDP {
-			fmt.Fprintf(&b, "    port_range = %q\n", portRangeString(r.FromPort, r.ToPort))
-		}
-		switch {
-		case r.SourceSG != "":
-			// DigitalOcean firewalls have no SG-references-SG primitive: a peer
-			// security-group is migrated to a DO TAG. The referenced SG's droplets
-			// carry that tag, so source_tags/destination_tags reproduce the AWS
-			// "allow from this security group" semantics.
-			fmt.Fprintf(&b, "    %s = [%q]\n", tagKey, tfName(r.SourceSG))
-		case r.SourcePrefixList != "":
-			// DO has no managed-prefix-list primitive: inline the resolved CIDRs the
-			// prefix-list expands to (translate populated ResolvedPrefixCIDRs).
-			fmt.Fprintf(&b, "    %s = %s\n", cidrKey, hclCIDRList(r.ResolvedPrefixCIDRs))
-		case r.CIDRs != nil:
-			fmt.Fprintf(&b, "    %s = %s\n", cidrKey, hclCIDRList(r.CIDRs))
-		}
-		b.WriteString("  }\n")
 	}
-	b.WriteString("}\n")
 	return b.String()
 }
 
@@ -643,6 +671,10 @@ func doScaleGroupTag(groupName string) string {
 //   - elastic pool (min < max): a target-based pool
 //     (target_cpu_utilization = 0.6) that scales between min and max.
 //
+// The config block always carries target_cpu_utilization = 0.6: DO's autoscale
+// API requires a utilization target on every pool, fixed pools included (a
+// pool with no target is rejected 400). For fixed pools the target is inert.
+//
 // Self-heal floor: min_instances >= 1 (enforced in TranslateScaleGroup for DO)
 // keeps at least one healthy droplet. DO pools are region-scoped (no sub-zones),
 // which is why ScaleGroupPlan.Zones is empty for DO.
@@ -658,11 +690,13 @@ func renderScaleGroupDO(p ScaleGroupPlan) string {
 	b.WriteString("\n  config {\n")
 	fmt.Fprintf(&b, "    min_instances = %d\n", p.Min)
 	fmt.Fprintf(&b, "    max_instances = %d\n", p.Max)
-	if p.Max > p.Min {
-		// Elastic pool: scale on CPU between min and max (0.6 = the ASG's
-		// target-tracking convention).
-		b.WriteString("    target_cpu_utilization = 0.6\n")
-	}
+	// DO's autoscale API rejects a pool that declares no utilization target
+	// (400: "at least one of target_memory_utilization / target_cpu_utilization
+	// required") — this holds even for a FIXED pool (min == max). So emit
+	// target_cpu_utilization unconditionally (0.6 = the ASG's target-tracking
+	// convention). For an elastic pool it drives scaling between min and max;
+	// for a fixed pool it is inert (count is pinned) but still required by the API.
+	b.WriteString("    target_cpu_utilization = 0.6\n")
 	b.WriteString("  }\n")
 
 	// droplet_template: the launch spec, mirroring the AWS launch template.

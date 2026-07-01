@@ -122,6 +122,34 @@ func TestProdEstateAssemblesForDO(t *testing.T) {
 			t.Errorf("droplet_autoscale pool missing per-service tag %q", tag)
 		}
 	}
+	// EVERY droplet_autoscale pool must carry target_cpu_utilization: DO's autoscale
+	// API rejects a pool with no utilization target, even a fixed (min==max) pool.
+	// There are 6 pools -> 6 target_cpu_utilization declarations.
+	if n := strings.Count(all, `target_cpu_utilization = 0.6`); n != 6 {
+		t.Errorf("want 6 target_cpu_utilization (one per DO autoscale pool), got %d", n)
+	}
+	// The DO firewall is split so NO single digitalocean_firewall carries more than
+	// 5 tags (DO API: 422 "must have no more than 5 tags"), and the split covers all
+	// 6 platform services. Assert one firewall per service tag, each with exactly
+	// that one tag.
+	for _, svc := range []string{"sso", "vpn", "obs", "sast", "backend", "mcp"} {
+		if !strings.Contains(all, `resource "digitalocean_firewall" "passo-prod-sg_`+svc+`"`) {
+			t.Errorf("missing per-service DO firewall for %q", svc)
+		}
+		if !strings.Contains(all, `tags = ["pyx-`+svc+`"]`) {
+			t.Errorf("per-service DO firewall for %q missing its tag", svc)
+		}
+	}
+	// No firewall may declare more than 5 tags: verify every `tags = [...]` line
+	// lists at most 5 entries. (Per-service split => exactly 1 each.)
+	for _, line := range strings.Split(all, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, `tags = [`) {
+			if n := strings.Count(trimmed, `"pyx-`); n > 5 {
+				t.Errorf("DO firewall tags line exceeds the 5-tag limit (%d tags): %s", n, trimmed)
+			}
+		}
+	}
 	// The two Managed Postgres -> digitalocean_database_cluster (+ JIT Redis = 3 total).
 	if n := strings.Count(all, `resource "digitalocean_database_cluster"`); n != 3 {
 		t.Errorf("want 3 digitalocean_database_cluster (2 pg + 1 redis), got %d", n)
@@ -154,7 +182,10 @@ func TestProdEstateAssemblesForDO(t *testing.T) {
 		`resource "kubernetes_cron_job_v1" "nightly"`,    // scheduled-trigger
 		`resource "digitalocean_reserved_ip" "vpn-endpoint"`,
 		`resource "digitalocean_vpc" "passo-prod-net"`,
-		`resource "digitalocean_firewall" "passo-prod-sg"`,
+		// The DO firewall is split ONE-PER-SERVICE (a single digitalocean_firewall
+		// may carry at most 5 tags; there are 6 services). Each per-service firewall
+		// carries exactly its own tag.
+		`resource "digitalocean_firewall" "passo-prod-sg_backend"`,
 		// The LB forwards to the backend droplet_autoscale pool by droplet tag
 		// (the DO analogue of an ASG target-group attachment).
 		`droplet_tag = "pyx-backend"`,

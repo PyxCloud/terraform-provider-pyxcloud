@@ -226,8 +226,10 @@ func TestRenderScaleGroupDO(t *testing.T) {
 }
 
 // TestRenderScaleGroupDOFixedPool asserts a fixed pool (min==max) renders a
-// static-count config with NO target-based scaling (the self-healing ASG-of-N
-// pattern the platform scale-groups-of-1 use).
+// static-count config (the self-healing ASG-of-N pattern the platform
+// scale-groups-of-1 use). DO's autoscale API requires a utilization target on
+// EVERY pool, fixed pools included (a pool with none is rejected 400), so
+// target_cpu_utilization = 0.6 must be present even when min==max.
 func TestRenderScaleGroupDOFixedPool(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
@@ -244,8 +246,8 @@ func TestRenderScaleGroupDOFixedPool(t *testing.T) {
 	if !strings.Contains(hcl, `min_instances = 1`) || !strings.Contains(hcl, `max_instances = 1`) {
 		t.Errorf("fixed pool should set min_instances==max_instances==1:\n%s", hcl)
 	}
-	if strings.Contains(hcl, "target_cpu_utilization") {
-		t.Errorf("fixed pool (min==max) must NOT emit target_cpu_utilization:\n%s", hcl)
+	if !strings.Contains(hcl, "target_cpu_utilization = 0.6") {
+		t.Errorf("fixed pool (min==max) must STILL emit target_cpu_utilization (DO API requires it):\n%s", hcl)
 	}
 }
 

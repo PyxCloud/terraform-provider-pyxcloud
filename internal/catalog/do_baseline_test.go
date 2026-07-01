@@ -42,7 +42,8 @@ var wantDOBaselineResources = []struct{ component, resource string }{
 	{"load-balancer droplet-tag target", `droplet_tag = "pyx-backend"`},
 	// Network / account foundation.
 	{"network (VPC)", `resource "digitalocean_vpc" "passo-do-baseline-net"`},
-	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-do-baseline-sg"`},
+	// The DO firewall is split one-per-service (max 5 tags per firewall; 6 services).
+	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-do-baseline-sg_backend"`},
 }
 
 // TestDOBaselineAssembles is the plan-only round-trip proof at the string level:

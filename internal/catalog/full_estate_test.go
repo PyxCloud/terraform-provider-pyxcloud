@@ -54,7 +54,8 @@ var wantFullEstateResources = []struct{ component, resource string }{
 	{"secrets-manager (Vault-HA operator CORE)", `resource "helm_release" "app-secrets_operator"`},
 	{"secrets-manager (Vault-HA VaultConnection CR)", `resource "kubernetes_manifest" "app-secrets_connection"`},
 	{"network (VPC)", `resource "digitalocean_vpc" "passo-estate-net"`},
-	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-estate-sg"`},
+	// The DO firewall is split one-per-service (max 5 tags per firewall; 6 services).
+	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-estate-sg_backend"`},
 }
 
 // TestFullEstateAssemblesForDO is the plan-only round-trip proof at the string
