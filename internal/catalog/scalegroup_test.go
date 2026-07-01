@@ -511,6 +511,62 @@ func TestRenderASGAWSUserDataProfileManaged(t *testing.T) {
 	}
 }
 
+// TestScaleGroupUserDataByProvider proves the per-provider bootstrap override:
+// the same canonical scale-group carries a DigitalOcean-specific user_data that
+// wins on DO, while other providers (and DO with no entry) fall back to the
+// generic UserData. This is the wiring that lets the mcp service pull its
+// artifact from Spaces on DO while AWS keeps its instance-role pull.
+func TestScaleGroupUserDataByProvider(t *testing.T) {
+	t.Parallel()
+	cat := MustEmbedded()
+
+	const generic = "#!/bin/bash\n# generic bootstrap\n"
+	const doOnly = "#!/bin/bash\n# DO-specific bootstrap: aws s3 cp --endpoint-url spaces\n"
+
+	// DigitalOcean: the DO override wins.
+	doPlan, err := TranslateScaleGroup(context.Background(), cat, ScaleGroupSpec{
+		Name: "mcp", Region: "Frankfurt", Provider: ProviderDigitalOcean,
+		CPU: 2, RAM: 4, Min: 1, Max: 1,
+		UserData:           generic,
+		UserDataByProvider: map[string]string{"digitalocean": doOnly},
+	})
+	if err != nil {
+		t.Fatalf("DO translate: %v", err)
+	}
+	if doPlan.UserData != doOnly {
+		t.Errorf("DO user_data = %q, want the DO override %q", doPlan.UserData, doOnly)
+	}
+
+	// AWS: no aws entry -> falls back to the generic UserData.
+	awsPlan, err := TranslateScaleGroup(context.Background(), cat, ScaleGroupSpec{
+		Name: "mcp", Region: "Dublin", Provider: ProviderAWS,
+		CPU: 2, RAM: 4, Min: 1, Max: 1,
+		UserData:           generic,
+		UserDataByProvider: map[string]string{"digitalocean": doOnly},
+	})
+	if err != nil {
+		t.Fatalf("AWS translate: %v", err)
+	}
+	if awsPlan.UserData != generic {
+		t.Errorf("AWS user_data = %q, want the generic fallback %q", awsPlan.UserData, generic)
+	}
+
+	// An empty override entry falls through to the generic default (both "no key"
+	// and "explicit empty" mean use the shared bootstrap).
+	emptyPlan, err := TranslateScaleGroup(context.Background(), cat, ScaleGroupSpec{
+		Name: "mcp", Region: "Frankfurt", Provider: ProviderDigitalOcean,
+		CPU: 2, RAM: 4, Min: 1, Max: 1,
+		UserData:           generic,
+		UserDataByProvider: map[string]string{"digitalocean": ""},
+	})
+	if err != nil {
+		t.Fatalf("empty-override translate: %v", err)
+	}
+	if emptyPlan.UserData != generic {
+		t.Errorf("empty-override user_data = %q, want the generic fallback %q", emptyPlan.UserData, generic)
+	}
+}
+
 func sgTestContains(h, n string) bool {
 	for i := 0; i+len(n) <= len(h); i++ {
 		if h[i:i+len(n)] == n {
