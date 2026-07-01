@@ -14,6 +14,47 @@ F1 gaps); it does **not** move bytes. DB **data movement is backend-sealed**
 gates the provider cannot express (row-count + checksum verification), because
 **the provider's data-safety guard is plan-time only**.
 
+### Operator DB-migration scripts (`scripts/cutover/`) — Path B
+
+The backend sealed migration engine (Path A) is still a stub, so for **our
+one-time AWS→DO cutover** the two Postgres are migrated with a proven,
+parameterized **operator-driven** primitive (`pd-MIG-CUTOVER-F1-02`, Path B).
+The scripts below are the concrete, tested implementation of §3 / §4. All are
+parameterized by `SRC_DSN`, `DST_DSN`, `DBNAME` and touch nothing on their own.
+
+| Script | Role | Runbook step |
+| --- | --- | --- |
+| `pg-logical-replication-setup.sh` | **low-downtime path** — `PUBLICATION FOR ALL TABLES` on source (AWS RDS) + schema baseline + `CREATE SUBSCRIPTION` on target (DO); replica-identity preflight | F3 stand-up; F4 step 2 |
+| `pg-dump-restore.sh` | **fallback full-copy** — streamed `pg_dump \| gzip → gunzip \| psql` with `ON_ERROR_STOP` (point-in-time; needs freeze) | fallback if replication not viable |
+| `verify-migration.sh` | **the data-safety GATE** — per-table row-count + `md5` content-checksum parity + sequence high-water + replication-lag; **exits non-zero on ANY mismatch** | **F4 step 3 / §4** |
+| `cutover-db.sh` | **F4 orchestrator** — drain lag=0 → sync sequences → run the gate → (operator confirm, gate F4-02) → drop subscription + promote target | F4 steps 2–4 |
+| `lib-common.sh` | shared psql/logging helpers (sourced, not run) | — |
+
+Validated E2E on throwaway `postgres:17` (105k rows, multi-table + FK + a no-PK
+table): initial COPY + ongoing INSERT/UPDATE/DELETE replicate, gate passes at
+lag=0, the fallback path passes, and the gate correctly goes **RED** on both a
+row-count mismatch and a same-count content-checksum mismatch.
+
+> **RDS-side prerequisites (operator, before running the low-downtime path):**
+> attach a parameter group with **`rds.logical_replication = 1`** and **reboot**
+> the instance (static param — this sets `wal_level=logical`,
+> `max_replication_slots>0`, `max_wal_senders>0`); create a login role with
+> **`rds_replication`** granted plus `SELECT` on all tables in every published
+> schema, and connect `SRC_DSN` as it; ensure the **DO Managed PG can reach the
+> RDS endpoint on 5432** (logical replication is target-pulls-from-source), over
+> the VPN if needed. The setup script asserts `wal_level=logical` and the slot/
+> sender counts and refuses to proceed if they are wrong.
+>
+> **Sequence caveat (important):** logical replication does **not** replicate
+> sequence values. `cutover-db.sh` copies source `last_value`→target during the
+> freeze (step A2, safe because source is frozen) and re-bumps to table maxima at
+> promote (step D) so post-cutover inserts never collide. `pg_dump` fallback
+> carries `setval` natively.
+>
+> **No-PK tables:** logical replication of UPDATE/DELETE needs a `REPLICA
+> IDENTITY`. The setup script's preflight sets `REPLICA IDENTITY FULL` on any
+> published table lacking a PK (or refuses with `STRICT_IDENTITY=1`).
+
 ---
 
 ## 0. Targets (RTO / RPO / downtime budget)
@@ -95,6 +136,11 @@ The provider's data-safety guard is **plan-time only** (it blocks a destructive
 plan; it cannot verify bytes). The operator MUST add these runtime checks. Run
 in F4 step 3, **inside the freeze, before promotion (step 4)** — this is the last
 reversible point.
+
+> Executable gate: **`scripts/cutover/verify-migration.sh`** implements every
+> check below and **exits non-zero on any mismatch** (a non-zero exit MUST abort
+> the cutover). `cutover-db.sh` runs it automatically before the promote confirm.
+> Run per DB: `SRC_DSN=… DST_DSN=… DBNAME=keycloak ./verify-migration.sh`.
 
 For **each** of keycloak-db and pyx-main-db:
 
