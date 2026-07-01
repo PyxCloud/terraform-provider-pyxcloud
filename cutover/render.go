@@ -79,9 +79,14 @@ func run() error {
 	ctx := context.Background()
 	// Same descriptor as the requested AssembleHCL(... DOBaselineInput ...) call.
 	in := catalog.DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
+	// EdgeTLSOrigins (pd-MIG-CUTOVER-F4-PREP): opt-in via DO_EDGE_TLS_ORIGINS=1 so
+	// each Cloudflare-routed origin (sso/backend/mcp) renders an nginx :443 TLS
+	// terminator and can be flipped onto its DO origin behind Cloudflare "Full".
+	// See docs/cutover/CLOUDFLARE-CUTOVER.md. Off by default (0 change to base estate).
+	edgeTLS := strings.TrimSpace(os.Getenv("DO_EDGE_TLS_ORIGINS")) == "1"
 	// PrivateDBHost: reach pyx-main-db over the shared VPC private endpoint (the
 	// mesh_app secret stores the public host).
-	docs, err := catalog.AssembleDOBaseline(ctx, catalog.MustEmbedded(), in, secrets, catalog.DOBaselineOptions{PrivateDBHost: true})
+	docs, err := catalog.AssembleDOBaseline(ctx, catalog.MustEmbedded(), in, secrets, catalog.DOBaselineOptions{PrivateDBHost: true, EdgeTLSOrigins: edgeTLS})
 	if err != nil {
 		return fmt.Errorf("assemble DO baseline: %w", err)
 	}

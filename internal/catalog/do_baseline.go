@@ -74,6 +74,28 @@ func DOBaselineServices() []DOBaselineService {
 	}
 }
 
+// doEdgeOrigins is the per-hostname -> DO service origin map for the Cloudflare
+// cutover (pd-MIG-CUTOVER-F4-PREP), derived from the AWS shared-ALB host-header
+// rules (beta-pyx-shared-alb): beta-auth -> keycloak_tg:8080 (sso),
+// beta-api -> api_tg:8080 (backend), mcp.passo.build -> mcp_tg:8787 (mcp). The
+// obs origin already carries its own nginx :443 (VPN-only) so it is NOT here.
+// When DOBaselineOptions.EdgeTLSOrigins is set, each service below gets an nginx
+// :443 terminator appended to its user_data so it can serve as a Cloudflare-Full
+// origin. Deterministic slice.
+type doEdgeOrigin struct {
+	Service      string // matches DOBaselineService.Name
+	Hostname     string // public FQDN Cloudflare routes to this origin
+	UpstreamPort int    // local plain-HTTP service port
+}
+
+func doEdgeOrigins() []doEdgeOrigin {
+	return []doEdgeOrigin{
+		{Service: "sso", Hostname: "beta-auth.pyxcloud.io", UpstreamPort: 8080},
+		{Service: "backend", Hostname: "beta-api.pyxcloud.io", UpstreamPort: 8080},
+		{Service: "mcp", Hostname: "mcp.passo.build", UpstreamPort: 8787},
+	}
+}
+
 // DOBaselineInput is the catalog-native descriptor for the cutover baseline.
 // It mirrors the AssembleInput surface (name/provider/region/components) so the
 // harness reads the same way as the generic estate, while AssembleDOBaseline
@@ -166,6 +188,14 @@ type DOBaselineOptions struct {
 	// PrivateDBHost rewrites the mesh_app URL to the private VPC endpoint (same
 	// VPC as the droplets). The harness sets this true.
 	PrivateDBHost bool
+	// EdgeTLSOrigins, when true, appends an nginx :443 TLS terminator (the obs
+	// pattern, see edge_tls_terminator.go) to each Cloudflare-routed origin
+	// service (sso/backend/mcp per doEdgeOrigins) so the DNS flip can move each
+	// hostname onto its DO origin over Cloudflare "Full". pd-MIG-CUTOVER-F4-PREP.
+	// A service that had no user_data (backend/sso in the base harness) gets a
+	// standalone terminator script; mcp gets the terminator appended after its
+	// durable bootstrap. Off by default (0 change to the base estate).
+	EdgeTLSOrigins bool
 }
 
 // AssembleDOBaseline renders the cutover baseline as concrete terraform documents
@@ -269,6 +299,28 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 		userData := ""
 		if svc.Durable {
 			userData = renderMCPUserData(secrets, opts)
+		}
+		// pd-MIG-CUTOVER-F4-PREP: append the Cloudflare-Full :443 TLS terminator to
+		// each origin service so it can serve its public hostname behind Cloudflare.
+		if opts.EdgeTLSOrigins {
+			for _, o := range doEdgeOrigins() {
+				if o.Service != svc.Name {
+					continue
+				}
+				snippet, terr := RenderEdgeTLSTerminatorSnippet(EdgeTLSTerminator{Hostname: o.Hostname, UpstreamPort: o.UpstreamPort})
+				if terr != nil {
+					return nil, fmt.Errorf("do-baseline: edge terminator for %s: %w", svc.Name, terr)
+				}
+				if userData == "" {
+					// No base bootstrap in the committed harness (backend/sso): emit a
+					// standalone terminator script. In the real cutover this snippet is
+					// appended to the service's full bootstrap (which lives in state).
+					userData = "#!/bin/bash\nset -euo pipefail\n" + snippet
+				} else {
+					userData = userData + "\n\n" + snippet
+				}
+				break
+			}
 		}
 		udBlock := ""
 		if userData != "" {

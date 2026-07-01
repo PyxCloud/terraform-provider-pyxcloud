@@ -105,6 +105,27 @@ terraform plan  -var 'do_ssh_keys=["57496891"]'            # expect: 0 to destro
 terraform apply -var 'do_ssh_keys=["57496891"]'
 ```
 
+### Cloudflare-edge cutover origins (F4-prep, opt-in)
+
+To make each prod hostname servable via Cloudflare→DO origin, set
+`DO_EDGE_TLS_ORIGINS=1` before rendering. This appends an nginx `:443` TLS
+terminator (the `obs` pattern, `internal/catalog/edge_tls_terminator.go`) to the
+Cloudflare-routed origins — `sso` (beta-auth.pyxcloud.io→8080), `backend`
+(beta-api.pyxcloud.io→8080), `mcp` (mcp.passo.build→8787) — so Cloudflare `Full`
+can terminate public TLS and proxy to each origin. Off by default (0 change to
+the base estate). See `docs/cutover/CLOUDFLARE-CUTOVER.md` for the full DNS-flip
+change-set, probes, and rollback.
+
+```bash
+export DO_EDGE_TLS_ORIGINS=1
+go run ./cutover/render.go
+cd cutover/generated && terraform init
+terraform apply -target=digitalocean_droplet_autoscale.sso \
+                -target=digitalocean_droplet_autoscale.backend \
+                -target=digitalocean_droplet_autoscale.mcp \
+                -var 'do_ssh_keys=["57496891"]'   # rolls each origin; 0 destroy of PG/VPC
+```
+
 ### Durable mcp apply (targeted)
 
 ```bash
