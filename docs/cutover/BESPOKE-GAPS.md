@@ -56,12 +56,13 @@ The bulk of prod already has a first-class DO mapping and is in the DO target:
 - **In the estate:** the 3 frontends are now modelled as `static-site` components (`prodStaticSiteComponents`) and descend on **BOTH** providers — they are part of the DO target estate, not excluded. The built bundles remain modelled as `object-storage` (the asset store) as before.
 - **Proven by:** `TestStaticSiteDO` / `TestStaticSiteAWS` / `TestStaticSiteThroughAssemble` and the full-estate `TestProdEstateTerraformValidate` (init + validate GREEN on both AWS and DO with the frontends present).
 
-### GAP-2 — transactional email (SES): AWS-only, no DO equivalent
+### GAP-2 — transactional email (SES): AWS-only, no DO equivalent — ✅ RESOLVED (F1-05)
 
-- **Component / prod resource:** the SES sending domain `passo.build` (`aws_ses_domain_identity` + `aws_ses_domain_dkim`), modelled as the canonical `email` component (`email-sender`).
-- **Why no DO mapping:** `email.go` (`TranslateEmail`) is **AWS-only by design** — it hard-errors on any non-AWS provider (`"only AWS (SES) is supported; … has no managed transactional-email primitive"`). DigitalOcean has no managed transactional-email service.
-- **In the estate:** present in the AWS source render (`aws_ses_domain_identity`); **excluded from the DO target** (`prodBespokeAWSOnlyComponents`, gated to AWS).
-- **Proposed target (F1-05):** route email to an **external provider** (SendGrid / Postmark / Amazon SES cross-cloud from the DO estate). This needs either a new `email` render path targeting a third-party API, or an accepted decision to keep SES as a cross-cloud dependency. Either way it is external to DO — F1 work.
+- **Component / prod resource:** the SES sending domain `passo.build` (`aws_ses_domain_identity` + `aws_ses_domain_dkim`), modelled as the canonical `email` component (`email-sender`). It backs **invites / passkey / notifications**.
+- **Why it was a gap:** `ses.go` (`TranslateEmail`) used to be **AWS-only by design** — it hard-errored on any non-AWS provider. DigitalOcean has no managed transactional-email service.
+- **Resolution (`pd-MIG-CUTOVER-F1-05`):** the `email` component no longer hard-errors on DO. **Decision: keep AWS SES cross-cloud as the default** (SES is region-global, reachable from DO compute over SMTP with IAM SMTP creds), with a **3rd-party relay (SendGrid/Postmark/Mailgun) opt-in via config**. On a non-AWS placement the component renders an **SMTP-relay config** (`locals` + `output`: relay host/port/STARTTLS + a credentials **reference**, never inline secrets) that the compute consumes. `email` is now marked **natively supported on DO** in the mitigation matrix, so it takes this render instead of the old degraded single-VM SMTP droplet.
+- **In the estate:** `email-sender` is now present in **BOTH** renders — native SES on AWS, SMTP-relay config on DO (`prodEmailComponent`, provider-agnostic). The full DO estate passes `terraform init && validate` (plan-only, GREEN).
+- **Deliverability / DNS:** with SES kept, the `passo.build` **SPF / DKIM / DMARC** records **stay unchanged in Cloudflare** (DNS-only) — no re-verification, no reputation reset. Full decision, config the DO compute needs, and DNS notes: **`docs/cutover/EMAIL-PATH.md`**.
 
 ### GAP-3 — AWS secret rotation Lambda: bespoke, out-of-band
 
@@ -98,7 +99,7 @@ The bulk of prod already has a first-class DO mapping and is in the DO target:
 | Gap | Prod component | AWS today | DO status | Proposed F1 target |
 | --- | --- | --- | --- | --- |
 | ~~GAP-1~~ ✅ | 3 frontends (marketing/console/vibe) | Amplify static hosting | **RESOLVED** → Spaces static website + Cloudflare CDN | **F1-01 DONE**: `static-site` component (descends on both providers) |
-| GAP-2 | transactional email | SES (`aws_ses_domain_identity`) | AWS-only, hard-errors on DO | **F1-05**: external provider (SendGrid/Postmark) or SES cross-cloud |
+| ~~GAP-2~~ ✅ | transactional email | SES (`aws_ses_domain_identity`) | ✅ RESOLVED — SMTP-relay config on DO (no hard-error) | **F1-05 DONE**: keep AWS SES cross-cloud (default) via SMTP-relay; 3rd-party opt-in — see EMAIL-PATH.md |
 | GAP-3 | AWS secret rotation lambda | `aws_secretsmanager_secret_rotation` + bespoke Lambda | N/A (Vault-HA rotates natively) | out-of-band Lambda, or Vault-HA rotation on DO |
 | GAP-4 | ALB host→distinct-service routing | multi-TG L7 rules | works via DOKS Ingress | **RESOLVED (F1-04)**: AWS LB renderer synthesises per-`TargetName` target groups; both providers validate GREEN |
 | GAP-5 | DO Project envelope | (n/a) | no `project` component | new `project` component → `digitalocean_project` |
