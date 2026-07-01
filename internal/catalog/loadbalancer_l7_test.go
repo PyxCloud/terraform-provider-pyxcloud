@@ -70,6 +70,12 @@ func TestRenderLoadBalancerAWSL7Rules(t *testing.T) {
 		`values = ["10.8.0.0/24"]`,
 		// admin rule forwards to its own target group.
 		`target_group_arn = aws_lb_target_group.admin_tg.arn`,
+		// GAP-4 resolved: that per-host target group is now SYNTHESISED (not just
+		// referenced) — a distinct aws_lb_target_group + ASG attachment per TargetName.
+		`resource "aws_lb_target_group" "admin_tg"`,
+		`resource "aws_autoscaling_attachment" "admin_attach"`,
+		`autoscaling_group_name = aws_autoscaling_group.admin_asg.name`,
+		`lb_target_group_arn    = aws_lb_target_group.admin_tg.arn`,
 	} {
 		if !strings.Contains(hcl, want) {
 			t.Errorf("aws L7 HCL missing %q:\n%s", want, hcl)

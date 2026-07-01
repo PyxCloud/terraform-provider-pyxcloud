@@ -56,6 +56,20 @@ func TestProdEstateAssemblesForAWS(t *testing.T) {
 		`resource "aws_sqs_queue"`,                  // prod queue native on AWS
 		`resource "aws_eip"`,                        // reserved-ip (VPN endpoint)
 		`resource "aws_ses_domain_identity"`,        // BESPOKE-GAP: SES (AWS-only)
+		// GAP-4 resolved: the edge LB's host rules route to DISTINCT per-service
+		// target groups (admin->sso, app->backend, mcp->mcp), each a synthesised
+		// aws_lb_target_group + ASG attachment — parity with the DO Ingress.
+		`resource "aws_lb_target_group" "sso_tg"`,
+		`resource "aws_lb_target_group" "mcp_tg"`,
+		`resource "aws_autoscaling_attachment" "sso_attach"`,
+		`resource "aws_autoscaling_attachment" "mcp_attach"`,
+		`target_group_arn = aws_lb_target_group.sso_tg.arn`,
+		`target_group_arn = aws_lb_target_group.mcp_tg.arn`,
+		`autoscaling_group_name = aws_autoscaling_group.sso_asg.name`,
+		`autoscaling_group_name = aws_autoscaling_group.mcp_asg.name`,
+		// The admin-VPN source-IP gate on the admin host rule is preserved.
+		`source_ip {`,
+		`values = ["10.8.0.0/24"]`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("AWS prod estate missing %q", want)
@@ -107,6 +121,17 @@ func TestProdEstateAssemblesForDO(t *testing.T) {
 		`resource "digitalocean_reserved_ip" "vpn-endpoint"`,
 		`resource "digitalocean_vpc" "passo-prod-net"`,
 		`resource "digitalocean_firewall" "passo-prod-sg"`,
+		// GAP-4 parity: the DOKS Ingress backends a DISTINCT service per host
+		// (admin->sso, app->backend, mcp->mcp) — the DO analogue of the AWS
+		// per-TargetName target groups.
+		`host = "admin.passo.build"`,
+		`host = "app.passo.build"`,
+		`host = "mcp.passo.build"`,
+		`name = "sso-svc"`,
+		`name = "backend-svc"`,
+		`name = "mcp-svc"`,
+		// The admin-VPN gate preserved as the ingress source-range whitelist.
+		`"nginx.ingress.kubernetes.io/whitelist-source-range" = "10.8.0.0/24"`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("DO prod estate missing %q", want)
