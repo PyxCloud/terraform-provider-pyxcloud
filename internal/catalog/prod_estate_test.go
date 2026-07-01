@@ -47,19 +47,27 @@ func TestProdEstateAssemblesForAWS(t *testing.T) {
 		t.Errorf("want %d aws_s3_bucket, got %d", len(prodBuckets), n)
 	}
 	for _, want := range []string{
-		`resource "aws_ecr_repository"`,             // container-registry
-		`resource "aws_dynamodb_table"`,             // key-value-store (JIT allowlist)
-		`resource "aws_lb"`,                         // edge L7 load-balancer
-		`resource "aws_secretsmanager_secret"`,      // secrets-manager native on AWS
-		`resource "aws_acm_certificate"`,            // tls-certificate native on AWS
-		`resource "aws_cloudwatch_metric_alarm"`,    // monitoring: CloudWatch+SNS on AWS
-		`resource "aws_sqs_queue"`,                  // prod queue native on AWS
-		`resource "aws_eip"`,                        // reserved-ip (VPN endpoint)
-		`resource "aws_ses_domain_identity"`,        // BESPOKE-GAP: SES (AWS-only)
+		`resource "aws_ecr_repository"`,          // container-registry
+		`resource "aws_dynamodb_table"`,          // key-value-store (JIT allowlist)
+		`resource "aws_lb"`,                      // edge L7 load-balancer
+		`resource "aws_secretsmanager_secret"`,   // secrets-manager native on AWS
+		`resource "aws_acm_certificate"`,         // tls-certificate native on AWS
+		`resource "aws_cloudwatch_metric_alarm"`, // monitoring: CloudWatch+SNS on AWS
+		`resource "aws_sqs_queue"`,               // prod queue native on AWS
+		`resource "aws_eip"`,                     // reserved-ip (VPN endpoint)
+		`resource "aws_ses_domain_identity"`,     // BESPOKE-GAP: SES (AWS-only)
+		`resource "aws_amplify_app" "marketing"`, // GAP-1 closed: frontends -> Amplify on AWS
+		`resource "aws_amplify_app" "console"`,
+		`resource "aws_amplify_app" "vibe"`,
+		`resource "aws_amplify_branch"`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("AWS prod estate missing %q", want)
 		}
+	}
+	// The 3 frontends -> 3 Amplify apps.
+	if n := strings.Count(all, `resource "aws_amplify_app"`); n != len(prodStaticSites) {
+		t.Errorf("want %d aws_amplify_app, got %d", len(prodStaticSites), n)
 	}
 }
 
@@ -94,9 +102,26 @@ func TestProdEstateAssemblesForDO(t *testing.T) {
 	if n := strings.Count(all, `resource "digitalocean_database_cluster"`); n != 3 {
 		t.Errorf("want 3 digitalocean_database_cluster (2 pg + 1 redis), got %d", n)
 	}
-	// The ~18 production buckets -> digitalocean_spaces_bucket.
-	if n := strings.Count(all, `resource "digitalocean_spaces_bucket" "`); n != len(prodBuckets) {
-		t.Errorf("want %d digitalocean_spaces_bucket, got %d", len(prodBuckets), n)
+	// The ~18 production buckets PLUS the 3 static-site origins -> digitalocean_spaces_bucket.
+	if n, want := strings.Count(all, `resource "digitalocean_spaces_bucket" "`), len(prodBuckets)+len(prodStaticSites); n != want {
+		t.Errorf("want %d digitalocean_spaces_bucket (%d buckets + %d static sites), got %d",
+			want, len(prodBuckets), len(prodStaticSites), n)
+	}
+	// GAP-1 closed: the 3 frontends descend to Spaces static website + Cloudflare CDN.
+	for _, want := range []string{
+		`resource "digitalocean_spaces_bucket" "marketing"`,
+		`static-website origin: index="index.html"`,      // Spaces static website (comment; served via CDN)
+		`resource "cloudflare_dns_record" "console-cdn"`, // Cloudflare CDN front (proxied CNAME)
+		`resource "cloudflare_zone_setting" "vibe-cdn-always_online"`,
+		`digitaloceanspaces.com`, // CDN origin = the Spaces website endpoint
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("DO prod estate (static-site) missing %q", want)
+		}
+	}
+	// The static-site CDN pins the Cloudflare provider.
+	if !strings.Contains(all, `source = "cloudflare/cloudflare"`) {
+		t.Errorf("DO prod estate missing Cloudflare provider pin (static-site CDN)")
 	}
 	for _, want := range []string{
 		`resource "digitalocean_container_registry" "app-images"`,

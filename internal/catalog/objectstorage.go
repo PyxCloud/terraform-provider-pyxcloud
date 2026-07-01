@@ -68,6 +68,21 @@ type ObjectStorageSpec struct {
 
 	// AccessLogs enables server access logging to a target bucket. Nil = disabled.
 	AccessLogs *AccessLogConfig
+
+	// Website, when set, turns the bucket into a STATIC WEBSITE origin (index +
+	// error documents). Used by the static-site component (pd-MIG-CUTOVER-F1-01) on
+	// DO Spaces / AWS S3 to serve a built frontend bundle. Nil = a plain object
+	// store (no website hosting). Static-website hosting implies the bucket serves
+	// public objects; the caller sets Public accordingly.
+	Website *WebsiteConfig
+}
+
+// WebsiteConfig is static-website hosting configuration for an object store.
+// index_document is the entry page; error_document is the fallback (for SPAs,
+// commonly the same as index_document so the client-side router owns 404s).
+type WebsiteConfig struct {
+	IndexDocument string
+	ErrorDocument string
 }
 
 // LifecycleRule is one abstract object-lifecycle rule. It is provider-neutral and
@@ -135,6 +150,7 @@ type ObjectStoragePlan struct {
 	SSE          *SSEConfig       `json:"sse,omitempty"`           // resolved SSE config (nil = none)
 	BucketPolicy string           `json:"bucket_policy,omitempty"` // bucket-policy JSON (verbatim)
 	AccessLogs   *AccessLogConfig `json:"access_logs,omitempty"`   // access-log target (nil = off)
+	Website      *WebsiteConfig   `json:"website,omitempty"`       // static-website hosting (nil = plain store)
 
 	ResourceType string `json:"resource_type"` // top provider resource, e.g. aws_s3_bucket
 }
@@ -221,6 +237,7 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 		SSE:          sse,
 		BucketPolicy: strings.TrimSpace(spec.BucketPolicy),
 		AccessLogs:   accessLogs,
+		Website:      resolveWebsite(spec.Website),
 	}
 
 	switch provider {
@@ -370,6 +387,24 @@ func resolveSSE(provider string, sse *SSEConfig) (*SSEConfig, error) {
 		return nil, fmt.Errorf("object-storage: unknown sse algorithm %q (want %q or %q)",
 			algo, SSEAlgoAES256, SSEAlgoKMS)
 	}
+}
+
+// resolveWebsite canonicalises static-website config, applying SPA-friendly
+// defaults (index.html entry, index.html error fallback). Nil in -> nil out (no
+// website hosting). Both S3 and DO Spaces accept an index/error document pair.
+func resolveWebsite(w *WebsiteConfig) *WebsiteConfig {
+	if w == nil {
+		return nil
+	}
+	index := strings.TrimSpace(w.IndexDocument)
+	if index == "" {
+		index = "index.html"
+	}
+	errDoc := strings.TrimSpace(w.ErrorDocument)
+	if errDoc == "" {
+		errDoc = index
+	}
+	return &WebsiteConfig{IndexDocument: index, ErrorDocument: errDoc}
 }
 
 // resolveAccessLogs validates the access-log target.

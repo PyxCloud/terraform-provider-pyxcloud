@@ -39,17 +39,22 @@ The bulk of prod already has a first-class DO mapping and is in the DO target:
 - prod queue (SQS) → RabbitMQ Cluster Operator on DOKS (B1 operator pattern)
 - secrets-manager (Secrets Manager) → Vault-HA operator on DOKS (B4 auto-alias)
 - VPC + firewall → `digitalocean_vpc` + `digitalocean_firewall` (synthesised by `AssembleHCL`)
+- 3 frontends (marketing / console / vibe) → DO Spaces static website + Cloudflare CDN (`static-site` component — GAP-1, F1-01, now resolved)
 
 ---
 
 ## The gaps
 
-### GAP-1 — the 3 frontends (marketing / console / vibe): AWS Amplify → no DO static-site component
+### GAP-1 — the 3 frontends (marketing / console / vibe): AWS Amplify → DO static-site — ✅ RESOLVED (pd-MIG-CUTOVER-F1-01)
 
 - **Component / prod resource:** the three static frontends served historically via **AWS Amplify** static hosting (`aws_amplify_app` / `aws_amplify_branch`) — the marketing site, the console SPA, and the vibe SPA.
-- **Why no DO mapping:** the provider has **no `static-site` / static-hosting catalog component** at all. DigitalOcean has no first-class managed equivalent of Amplify's build-and-host-a-SPA-on-a-CDN primitive. The built bundles already have a home in object-storage (`app-assets`, `pyx-frontend`, `vibe-assets` buckets, which DO migrate to Spaces), so the gap is specifically the **managed static-site HOSTING + CDN wrapper**, not the asset storage.
-- **In the estate:** the built bundles are modelled as `object-storage` (present in BOTH renders). The Amplify hosting wrapper is **not modelled** (there is no component to model it with) — it is the gap.
-- **Proposed target (F1-01):** a **new `static-site` catalog component** → DigitalOcean Spaces static hosting + Cloudflare CDN (origin = the Spaces bucket, TLS + cache at Cloudflare). This is a new resource type, so it is F1 work — not invented here.
+- **Was the gap:** the provider had **no `static-site` / static-hosting catalog component**. DigitalOcean has no first-class managed equivalent of Amplify's build-and-host-a-SPA-on-a-CDN primitive.
+- **Resolution (F1-01):** a **new `static-site` catalog component** (`internal/catalog/staticsite.go`). It is a COMPOSITE that reuses the existing renderers rather than inventing raw resources:
+  - **AWS:** descends to `aws_amplify_app` + `aws_amplify_branch` (an SPA custom_rule rewrite to the index doc) — the source-estate primitive.
+  - **DigitalOcean:** descends to a **public `digitalocean_spaces_bucket` static-website origin** (via the object-storage renderer, with a `Website` config) **+ a Cloudflare CDN front** (via the cloudflare-cdn renderer: a proxied CNAME to the Spaces website endpoint `<bucket>.<region>.digitaloceanspaces.com` plus `cloudflare_zone_setting` cache/TLS settings). Spaces static hosting + Cloudflare CDN = the DO answer to Amplify.
+    - NOTE: the DO Terraform provider's `digitalocean_spaces_bucket` exposes no index/error-document arguments, so the website docs are served by the paired Cloudflare CDN front (which owns SPA routing/fallback); the intent is recorded as a comment on the bucket.
+- **In the estate:** the 3 frontends are now modelled as `static-site` components (`prodStaticSiteComponents`) and descend on **BOTH** providers — they are part of the DO target estate, not excluded. The built bundles remain modelled as `object-storage` (the asset store) as before.
+- **Proven by:** `TestStaticSiteDO` / `TestStaticSiteAWS` / `TestStaticSiteThroughAssemble` and the full-estate `TestProdEstateTerraformValidate` (init + validate GREEN on both AWS and DO with the frontends present).
 
 ### GAP-2 — transactional email (SES): AWS-only, no DO equivalent
 
@@ -91,7 +96,7 @@ The bulk of prod already has a first-class DO mapping and is in the DO target:
 
 | Gap | Prod component | AWS today | DO status | Proposed F1 target |
 | --- | --- | --- | --- | --- |
-| GAP-1 | 3 frontends (marketing/console/vibe) | Amplify static hosting | no `static-site` component | **F1-01**: `static-site` → Spaces static + Cloudflare CDN |
+| ~~GAP-1~~ ✅ | 3 frontends (marketing/console/vibe) | Amplify static hosting | **RESOLVED** → Spaces static website + Cloudflare CDN | **F1-01 DONE**: `static-site` component (descends on both providers) |
 | GAP-2 | transactional email | SES (`aws_ses_domain_identity`) | AWS-only, hard-errors on DO | **F1-05**: external provider (SendGrid/Postmark) or SES cross-cloud |
 | GAP-3 | AWS secret rotation lambda | `aws_secretsmanager_secret_rotation` + bespoke Lambda | N/A (Vault-HA rotates natively) | out-of-band Lambda, or Vault-HA rotation on DO |
 | GAP-4 | ALB host→distinct-service routing | multi-TG L7 rules | works via DOKS Ingress | AWS LB renderer: per-`TargetName` target groups |

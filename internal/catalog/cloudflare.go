@@ -190,16 +190,26 @@ func RenderCloudfareCDNHCL(p CloudflareCDNPlan) (string, error) {
 	b.WriteString("  proxied = true\n")
 	b.WriteString("}\n\n")
 
-	// Zone-level CDN settings: Browser Cache TTL + Always Online.
-	son := tfName(p.Name + "-cdn-settings")
-	fmt.Fprintf(&b, "resource \"cloudflare_zone_settings_override\" %q {\n", son)
-	fmt.Fprintf(&b, "  zone_id = %s\n", zoneRef)
-	b.WriteString("  settings {\n")
-	b.WriteString("    browser_cache_ttl   = 14400\n") // 4 hours
-	b.WriteString("    always_online       = \"on\"\n")
-	b.WriteString("    ssl                 = \"flexible\"\n")
-	b.WriteString("  }\n")
-	b.WriteString("}\n")
+	// Zone-level CDN settings: Browser Cache TTL + Always Online + SSL. The
+	// cloudflare/cloudflare v5 provider models each zone setting as its OWN
+	// cloudflare_zone_setting resource (setting_id + value), replacing the removed
+	// cloudflare_zone_settings_override block resource.
+	zoneSettings := []struct {
+		id    string
+		value string // rendered verbatim (a number for TTL, a quoted string otherwise)
+	}{
+		{"browser_cache_ttl", "14400"}, // 4 hours
+		{"always_online", "\"on\""},    // origin-down resilience
+		{"ssl", "\"flexible\""},
+	}
+	for _, s := range zoneSettings {
+		sn := tfName(p.Name + "-cdn-" + s.id)
+		fmt.Fprintf(&b, "resource \"cloudflare_zone_setting\" %q {\n", sn)
+		fmt.Fprintf(&b, "  zone_id    = %s\n", zoneRef)
+		fmt.Fprintf(&b, "  setting_id = %q\n", s.id)
+		fmt.Fprintf(&b, "  value      = %s\n", s.value)
+		b.WriteString("}\n\n")
+	}
 
-	return b.String(), nil
+	return strings.TrimRight(b.String(), "\n") + "\n", nil
 }
