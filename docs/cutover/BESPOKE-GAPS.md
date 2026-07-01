@@ -65,12 +65,13 @@ The bulk of prod already has a first-class DO mapping and is in the DO target:
 - **On DO this is a non-issue:** the DO target aliases `secrets-manager` to the **Vault-HA operator**, which performs rotation natively via its own leases — no Lambda involved. So the gap only exists on the AWS side.
 - **Proposed target (F1):** either keep rotation as an out-of-band AWS concern (declare `var.rotation_lambda_arn` + supply the Lambda bespoke), or — the migration answer — rely on **Vault-HA rotation** on DO (already the DO render), which removes the Lambda entirely post-cutover.
 
-### GAP-4 — AWS L7 host-based routing to DISTINCT backend services: renderer limitation
+### GAP-4 — AWS L7 host-based routing to DISTINCT backend services: RESOLVED (pd-MIG-CUTOVER-F1-04)
 
 - **Component / prod resource:** the shared ALB's host-header routing — `admin.passo.build` → sso, `app.passo.build` → backend, `mcp.passo.build` → mcp — i.e. one listener routing distinct hosts to **distinct backend target groups**.
-- **Why it's a gap on AWS:** the current load-balancer renderer forwards a host-matched `aws_lb_listener_rule` to the LB's **single default `aws_lb_target_group`** and does **not synthesise a per-service target group** for a rule's `TargetName`. So per-host *distinct-service* routing references undeclared target groups on AWS and fails `validate`.
-- **On DO this works:** the DOKS Ingress (`kubernetes_manifest`) backends distinct services per host natively. So the estate carries the per-host `TargetName` routing **only on the DO placement** (`edge-lb`); on AWS the host rules match and forward to the default (backend) target group, and the admin-VPN source-IP gate is preserved.
-- **Proposed target (F1):** extend the AWS LB renderer to synthesise a per-`TargetName` `aws_lb_target_group` (+ ASG attachment) so AWS reaches host-routing parity with the DO Ingress. Renderer work — F1, not invented here.
+- **Original gap on AWS:** the load-balancer renderer forwarded a host-matched `aws_lb_listener_rule` to the LB's **single default `aws_lb_target_group`** and did **not synthesise a per-service target group** for a rule's `TargetName`. Per-host *distinct-service* routing referenced undeclared target groups on AWS and failed `validate`, so the estate carried the per-host `TargetName` routing only on the DO placement.
+- **Fix (F1-04):** the AWS LB renderer now synthesises a **distinct `aws_lb_target_group` per rule `TargetName`** (`<TargetName>_tg`) — with the same health-check/stickiness shape as the default TG — plus an `aws_autoscaling_attachment` wiring that service's scale-group ASG (`<TargetName>_asg`) onto its own target group. Each host `aws_lb_listener_rule` forwards to its per-service TG; rules without a `TargetName` still forward to the LB default TG. The admin-VPN `source_ip` gate is preserved. See `renderLBAWS` / `distinctRuleTargetNames` in `internal/catalog/render.go`.
+- **DO parity (unchanged):** the DOKS Ingress (`kubernetes_manifest`) backends a distinct service per host natively (`sso-svc` / `backend-svc` / `mcp-svc`). The estate now carries the per-host `TargetName` routing on **both** providers (`prod_estate.go`), and both AWS and DO renders are `terraform validate` GREEN with per-host distinct targets.
+- **Status:** RESOLVED. Verified by `TestProdEstateAssemblesForAWS` / `TestProdEstateAssemblesForDO` (per-host TG + ingress-service assertions) and `TestProdEstateTerraformValidate` (both providers GREEN).
 
 ### GAP-5 — DigitalOcean Project envelope: no catalog component
 
@@ -94,6 +95,6 @@ The bulk of prod already has a first-class DO mapping and is in the DO target:
 | GAP-1 | 3 frontends (marketing/console/vibe) | Amplify static hosting | no `static-site` component | **F1-01**: `static-site` → Spaces static + Cloudflare CDN |
 | GAP-2 | transactional email | SES (`aws_ses_domain_identity`) | AWS-only, hard-errors on DO | **F1-05**: external provider (SendGrid/Postmark) or SES cross-cloud |
 | GAP-3 | AWS secret rotation lambda | `aws_secretsmanager_secret_rotation` + bespoke Lambda | N/A (Vault-HA rotates natively) | out-of-band Lambda, or Vault-HA rotation on DO |
-| GAP-4 | ALB host→distinct-service routing | multi-TG L7 rules | works via DOKS Ingress | AWS LB renderer: per-`TargetName` target groups |
+| GAP-4 | ALB host→distinct-service routing | multi-TG L7 rules | works via DOKS Ingress | **RESOLVED (F1-04)**: AWS LB renderer synthesises per-`TargetName` target groups; both providers validate GREEN |
 | GAP-5 | DO Project envelope | (n/a) | no `project` component | new `project` component → `digitalocean_project` |
 | GAP-6 | Postgres DATA (not clusters) | in-cluster data | clusters migrate; data does not | **F1-02**: backend-sealed data-movement runbook |

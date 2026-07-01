@@ -890,6 +890,54 @@ func renderLBAWS(p LoadBalancerPlan) string {
 	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.LBName)
 	b.WriteString("}\n\n")
 
+	// Per-host DISTINCT-service target groups (pd-MIG-LB-L7-ROUTING / GAP-4). A
+	// layer-7 rule may forward to its OWN service (rule.TargetName) — the AWS
+	// analogue of the DOKS Ingress backending a distinct service per host. For each
+	// distinct TargetName referenced by the rules we synthesise a dedicated
+	// aws_lb_target_group ("<TargetName>_tg") plus its ASG attachment, so the AWS
+	// source render is fully plannable with per-host distinct targets (was: rules
+	// referenced an undeclared target group). Rules without a TargetName keep
+	// forwarding to the LB's default target group. Health-check shape mirrors the
+	// default TG (same instance-served protocol/port).
+	for _, tn := range distinctRuleTargetNames(p.Listeners) {
+		perTG := tfName(tn) + "_tg"
+		fmt.Fprintf(&b, "resource \"aws_lb_target_group\" %q {\n", perTG)
+		fmt.Fprintf(&b, "  name        = \"%s-tg\"\n", tfName(tn))
+		fmt.Fprintf(&b, "  port        = %d\n", hc.Port)
+		fmt.Fprintf(&b, "  protocol    = %q\n", lbAWSTargetGroupProto(hc.Protocol))
+		b.WriteString("  target_type = \"instance\"\n")
+		if p.NetworkName != "" {
+			fmt.Fprintf(&b, "  vpc_id      = data.aws_vpc.default.id\n")
+		}
+		b.WriteString("  health_check {\n")
+		fmt.Fprintf(&b, "    protocol            = %q\n", lbAWSProto(hc.Protocol))
+		if hc.Protocol == LBProtoHTTP || hc.Protocol == LBProtoHTTPS {
+			fmt.Fprintf(&b, "    path                = %q\n", hc.Path)
+		}
+		fmt.Fprintf(&b, "    interval            = %d\n", hc.IntervalSeconds)
+		fmt.Fprintf(&b, "    healthy_threshold   = %d\n", hc.HealthyThreshold)
+		fmt.Fprintf(&b, "    unhealthy_threshold = %d\n", hc.UnhealthyThreshold)
+		b.WriteString("  }\n")
+		if p.Stickiness {
+			b.WriteString("  stickiness {\n")
+			b.WriteString("    type            = \"lb_cookie\"\n")
+			b.WriteString("    cookie_duration = 86400\n")
+			b.WriteString("    enabled         = true\n")
+			b.WriteString("  }\n")
+		}
+		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", tn)
+		b.WriteString("}\n\n")
+
+		// Wire the distinct service's scale-group onto its own target group, the same
+		// way the LB's default target is attached to its ASG. The sibling scale-group
+		// component renders the ASG ("<TargetName>_asg"); here we emit only the wiring.
+		attachName := fmt.Sprintf("%s_attach", tfName(tn))
+		fmt.Fprintf(&b, "resource \"aws_autoscaling_attachment\" %q {\n", attachName)
+		fmt.Fprintf(&b, "  autoscaling_group_name = aws_autoscaling_group.%s.name\n", asgResourceLabel(tn))
+		fmt.Fprintf(&b, "  lb_target_group_arn    = aws_lb_target_group.%s.arn\n", perTG)
+		b.WriteString("}\n\n")
+	}
+
 	// One listener per declared listener port. The default action forwards to the
 	// target group; explicit layer-7 routing rules (path/host/priority/admin-VPN
 	// gate) render as aws_lb_listener_rule resources attached to the listener.
@@ -937,6 +985,28 @@ func renderLBAWS(p LoadBalancerPlan) string {
 	}
 
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// distinctRuleTargetNames returns the DISTINCT, deterministically-ordered set of
+// rule TargetName overrides across all listeners (empty names skipped). Each names
+// a sibling scale-group the AWS renderer synthesises a dedicated
+// aws_lb_target_group for, giving per-host distinct-service routing parity with the
+// DOKS Ingress (pd-MIG-LB-L7-ROUTING / GAP-4).
+func distinctRuleTargetNames(listeners []LBListenerPlan) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range listeners {
+		for _, r := range l.Rules {
+			tn := strings.TrimSpace(r.TargetName)
+			if tn == "" || seen[tn] {
+				continue
+			}
+			seen[tn] = true
+			out = append(out, tn)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // renderLBAWSListenerRules emits one aws_lb_listener_rule per resolved layer-7

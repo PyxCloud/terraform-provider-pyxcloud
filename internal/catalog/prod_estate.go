@@ -144,22 +144,17 @@ func prodPlatformPeerComponents(provider string) []AssembleComponent {
 		// ALB (L7) -> DO load-balancer + DOKS ingress, fronting the backend
 		// scale-group, with the admin host-header rule gated to the VPN CIDR.
 		//
-		// NOTE: the rules carry per-host TARGET routing only on DigitalOcean (the DOKS
-		// Ingress backends distinct services per host). On AWS the current LB renderer
-		// forwards a host-matched rule to the LB's single default target group and does
-		// NOT synthesise a per-service aws_lb_target_group, so per-host DISTINCT-service
-		// routing is an AWS renderer gap (documented in BESPOKE-GAPS.md). To keep the
-		// AWS source render plannable, TargetName is set only on the DO placement below.
+		// Per-host DISTINCT-service routing (admin->sso, app->backend, mcp->mcp) is
+		// carried on BOTH providers (GAP-4 resolved): on DigitalOcean the DOKS Ingress
+		// backends a distinct service per host; on AWS the LB renderer now synthesises a
+		// dedicated aws_lb_target_group per rule TargetName (+ ASG attachment), so the
+		// AWS source render is fully plannable with per-host distinct targets — parity
+		// with the DO Ingress. The admin-VPN source-IP gate is preserved on both.
 		func() AssembleComponent {
 			rules := []AssembleLBRoutingRule{
-				{Priority: 100, HostHeaders: []string{"admin.passo.build"}, AdminVPNCIDRs: []string{"10.8.0.0/24"}},
-				{Priority: 200, HostHeaders: []string{"app.passo.build"}},
-				{Priority: 300, HostHeaders: []string{"mcp.passo.build"}},
-			}
-			if lc(provider) == ProviderDigitalOcean {
-				rules[0].TargetName = "sso"
-				rules[1].TargetName = "backend"
-				rules[2].TargetName = "mcp"
+				{Priority: 100, HostHeaders: []string{"admin.passo.build"}, AdminVPNCIDRs: []string{"10.8.0.0/24"}, TargetName: "sso"},
+				{Priority: 200, HostHeaders: []string{"app.passo.build"}, TargetName: "backend"},
+				{Priority: 300, HostHeaders: []string{"mcp.passo.build"}, TargetName: "mcp"},
 			}
 			return AssembleComponent{
 				Name: "edge-lb", Type: "load-balancer",
