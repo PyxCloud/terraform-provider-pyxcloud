@@ -111,6 +111,17 @@ func PlatformScaleGroupComponents(arch, os, kubernetesVersion string) []Assemble
 // RenderSSOBootstrapUserData.
 type PlatformBootstraps map[string]string
 
+// PlatformBootstrapsByProvider carries per-service, PER-PROVIDER bootstrap
+// user_data overrides: [serviceName][providerName] -> cloud-init. It is threaded
+// into AssembleScaleGroup.UserDataByProvider, where a matching provider entry
+// WINS over the generic UserData when the environment renders for that provider
+// (see resolveUserDataForProvider in scalegroup.go). This is exactly how the
+// SAST scanner carries a DigitalOcean-specific runner (pull from the DO registry,
+// poll Spaces, self-scale via the DO API — RenderSastDOBootstrapUserData) while
+// AWS keeps the ECR/S3/ASG runner, WITHOUT forking the topology or inventing a
+// second component. Provider keys are matched case-insensitively downstream.
+type PlatformBootstrapsByProvider map[string]map[string]string
+
 // PlatformScaleGroupComponentsWithBootstrap is PlatformScaleGroupComponents plus
 // the per-service bootstrap user_data. This is the wiring point that turns "a
 // scale-group of 1" into "the canonical SSO/VPN/backend service": the bootstrap
@@ -118,6 +129,19 @@ type PlatformBootstraps map[string]string
 // which the existing scale-group renderer descends to the provider's
 // launch-template/cloud-init — no new translator (SPEC §1).
 func PlatformScaleGroupComponentsWithBootstrap(arch, os, kubernetesVersion string, bootstraps PlatformBootstraps) []AssembleComponent {
+	return PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersion, bootstraps, nil)
+}
+
+// PlatformScaleGroupComponentsWithProviderBootstrap is
+// PlatformScaleGroupComponentsWithBootstrap plus per-service, per-provider
+// bootstrap overrides. The generic bootstrap becomes AssembleScaleGroup.UserData
+// (the default for any provider); a matching entry in byProvider becomes
+// AssembleScaleGroup.UserDataByProvider[<provider>] and wins when the environment
+// renders for that provider. This is the wiring point for the SAST DigitalOcean
+// re-arch (pd-MIG-CUTOVER-F2-02): pass byProvider["sast"]["digitalocean"] =
+// RenderSastDOBootstrapUserData(...) so a DO placement gets the DO registry +
+// Spaces + DO-autoscale runner while AWS keeps the ECR/S3/ASG runner.
+func PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersion string, bootstraps PlatformBootstraps, byProvider PlatformBootstrapsByProvider) []AssembleComponent {
 	arch = strings.TrimSpace(arch)
 	os = strings.TrimSpace(os)
 	kubernetesVersion = strings.TrimSpace(kubernetesVersion)
@@ -125,6 +149,16 @@ func PlatformScaleGroupComponentsWithBootstrap(arch, os, kubernetesVersion strin
 	svcs := PlatformServices()
 	out := make([]AssembleComponent, 0, len(svcs))
 	for _, s := range svcs {
+		var perProvider map[string]string
+		if src := byProvider[s.Name]; len(src) > 0 {
+			// Copy so the caller's map can't be mutated downstream (and to keep the
+			// component self-contained). Deterministic — the map is small and only
+			// read by keyed lookup, never iterated for rendering.
+			perProvider = make(map[string]string, len(src))
+			for k, v := range src {
+				perProvider[k] = v
+			}
+		}
 		out = append(out, AssembleComponent{
 			Name: s.Name,
 			Type: "virtual-machine-scale-group",
@@ -136,12 +170,13 @@ func PlatformScaleGroupComponentsWithBootstrap(arch, os, kubernetesVersion strin
 				// Scale-group of 1: min=desired=1 (self-heal floor), max=1 (a single
 				// canonical platform member; scale the fleet by editing the abstract
 				// topology, not by forking a per-cloud ASG).
-				Min:               s.MinDesired,
-				Max:               s.MinDesired,
-				Desired:           s.MinDesired,
-				Health:            s.Health,
-				KubernetesVersion: kubernetesVersion,
-				UserData:          bootstraps[s.Name],
+				Min:                s.MinDesired,
+				Max:                s.MinDesired,
+				Desired:            s.MinDesired,
+				Health:             s.Health,
+				KubernetesVersion:  kubernetesVersion,
+				UserData:           bootstraps[s.Name],
+				UserDataByProvider: perProvider,
 			},
 		})
 	}
