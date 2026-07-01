@@ -206,6 +206,98 @@ func TestBackendDOScaleGroupComponentWiresDOUserData(t *testing.T) {
 	}
 }
 
+// TestRenderBackendDONoFormatSentinels is the renderer regression for the #127
+// EONORM heredoc: RenderBackendDOUserData builds lines via fmt.Fprintf(format+"\n"),
+// and the jdbc-normalization Python block contains literal `%s`/`%` (the Python
+// format operator). If those lines are passed as a format string with no args, Go
+// mangles them into `%!s(MISSING)` / `%!(MISSING)` sentinels, producing a broken
+// on-box normalizer → the fresh droplet keeps the raw postgres:// URL → pgjdbc
+// rejects the scheme → Hibernate fails → crash-loop (the F2-02 symptom). Assert the
+// rendered user_data carries NO printf-error sentinels anywhere.
+func TestRenderBackendDONoFormatSentinels(t *testing.T) {
+	t.Parallel()
+	ud, err := RenderBackendDOUserData(BackendBootstrapSpec{Environment: "beta"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, sentinel := range []string{"%!", "MISSING"} {
+		if strings.Contains(ud, sentinel) {
+			t.Errorf("rendered backend user_data contains a fmt error sentinel %q — a literal %% leaked through fmt.Fprintf", sentinel)
+		}
+	}
+	// The normalizer's format lines must survive VERBATIM.
+	for _, want := range []string{
+		`out.append("PYX_MAIN_DATABASE_JDBC_URL=jdbc:postgresql://%s:%s/%s%s" % (host, port, db, q))`,
+		`out.append("PYX_MAIN_DATABASE_USERNAME=%s" % user)`,
+		`out.append("PYX_MAIN_DATABASE_PASSWORD=%s" % pw)`,
+	} {
+		if !strings.Contains(ud, want) {
+			t.Errorf("EONORM normalizer line not emitted verbatim; missing:\n%s", want)
+		}
+	}
+}
+
+// TestRenderBackendDOEONORMExecutesUnderPython3 extracts the rendered EONORM Python
+// heredoc and runs it under python3 against a sample /home/main/env holding a libpq
+// postgres:// URL, then asserts it produced a valid jdbc:postgresql:// line plus the
+// split-out username/password — proving the on-box normalizer actually works (no
+// SyntaxError from mangled `%` verbs). Skipped when python3 is not on PATH.
+func TestRenderBackendDOEONORMExecutesUnderPython3(t *testing.T) {
+	t.Parallel()
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	ud, err := RenderBackendDOUserData(BackendBootstrapSpec{Environment: "beta"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	// Extract the body between the `python3 - <<'EONORM'` opener and the `EONORM`
+	// terminator (the Python source that runs on the box).
+	const opener = "python3 - <<'EONORM'"
+	start := strings.Index(ud, opener)
+	if start < 0 {
+		t.Fatal("EONORM opener not found in rendered user_data")
+	}
+	body := ud[start+len(opener):]
+	end := strings.Index(body, "\nEONORM")
+	if end < 0 {
+		t.Fatal("EONORM terminator not found in rendered user_data")
+	}
+	pySrc := strings.TrimPrefix(body[:end], "\n")
+
+	// Provide a sample env with a libpq postgres:// URL for the script to normalize.
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "env")
+	const sample = "postgres://user:pass@host:25060/mesh_app?sslmode=require"
+	if werr := os.WriteFile(envPath, []byte("PYX_MAIN_DATABASE_JDBC_URL="+sample+"\n"), 0o644); werr != nil {
+		t.Fatalf("write sample env: %v", werr)
+	}
+	// The script hardcodes p = "/home/main/env"; retarget it to our temp file.
+	pySrc = strings.Replace(pySrc, `p = "/home/main/env"`, `p = "`+envPath+`"`, 1)
+
+	cmd := exec.Command(py, "-c", pySrc)
+	if out, cerr := cmd.CombinedOutput(); cerr != nil {
+		t.Fatalf("EONORM python3 execution failed (mangled %%? SyntaxError?): %v\noutput:\n%s\nsource:\n%s", cerr, out, pySrc)
+	}
+
+	got, rerr := os.ReadFile(envPath)
+	if rerr != nil {
+		t.Fatalf("read normalized env: %v", rerr)
+	}
+	result := string(got)
+	for _, want := range []string{
+		"PYX_MAIN_DATABASE_JDBC_URL=jdbc:postgresql://host:25060/mesh_app?sslmode=require",
+		"PYX_MAIN_DATABASE_USERNAME=user",
+		"PYX_MAIN_DATABASE_PASSWORD=pass",
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("normalizer output missing %q\ngot:\n%s", want, result)
+		}
+	}
+}
+
 // TestBackendDOTerraformValidate is the executable plan-only proof that the
 // backend DO scale-group (with the ported user_data) descends to valid,
 // initialisable DigitalOcean HCL: assemble a minimal DO environment carrying the
