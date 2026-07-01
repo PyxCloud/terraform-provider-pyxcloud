@@ -61,6 +61,13 @@ const (
 	mcpSpacesBucket = "pyx-artifacts-fra1"
 	// mcpSpacesKey is the tarball key under the bucket (beta/mcp.tar.gz).
 	mcpSpacesKey = "beta/mcp.tar.gz"
+	// mcpBinaryPath is the ACTUAL server binary path after `tar -xzf mcp.tar.gz -C
+	// /opt/passobuild-mcp`. The tarball layout is `mcp/passobuild-mcp` (verified
+	// against beta/mcp.tar.gz), so the binary lands at
+	// /opt/passobuild-mcp/mcp/passobuild-mcp. systemd ExecStart MUST point here —
+	// the earlier bootstrap pointed at /opt/passobuild-mcp/mcp (the DIRECTORY),
+	// causing a 203/EXEC restart loop.
+	mcpBinaryPath = "/opt/passobuild-mcp/mcp/passobuild-mcp"
 	// mcpSpacesEndpoint is the S3-compatible fra1 Spaces endpoint the AWS CLI is
 	// pointed at (no instance role; the CLI uses the injected Spaces keys).
 	mcpSpacesEndpoint = "https://fra1.digitaloceanspaces.com"
@@ -203,13 +210,15 @@ func RenderMcpDOUserData(spec McpDOBootstrapSpec) (string, error) {
 	w("unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY")
 	w("sudo tar -xzf /tmp/mcp.tar.gz -C /opt/passobuild-mcp")
 	w("sudo chown -R mcp:mcp /opt/passobuild-mcp")
-	w("# Resolve the server binary (tarball may nest it); pick the first executable named mcp*.")
-	w("MCP_BIN=$(find /opt/passobuild-mcp -maxdepth 2 -type f -perm -u+x -name 'mcp*' | head -n1)")
-	w("MCP_BIN=$${MCP_BIN:-/opt/passobuild-mcp/mcp}")
-	w("sudo chmod 755 \"$MCP_BIN\"")
+	w("# The tarball extracts to mcp/passobuild-mcp, so the real server binary lives at")
+	w("# /opt/passobuild-mcp/mcp/passobuild-mcp. The earlier bootstrap pointed ExecStart")
+	w("# at /opt/passobuild-mcp/mcp (a DIRECTORY) -> systemd 203/EXEC restart loop. Pin the")
+	w("# ExecStart to the actual binary path (%s) and assert it exists before starting.", mcpBinaryPath)
+	w("if [ ! -x %s ]; then echo \"FATAL: mcp binary %s missing/not-executable after extract\" >&2; exit 1; fi", mcpBinaryPath, mcpBinaryPath)
+	w("sudo chmod 755 %s", mcpBinaryPath)
 	w("")
 	w("# --- Hardened systemd unit (listen :%d, no CloudWatch) ---", mcpListenPort)
-	w("cat > /etc/systemd/system/passobuild-mcp.service <<EOSVC")
+	w("cat > /etc/systemd/system/passobuild-mcp.service <<'EOSVC'")
 	w("[Unit]")
 	w("Description=PassoBuild board-OS MCP server")
 	w("After=network.target")
@@ -218,8 +227,8 @@ func RenderMcpDOUserData(spec McpDOBootstrapSpec) (string, error) {
 	w("User=mcp")
 	w("Group=mcp")
 	w("EnvironmentFile=/etc/passobuild-mcp.env")
-	w("WorkingDirectory=/opt/passobuild-mcp")
-	w("ExecStart=$MCP_BIN")
+	w("WorkingDirectory=/opt/passobuild-mcp/mcp")
+	w("ExecStart=%s", mcpBinaryPath)
 	w("StandardOutput=append:/var/log/passobuild-mcp.log")
 	w("StandardError=append:/var/log/passobuild-mcp.log")
 	w("Restart=always")
