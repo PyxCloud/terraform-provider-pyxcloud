@@ -159,6 +159,22 @@ type DOBaselineSecrets struct {
 	// EmbedTokenSecret is beta/passobuild-mcp-embed-token — the MCP embed token,
 	// injected at render time (unchanged behaviour, kept durable).
 	EmbedTokenSecret string
+
+	// --- SSO (Keycloak) literal-injected secrets (pd-MIG-CUTOVER durable edge) ---
+	// The sso DO bootstrap (RenderSSODOBootstrapUserData) inlines its secret VALUES
+	// into user_data (it does NOT use ${var.<x>} refs), so a droplet self-heal boots
+	// a fully-configured Keycloak. These are fetched from Secrets Manager by the
+	// harness (cutover/render.go) and injected at render time. Required when
+	// DOBaselineOptions.FullServiceBootstraps is set.
+	SSOKCDBURL         string // beta-DO-keycloak-db-url (jdbc form, sslmode=require)
+	SSOKCDBUsername    string // keycloak-db username
+	SSOKCDBPassword    string // keycloak-db password
+	SSOAdminPassword   string // Keycloak bootstrap admin password
+	SSOVaultOIDCSecret string // pyx Vault OIDC client secret (file vault)
+	SSORunnerPublicKey string // deploy-runner stable SSH public key (optional)
+	SSOSMTPUser        string // SES SMTP user (optional)
+	SSOSMTPPassword    string // SES SMTP password (optional)
+	SSOSenderEmail     string // passo.build SES From address (optional)
 }
 
 // UsePrivateDBHost, when true, rewrites the BoardDatabaseURL host to the DO
@@ -196,6 +212,19 @@ type DOBaselineOptions struct {
 	// standalone terminator script; mcp gets the terminator appended after its
 	// durable bootstrap. Off by default (0 change to the base estate).
 	EdgeTLSOrigins bool
+	// FullServiceBootstraps, when true, renders the COMPLETE per-service DO
+	// bootstrap for EVERY service (mcp/sso/obs/sast/backend/vpn) via the catalog
+	// Render*DO* functions, so a droplet self-heal/roll boots the real service
+	// rather than a bare box. This is the DURABLE render (pd-MIG-CUTOVER-F5): the
+	// committed source of truth for what each droplet template must contain.
+	//
+	// When set, the var-model services (mcp/obs/sast/backend/vpn) reference their
+	// secrets as ${var.<x>} (resolved by terraform at apply from -var, sourced from
+	// Secrets Manager), while sso inlines its secret values from DOBaselineSecrets.
+	// EdgeTLSOrigins is implied for sso/backend/mcp (the :443 terminator is appended
+	// to their full bootstrap). Off by default so the legacy mcp-only render is
+	// unchanged.
+	FullServiceBootstraps bool
 }
 
 // AssembleDOBaseline renders the cutover baseline as concrete terraform documents
@@ -297,34 +326,53 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 			return nil, fmt.Errorf("do-baseline: resolve image for %s: %w", svc.Name, err)
 		}
 		userData := ""
-		if svc.Durable {
+		heredocEscaped := false // FullServiceBootstraps var-model needs $$-escaping, not $$-everything.
+		switch {
+		case opts.FullServiceBootstraps:
+			// DURABLE render: the COMPLETE per-service bootstrap so a self-heal/roll
+			// boots the real service. Var-model services keep ${var.<x>} refs (resolved
+			// at apply from -var); sso inlines its secret values from DOBaselineSecrets.
+			ud, err := renderFullServiceBootstrap(svc.Name, secrets, opts)
+			if err != nil {
+				return nil, err
+			}
+			userData = ud
+			heredocEscaped = true
+		case svc.Durable:
+			// Legacy mcp-only durable render (literal mesh_app URL). Kept for the base
+			// harness path (FullServiceBootstraps off).
 			userData = renderMCPUserData(secrets, opts)
-		}
-		// pd-MIG-CUTOVER-F4-PREP: append the Cloudflare-Full :443 TLS terminator to
-		// each origin service so it can serve its public hostname behind Cloudflare.
-		if opts.EdgeTLSOrigins {
-			for _, o := range doEdgeOrigins() {
-				if o.Service != svc.Name {
-					continue
-				}
-				snippet, terr := RenderEdgeTLSTerminatorSnippet(EdgeTLSTerminator{Hostname: o.Hostname, UpstreamPort: o.UpstreamPort})
+			// pd-MIG-CUTOVER-F4-PREP: append the Cloudflare-Full :443 terminator.
+			if opts.EdgeTLSOrigins {
+				snip, terr := edgeTerminatorFor(svc.Name)
 				if terr != nil {
-					return nil, fmt.Errorf("do-baseline: edge terminator for %s: %w", svc.Name, terr)
+					return nil, terr
 				}
-				if userData == "" {
-					// No base bootstrap in the committed harness (backend/sso): emit a
-					// standalone terminator script. In the real cutover this snippet is
-					// appended to the service's full bootstrap (which lives in state).
-					userData = "#!/bin/bash\nset -euo pipefail\n" + snippet
-				} else {
-					userData = userData + "\n\n" + snippet
+				if snip != "" {
+					userData = userData + "\n\n" + snip
 				}
-				break
+			}
+		case opts.EdgeTLSOrigins:
+			// Base harness (no full bootstrap): standalone terminator for sso/backend.
+			snip, terr := edgeTerminatorFor(svc.Name)
+			if terr != nil {
+				return nil, terr
+			}
+			if snip != "" {
+				userData = "#!/bin/bash\nset -euo pipefail\n" + snip
 			}
 		}
 		udBlock := ""
 		if userData != "" {
-			udBlock = fmt.Sprintf("\n    user_data = <<-USERDATA\n%s\n    USERDATA\n", indentUserData(userData))
+			body := userData
+			if heredocEscaped {
+				// Var-model bootstraps: escape bash ${...} but PRESERVE ${var.<x>} so
+				// terraform interpolates the injected secrets. Indent for the heredoc.
+				body = indentPreserveVars(escapeBashExpansionsForHeredoc(userData))
+			} else {
+				body = indentUserData(userData)
+			}
+			udBlock = fmt.Sprintf("\n    user_data = <<-USERDATA\n%s\n    USERDATA\n", body)
 		}
 		docs = append(docs, fmt.Sprintf(`resource "digitalocean_droplet_autoscale" %q {
   name = %q
@@ -531,3 +579,124 @@ func indentUserData(s string) string {
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+// edgeTerminatorFor returns the nginx :443 Cloudflare-Full TLS terminator snippet
+// for a service that fronts a public origin (sso/backend/mcp per doEdgeOrigins), or
+// "" if the service is not an edge origin.
+func edgeTerminatorFor(svcName string) (string, error) {
+	for _, o := range doEdgeOrigins() {
+		if o.Service != svcName {
+			continue
+		}
+		snippet, err := RenderEdgeTLSTerminatorSnippet(EdgeTLSTerminator{Hostname: o.Hostname, UpstreamPort: o.UpstreamPort})
+		if err != nil {
+			return "", fmt.Errorf("do-baseline: edge terminator for %s: %w", svcName, err)
+		}
+		return snippet, nil
+	}
+	return "", nil
+}
+
+// doBaselineBackendSpec is the deterministic backend bootstrap spec (all-default
+// variable names) so the DURABLE render is byte-stable and self-documenting.
+func doBaselineBackendSpec() BackendBootstrapSpec {
+	return (BackendBootstrapSpec{Environment: "beta"}).withDefaults()
+}
+
+// renderFullServiceBootstrap renders the COMPLETE DigitalOcean bootstrap for one
+// service (pd-MIG-CUTOVER-F5 durable render). Var-model services keep ${var.<x>}
+// refs; sso inlines its secret values from DOBaselineSecrets. For the three
+// Cloudflare-Full origins (sso/backend/mcp) the nginx :443 terminator is appended
+// so the droplet template carries BOTH the service and its edge in one boot.
+func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts DOBaselineOptions) (string, error) {
+	var ud string
+	var err error
+	switch svcName {
+	case "mcp":
+		ud, err = RenderMcpDOUserData(McpDOBootstrapSpec{Environment: "beta"})
+	case "sso":
+		ud, err = RenderSSODOBootstrapUserData(SSODOBootstrapSpec{
+			Environment:           "beta",
+			DomainName:            "pyxcloud.io",
+			KCDBURL:               secrets.SSOKCDBURL,
+			KCDBUsername:          secrets.SSOKCDBUsername,
+			KCDBPassword:          secrets.SSOKCDBPassword,
+			AdminPassword:         secrets.SSOAdminPassword,
+			VaultOIDCSecret:       secrets.SSOVaultOIDCSecret,
+			SpacesAccessKey:       secrets.SpacesAccessKey,
+			SpacesSecretKey:       secrets.SpacesSecretKey,
+			RunnerPublicKey:       secrets.SSORunnerPublicKey,
+			SMTPUser:              secrets.SSOSMTPUser,
+			SMTPPassword:          secrets.SSOSMTPPassword,
+			PassobuildSenderEmail: secrets.SSOSenderEmail,
+		})
+	case "obs":
+		ud, err = RenderOBSDOBootstrapUserData(OBSDOBootstrapSpec{})
+	case "sast":
+		ud, err = RenderSastDOBootstrapUserData(SastDOBootstrapSpec{Environment: "beta"})
+	case "backend":
+		ud, err = RenderBackendDOUserData(doBaselineBackendSpec())
+	case "vpn":
+		ud, err = RenderVPNBootstrapUserData(VPNBootstrapSpec{Environment: "beta"})
+	default:
+		return "", fmt.Errorf("do-baseline: no full bootstrap for service %q", svcName)
+	}
+	if err != nil {
+		return "", fmt.Errorf("do-baseline: render %s bootstrap: %w", svcName, err)
+	}
+	// Append the Cloudflare-Full :443 terminator for the public origins.
+	snip, terr := edgeTerminatorFor(svcName)
+	if terr != nil {
+		return "", terr
+	}
+	if snip != "" {
+		ud = ud + "\n\n" + snip
+	}
+	return ud, nil
+}
+
+// DOBaselineVariableNames returns the deterministic, deduplicated set of Terraform
+// variable names the DURABLE render (FullServiceBootstraps) references via
+// ${var.<x>} across the var-model services (mcp/obs/sast/backend/vpn). The harness
+// (cutover/render.go) emits a `variable "<x>" {}` declaration for each so the
+// rendered estate.tf is self-contained and `terraform validate`s; the values are
+// supplied at apply time via -var from Secrets Manager. sso is excluded (it inlines
+// its secret values, not variable refs).
+func DOBaselineVariableNames() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(names ...[]string) {
+		for _, group := range names {
+			for _, n := range group {
+				if n == "" || seen[n] {
+					continue
+				}
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	mp, ms := (McpDOBootstrapSpec{Environment: "beta"}).McpDOBootstrapVariableNames()
+	op, os_ := (OBSDOBootstrapSpec{}).OBSDOBootstrapVariableNames()
+	sp, ss := (SastDOBootstrapSpec{Environment: "beta"}).SastDOBootstrapVariableNames()
+	bp, bs := doBaselineBackendSpec().BackendBootstrapVariableNames()
+	vp, vs := (VPNBootstrapSpec{Environment: "beta"}).VPNBootstrapVariableNames()
+	add(mp, ms, op, os_, sp, ss, bp, bs, vp, vs)
+	return out
+}
+
+// indentPreserveVars indents each line of an already-heredoc-escaped user_data
+// body by 6 spaces for the <<-USERDATA heredoc, WITHOUT re-escaping ${...} (the
+// caller has already run escapeBashExpansionsForHeredoc, which preserves
+// ${var.<x>} and escapes bash ${...} to $${...}). Unlike indentUserData it does
+// NOT touch ${ / %{ sequences, so ${var.<x>} survives for terraform to interpolate.
+func indentPreserveVars(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l == "" {
+			continue
+		}
+		lines[i] = "      " + l
+	}
+	return strings.Join(lines, "\n")
+}

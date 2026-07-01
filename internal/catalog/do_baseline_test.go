@@ -140,6 +140,183 @@ func TestEdgeTLSTerminatorValidation(t *testing.T) {
 	}
 }
 
+// fullBaselineSecrets extends the test secrets with the sso literal-injected set
+// so the FullServiceBootstraps render succeeds.
+func fullBaselineSecrets() DOBaselineSecrets {
+	s := testDOBaselineSecrets()
+	s.SSOKCDBURL = "jdbc:postgresql://kc-do-user.db.ondigitalocean.com:25060/defaultdb?sslmode=require"
+	s.SSOKCDBUsername = "doadmin"
+	s.SSOKCDBPassword = "TEST_KC_PW"
+	s.SSOAdminPassword = "TEST_ADMIN_PW"
+	s.SSOVaultOIDCSecret = "TEST_VAULT_OIDC"
+	s.SSORunnerPublicKey = "ssh-ed25519 AAAATESTRUNNERKEY runner@pyx"
+	return s
+}
+
+func renderFullBaseline(t *testing.T) []string {
+	t.Helper()
+	in := DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
+	docs, err := AssembleDOBaseline(context.Background(), MustEmbedded(), in, fullBaselineSecrets(),
+		DOBaselineOptions{PrivateDBHost: true, FullServiceBootstraps: true})
+	if err != nil {
+		t.Fatalf("AssembleDOBaseline(full): %v", err)
+	}
+	return docs
+}
+
+// perServiceUserData splits the rendered docs into a service->user_data map by
+// scanning each droplet_autoscale resource's heredoc, so assertions can be scoped
+// to the right box (a marker leaking into the wrong service is a real bug).
+func perServiceUserData(t *testing.T, docs []string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, d := range docs {
+		if !strings.Contains(d, `resource "digitalocean_droplet_autoscale"`) {
+			continue
+		}
+		// name is the second quoted token on the resource line.
+		i := strings.Index(d, `resource "digitalocean_droplet_autoscale" "`)
+		rest := d[i+len(`resource "digitalocean_droplet_autoscale" "`):]
+		name := rest[:strings.Index(rest, `"`)]
+		ud := ""
+		if s := strings.Index(d, "<<-USERDATA\n"); s >= 0 {
+			body := d[s+len("<<-USERDATA\n"):]
+			if e := strings.Index(body, "USERDATA\n"); e >= 0 {
+				ud = body[:e]
+			}
+		}
+		out[name] = ud
+	}
+	return out
+}
+
+// TestDOBaselineFullServiceBootstraps is the DURABILITY contract (pd-MIG-CUTOVER-F5):
+// with FullServiceBootstraps set, EVERY service droplet template carries its complete
+// service bootstrap, and the three Cloudflare-Full origins (sso/backend/mcp) also
+// carry the nginx :443 terminator to the correct local port. A self-heal/roll from
+// this render boots the real service + edge, not a bare box.
+func TestDOBaselineFullServiceBootstraps(t *testing.T) {
+	docs := renderFullBaseline(t)
+	svc := perServiceUserData(t, docs)
+
+	// 1. Every service carries a non-empty full bootstrap with its service marker.
+	markers := map[string][]string{
+		"sso":     {"keycloak", "KC_HOSTNAME=beta-auth.pyxcloud.io", "KC_PROXY_HEADERS=xforwarded"},
+		"backend": {"quarkus", "pyxcloud -Xmx1g"},
+		"mcp":     {"passobuild-mcp", "PYXCLOUD_MCP_HTTP_PORT=8787"},
+		"obs":     {"observability"},
+		"sast":    {"semgrep"},
+		"vpn":     {"wireguard", "wg0"},
+	}
+	for name, wants := range markers {
+		ud, ok := svc[name]
+		if !ok || strings.TrimSpace(ud) == "" {
+			t.Fatalf("service %q has no user_data in the durable render", name)
+		}
+		for _, w := range wants {
+			if !strings.Contains(ud, w) {
+				t.Errorf("service %q user_data missing marker %q", name, w)
+			}
+		}
+	}
+
+	// 2. Exactly the three edge origins (sso/backend/mcp) carry a :443 terminator to
+	//    the correct upstream port. sast/vpn must NOT. obs has its own :443 (checked
+	//    separately) but must NOT carry an sso/backend/mcp public server_name.
+	edge := map[string]struct{ host, upstream string }{
+		"sso":     {"beta-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
+		"backend": {"beta-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
+		"mcp":     {"mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
+	}
+	for name, e := range edge {
+		ud := svc[name]
+		if !strings.Contains(ud, "listen 443 ssl") {
+			t.Errorf("edge origin %q missing nginx :443 terminator (listen 443 ssl)", name)
+		}
+		if !strings.Contains(ud, "server_name "+e.host+";") {
+			t.Errorf("edge origin %q missing server_name %q", name, e.host)
+		}
+		if !strings.Contains(ud, e.upstream) {
+			t.Errorf("edge origin %q missing upstream %q", name, e.upstream)
+		}
+	}
+	for _, name := range []string{"sast", "vpn"} {
+		if strings.Contains(svc[name], "listen 443 ssl") {
+			t.Errorf("service %q must NOT carry a :443 edge terminator", name)
+		}
+	}
+
+	// 3. ${var.<x>} references survive un-escaped (terraform must interpolate the
+	//    injected secrets), and bash ${...} is escaped to $${...} in the heredoc.
+	joined := strings.Join(docs, "\n")
+	if !strings.Contains(joined, "${var.") {
+		t.Errorf("durable render must keep ${var.<x>} references for terraform")
+	}
+	if strings.Contains(joined, "$${var.") {
+		t.Errorf("${var.<x>} must NOT be escaped (terraform would fail to interpolate)")
+	}
+
+	// 4. The harness must be able to declare a variable for every referenced name.
+	vars := DOBaselineVariableNames()
+	if len(vars) == 0 {
+		t.Fatalf("DOBaselineVariableNames returned no variables")
+	}
+	for _, name := range vars {
+		if !strings.Contains(joined, "${var."+name+"}") {
+			t.Errorf("declared variable %q is not referenced by any rendered user_data", name)
+		}
+	}
+	// Every ${var.<x>} reference in the render must have a matching declaration.
+	for _, ref := range distinctVarRefs(joined) {
+		found := false
+		for _, name := range vars {
+			if name == ref {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("user_data references ${var.%s} but DOBaselineVariableNames does not declare it", ref)
+		}
+	}
+}
+
+// distinctVarRefs extracts the distinct <x> from every ${var.<x>} occurrence.
+func distinctVarRefs(s string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for {
+		i := strings.Index(s, "${var.")
+		if i < 0 {
+			break
+		}
+		s = s[i+len("${var."):]
+		j := strings.IndexByte(s, '}')
+		if j < 0 {
+			break
+		}
+		name := s[:j]
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+		s = s[j+1:]
+	}
+	return out
+}
+
+// TestDOBaselineFullRequiresSSOSecrets asserts the durable render rejects a missing
+// sso literal secret (sso inlines its values, so they must be injected).
+func TestDOBaselineFullRequiresSSOSecrets(t *testing.T) {
+	in := DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
+	s := testDOBaselineSecrets() // no SSO* fields
+	_, err := AssembleDOBaseline(context.Background(), MustEmbedded(), in, s,
+		DOBaselineOptions{PrivateDBHost: true, FullServiceBootstraps: true})
+	if err == nil {
+		t.Fatalf("expected error: sso literal secrets missing in the durable render")
+	}
+}
+
 // TestDOBaselineDeterministic asserts render output is byte-stable.
 func TestDOBaselineDeterministic(t *testing.T) {
 	a := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
