@@ -41,7 +41,9 @@ func TestDOBaselineResourceSet(t *testing.T) {
 		`resource "digitalocean_droplet_autoscale" "sast"`,
 		`resource "digitalocean_droplet_autoscale" "sso"`,
 		`resource "digitalocean_droplet_autoscale" "vpn"`,
-		`resource "digitalocean_loadbalancer" "edge-lb"`,
+		`resource "digitalocean_loadbalancer" "lb-sso"`,
+		`resource "digitalocean_loadbalancer" "lb-backend"`,
+		`resource "digitalocean_loadbalancer" "lb-mcp"`,
 		`resource "digitalocean_spaces_bucket" "artifacts"`,
 	}
 	for _, w := range want {

@@ -34,7 +34,8 @@ import (
 //   - 1 firewall (passo-do-baseline-sg): inbound 443, egress icmp/tcp/udp all
 //   - 2 managed PG clusters (pyx-main-db, keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes
 //   - 6 droplet-autoscale groups: backend / mcp / obs / sast / sso / vpn
-//   - 1 regional load-balancer (edge-lb) fronting the backend droplet tag on 443
+//   - 3 regional load-balancers (lb-sso / lb-backend / lb-mcp) fronting the
+//     sso / backend / mcp droplet tags on 443 (stable IPs for Cloudflare DNS)
 //   - 1 Spaces bucket (pyx-artifacts-fra1) — the mcp/backend artifact store
 //     (INCLUDED now that beta-DigitalOceanSpacesKeys exists)
 
@@ -543,8 +544,11 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 	//   Health checks target the upstream service port/path directly — never the
 	//   droplet's public IP on :443 (there is no droplet-side :443 anymore).
 	//
-	// Off (legacy): one L4 tls_passthrough edge-lb fronting the backend tag,
-	// matching the deployed state byte-for-byte.
+	// Off (legacy, default): three per-service L4 tls_passthrough LBs
+	// (lb-sso/lb-backend/lb-mcp) fronting the sso/backend/mcp droplet tags on 443
+	// — matching the deployed/reconciled state byte-for-byte (see pd-MIG-CUTOVER
+	// state reconciliation; the old single "edge-lb" was renamed to "lb-backend"
+	// and converted to this uniform TCP config live).
 	if opts.LBTermination {
 		// One digitalocean_certificate (Cloudflare Origin cert, custom type) shared
 		// across the three origin FQDNs — sourced from TF vars, never inlined.
@@ -592,31 +596,53 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 				o.UpstreamPort, edgeOriginHealthPath(o.Service)))
 		}
 	} else {
-		docs = append(docs, fmt.Sprintf(`resource "digitalocean_loadbalancer" "edge-lb" {
-  name        = "edge-lb"
+		// Per-service regional load-balancers fronting each Cloudflare-routed edge
+		// origin on 443. One LB per edge service (sso/backend/mcp) so Cloudflare DNS
+		// can point at a STABLE LB IP that forwards by droplet TAG — surviving a
+		// droplet self-heal/roll (new droplet IP) with zero DNS change. This is the
+		// last edge durability gap closed before decommission.
+		//
+		// All three use TCP:443 -> TCP:443 passthrough (the LB never touches TLS; the
+		// origin nginx terminator serves its own cert) with a TCP:443 health check.
+		// The legacy single "edge-lb" (backend, https-passthrough + http:8080
+		// healthcheck) was renamed to "lb-backend" and converted to this uniform TCP
+		// config live; the catalog now models the reconciled shape.
+		//
+		// NOTE: doEdgeOrigins() is the canonical sso/backend/mcp edge set, kept in
+		// order so the emitted HCL is deterministic.
+		for _, origin := range doEdgeOrigins() {
+			svc := DOBaselineServices()[0]
+			for _, s := range DOBaselineServices() {
+				if s.Name == origin.Service {
+					svc = s
+					break
+				}
+			}
+			docs = append(docs, fmt.Sprintf(`resource "digitalocean_loadbalancer" "lb-%s" {
+  name        = "lb-%s"
   region      = %q
   size_unit   = 1
-  droplet_tag = "pyx-backend"
+  droplet_tag = %q
   vpc_uuid    = digitalocean_vpc.%s.id
 
   forwarding_rule {
     entry_port      = 443
-    entry_protocol  = "https"
+    entry_protocol  = "tcp"
     target_port     = 443
-    target_protocol = "https"
-    tls_passthrough = true
+    target_protocol = "tcp"
+    tls_passthrough = false
   }
 
   healthcheck {
-    protocol                 = "http"
-    port                     = 8080
-    path                     = "/q/health"
-    check_interval_seconds   = 30
+    protocol                 = "tcp"
+    port                     = 443
+    check_interval_seconds   = 10
     response_timeout_seconds = 5
     healthy_threshold        = 3
     unhealthy_threshold      = 3
   }
-}`, region, doBaselineName+"-net"))
+}`, origin.Service, origin.Service, region, svc.Tag, doBaselineName+"-net"))
+		}
 	}
 
 	// 6. Spaces bucket (pyx-artifacts-fra1) — the release-artifact store. INCLUDED
