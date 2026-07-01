@@ -1542,6 +1542,33 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 		}
 	}
+	// Declare the SAST DigitalOcean runner's out-of-band secret variables when a
+	// DO scale-group's bootstrap references them. The DO sast runner
+	// (RenderSastDOBootstrapUserData) reaches for Spaces keys, a DO registry token
+	// and a DO API token by ${var.<x>} — the operator wires those to Vault / the
+	// secret source, never the topology. Emit each `variable {}` block at most once
+	// and only when the rendered user_data actually references it, so an estate with
+	// no DO sast runner stays clean. Deterministic order (fixed slice).
+	if strings.ToLower(in.Provider) == ProviderDigitalOcean {
+		_, sastSecretVars := SastDOBootstrapSpec{Environment: "x"}.SastDOBootstrapVariableNames()
+		var userDataBlob strings.Builder
+		for _, c := range in.Components {
+			if c.Type == "virtual-machine-scale-group" && c.ScaleGroup != nil {
+				userDataBlob.WriteString(c.ScaleGroup.UserData)
+				for _, ud := range c.ScaleGroup.UserDataByProvider {
+					userDataBlob.WriteString(ud)
+				}
+			}
+		}
+		blob := userDataBlob.String()
+		for _, name := range sastSecretVars {
+			ref := "${var." + name + "}"
+			decl := "variable \"" + name + "\" {\n  type = string\n"
+			if strings.Contains(blob, ref) && !strings.Contains(strings.Join(docs, "\n"), decl) {
+				docs = append([]string{decl + "  sensitive = true\n}\n"}, docs...)
+			}
+		}
+	}
 	// Emit a required_providers block when one is needed: a non-default-namespace
 	// cloud provider (e.g. digitalocean/digitalocean) always needs its source pinned,
 	// and once ANY required_providers entry exists (e.g. Cloudflare) terraform also
