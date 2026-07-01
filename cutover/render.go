@@ -2,8 +2,12 @@
 // cutover baseline (pd-MIG-CUTOVER-F2-02). It replaces the ad-hoc "re-render catalog
 // HCL into a throwaway /tmp dir on every apply" workflow: the estate is rendered
 // deterministically into cutover/generated/ from the committed catalog descriptor
-// catalog.DOBaselineInput, and applied against the persistent S3 state
-// (s3://pyxcloud-terraform-state/cutover/do-baseline-fra1.tfstate).
+// catalog.DOBaselineInput, and applied against the persistent state, which lives
+// in the S3-compatible DigitalOcean Spaces bucket
+// (s3://pyx-terraform-state/cutover/do-baseline-fra1.tfstate @ fra1). The legacy
+// AWS S3 bucket (pyxcloud-terraform-state, eu-west-1) is retained as a cold backup
+// until the AWS-decommission step; state was migrated with `terraform init
+// -migrate-state` (pd-MIG-CUTOVER-STATE-OFF-AWS).
 //
 // It is intentionally the SPIRIT of the requested entry point:
 //
@@ -42,13 +46,20 @@ import (
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 )
 
-// stateBucket / stateKey / stateRegion pin the persistent S3 backend. This is the
-// ONE authoritative state for the cutover baseline — the whole point of the
+// stateBucket / stateKey / stateEndpoint pin the persistent state backend. This is
+// the ONE authoritative state for the cutover baseline — the whole point of the
 // harness is that state (and now the config) persists, not a /tmp render.
+//
+// The backend is the standard terraform "s3" backend pointed at the S3-COMPATIBLE
+// DigitalOcean Spaces endpoint (fra1). Spaces has no DynamoDB and no real AWS
+// region/STS/metadata, so the AWS-specific validation is skipped and locking uses
+// the native S3 lockfile (use_lockfile=true, terraform >= 1.11). stateRegion is a
+// required-but-ignored placeholder for the s3 backend; Spaces routing is by endpoint.
 const (
-	stateBucket = "pyxcloud-terraform-state"
-	stateKey    = "cutover/do-baseline-fra1.tfstate"
-	stateRegion = "eu-west-1"
+	stateBucket   = "pyx-terraform-state"
+	stateKey      = "cutover/do-baseline-fra1.tfstate"
+	stateRegion   = "us-east-1" // placeholder; ignored by Spaces (routing is by endpoint)
+	stateEndpoint = "https://fra1.digitaloceanspaces.com"
 )
 
 func main() {
@@ -137,14 +148,31 @@ func run() error {
 		return fmt.Errorf("mkdir %s: %w", outDir, err)
 	}
 
-	// backend.tf — S3 backend + required_providers + provider config. The DO token
-	// and Spaces creds come from the environment (DIGITALOCEAN_TOKEN / SPACES_*),
-	// NOT the file, so nothing secret is committed or rendered.
+	// backend.tf — S3-compatible (DigitalOcean Spaces) backend + required_providers +
+	// provider config. The DO token and Spaces creds come from the environment, NOT
+	// the file, so nothing secret is committed or rendered. The terraform s3 backend
+	// reads its credentials from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY at
+	// init/plan/apply time; export the Spaces keys into those (see cutover/README.md).
 	backend := fmt.Sprintf(`terraform {
   backend "s3" {
-    bucket = %q
-    key    = %q
-    region = %q
+    bucket   = %q
+    key      = %q
+    region   = %q # placeholder; DigitalOcean Spaces ignores it (routing is by endpoint)
+    endpoints = { s3 = %q }
+
+    # DigitalOcean Spaces is S3-compatible but not AWS: skip all AWS-specific checks.
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    use_path_style              = true
+
+    # No DynamoDB on Spaces — lock via a native S3 lockfile (terraform >= 1.11).
+    use_lockfile = true
+
+    # Credentials (Spaces keys) come from the environment, never committed:
+    #   AWS_ACCESS_KEY_ID     = <beta-DigitalOceanSpacesKeys access_key>
+    #   AWS_SECRET_ACCESS_KEY = <beta-DigitalOceanSpacesKeys secret_key>
   }
   required_providers {
     digitalocean = {
@@ -159,7 +187,7 @@ func run() error {
 #   SPACES_ACCESS_KEY_ID / SPACES_SECRET_ACCESS_KEY (beta-DigitalOceanSpacesKeys)
 provider "digitalocean" {
 }
-`, stateBucket, stateKey, stateRegion)
+`, stateBucket, stateKey, stateRegion, stateEndpoint)
 	if err := writeFile(filepath.Join(outDir, "backend.tf"), backend); err != nil {
 		return err
 	}
