@@ -34,7 +34,8 @@ import (
 //   - 1 firewall (passo-do-baseline-sg): inbound 443, egress icmp/tcp/udp all
 //   - 2 managed PG clusters (pyx-main-db, keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes
 //   - 6 droplet-autoscale groups: backend / mcp / obs / sast / sso / vpn
-//   - 1 regional load-balancer (edge-lb) fronting the backend droplet tag on 443
+//   - 3 regional load-balancers (lb-sso / lb-backend / lb-mcp) fronting the
+//     sso / backend / mcp droplet tags on 443 (stable IPs for Cloudflare DNS)
 //   - 1 Spaces bucket (pyx-artifacts-fra1) — the mcp/backend artifact store
 //     (INCLUDED now that beta-DigitalOceanSpacesKeys exists)
 
@@ -225,6 +226,19 @@ type DOBaselineOptions struct {
 	// to their full bootstrap). Off by default so the legacy mcp-only render is
 	// unchanged.
 	FullServiceBootstraps bool
+	// VaultHA, when true, appends the 3-node Raft Vault droplet cluster
+	// (vaultha_droplet_do.go) to the baseline: 3 fixed digitalocean_droplet nodes
+	// with a block volume each, a private-only :8200/:8201 firewall, cloud-auto-join
+	// peer discovery by DO tag, and a configurable seal stanza (AWS-KMS bridge by
+	// default). This is Phase 0 of the Vault-HA-on-DO migration
+	// (pd-MIG-VAULT-HA-HARDEN). OFF BY DEFAULT so it never perturbs the existing
+	// baseline render (0 change to the deployed estate). The harness gates it on the
+	// DO_VAULT_HA=1 env flag; VaultHASpec/VaultHASecrets below carry the render-time
+	// seal + auto-join credentials (never committed, never in tf state).
+	VaultHA bool
+	// VaultHASpec tunes the Vault cluster (seal mode, reserved IPs). Only consulted
+	// when VaultHA is true. Zero value -> AWS-KMS bridge seal, no reserved IPs.
+	VaultHASpec VaultDropletSpec
 }
 
 // AssembleDOBaseline renders the cutover baseline as concrete terraform documents
@@ -395,32 +409,53 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 }`, svc.Name, svc.Name, row.Name, region, img.Image, doBaselineName+"-net", svc.Tag, udBlock))
 	}
 
-	// 5. Regional load-balancer (edge-lb) fronting the backend tag on 443.
-	docs = append(docs, fmt.Sprintf(`resource "digitalocean_loadbalancer" "edge-lb" {
-  name        = "edge-lb"
+	// 5. Per-service regional load-balancers fronting each Cloudflare-routed edge
+	//    origin on 443. One LB per edge service (sso/backend/mcp) so Cloudflare DNS
+	//    can point at a STABLE LB IP that forwards by droplet TAG — surviving a
+	//    droplet self-heal/roll (new droplet IP) with zero DNS change. This is the
+	//    last edge durability gap closed before decommission.
+	//
+	//    All three use TCP:443 -> TCP:443 passthrough (the LB never touches TLS; the
+	//    origin nginx terminator serves its own cert) with a TCP:443 health check.
+	//    The legacy single "edge-lb" (backend, https-passthrough + http:8080
+	//    healthcheck) was renamed to "lb-backend" and converted to this uniform TCP
+	//    config live; the catalog now models the reconciled shape.
+	//
+	//    NOTE: doEdgeOrigins() is the canonical sso/backend/mcp edge set, kept in
+	//    order so the emitted HCL is deterministic.
+	for _, origin := range doEdgeOrigins() {
+		svc := DOBaselineServices()[0]
+		for _, s := range DOBaselineServices() {
+			if s.Name == origin.Service {
+				svc = s
+				break
+			}
+		}
+		docs = append(docs, fmt.Sprintf(`resource "digitalocean_loadbalancer" "lb-%s" {
+  name        = "lb-%s"
   region      = %q
   size_unit   = 1
-  droplet_tag = "pyx-backend"
+  droplet_tag = %q
   vpc_uuid    = digitalocean_vpc.%s.id
 
   forwarding_rule {
     entry_port      = 443
-    entry_protocol  = "https"
+    entry_protocol  = "tcp"
     target_port     = 443
-    target_protocol = "https"
-    tls_passthrough = true
+    target_protocol = "tcp"
+    tls_passthrough = false
   }
 
   healthcheck {
-    protocol                 = "http"
-    port                     = 8080
-    path                     = "/q/health"
-    check_interval_seconds   = 30
+    protocol                 = "tcp"
+    port                     = 443
+    check_interval_seconds   = 10
     response_timeout_seconds = 5
     healthy_threshold        = 3
     unhealthy_threshold      = 3
   }
-}`, region, doBaselineName+"-net"))
+}`, origin.Service, origin.Service, region, svc.Tag, doBaselineName+"-net"))
+	}
 
 	// 6. Spaces bucket (pyx-artifacts-fra1) — the release-artifact store. INCLUDED
 	//    now that beta-DigitalOceanSpacesKeys exists; the spaces provider creds come
@@ -434,6 +469,33 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
     prevent_destroy = true
   }
 }`, doBaselineSpacesBucket, region))
+
+	// 7. Vault-HA 3-node Raft droplet cluster (Phase 0, pd-MIG-VAULT-HA-HARDEN).
+	//    OPT-IN via opts.VaultHA (harness DO_VAULT_HA=1). Off => 0 change to the base
+	//    estate. Sized via the SAME catalog SKU/image resolvers every service uses.
+	if opts.VaultHA {
+		vaultRow, err := cat.ResolveSKU(ctx, csp, cspRegion, "x86_64", 2, 4)
+		if err != nil {
+			return nil, fmt.Errorf("do-baseline: resolve SKU for vault (2vCPU/4GiB): %w", err)
+		}
+		vaultImg, err := cat.ResolveImage(ctx, csp, cspRegion, "ubuntu", "24.04", "x86_64")
+		if err != nil {
+			return nil, fmt.Errorf("do-baseline: resolve image for vault: %w", err)
+		}
+		vspec := opts.VaultHASpec
+		if strings.TrimSpace(vspec.Name) == "" {
+			vspec.Name = vaultDropletTag
+		}
+		vspec.Region = region
+		vspec.Size = vaultRow.Name
+		vspec.Image = vaultImg.Image
+		vspec.VPCRef = "digitalocean_vpc." + doBaselineName + "-net.id"
+		vaultDocs, verr := RenderVaultDropletCluster(vspec)
+		if verr != nil {
+			return nil, fmt.Errorf("do-baseline: vault-ha cluster: %w", verr)
+		}
+		docs = append(docs, vaultDocs...)
+	}
 
 	return docs, nil
 }
