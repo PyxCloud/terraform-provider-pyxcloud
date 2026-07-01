@@ -132,9 +132,65 @@ func run() error {
 	// terminator and can be flipped onto its DO origin behind Cloudflare "Full".
 	// See docs/cutover/CLOUDFLARE-CUTOVER.md. Off by default (0 change to base estate).
 	edgeTLS := strings.TrimSpace(os.Getenv("DO_EDGE_TLS_ORIGINS")) == "1"
+
+	// VaultHA (pd-MIG-VAULT-HA-HARDEN Phase 0): opt-in via DO_VAULT_HA=1 so the
+	// baseline appends the 3-node Raft Vault droplet cluster (vaultha_droplet_do.go).
+	// Off by default => 0 change to the deployed estate. The seal + auto-join
+	// credentials are RENDER-TIME injections read from the environment here and inlined
+	// into the droplet systemd drop-in; they are NEVER committed and NEVER stored as a
+	// terraform resource attribute (the generated/ dir is gitignored). Region/Size/
+	// Image/VPCRef are resolved by AssembleDOBaseline via the catalog, not set here.
+	vaultHA := strings.TrimSpace(os.Getenv("DO_VAULT_HA")) == "1"
+	var vaultSpec catalog.VaultDropletSpec
+	if vaultHA {
+		// Seal mode: default to the AWS-KMS migration bridge (matches the running AWS
+		// Vault so raft-snapshot-restored data unseals). Overridable via DO_VAULT_SEAL.
+		seal := catalog.VaultSealMode(strings.TrimSpace(os.Getenv("DO_VAULT_SEAL")))
+		if seal == "" {
+			seal = catalog.VaultSealAWSKMS
+		}
+		vaultSpec.Seal = seal
+		// AWS-KMS seal parameters. KMS region defaults to eu-west-1 (where the existing
+		// seal key lives). AWS creds reach the DO droplet via the injected static key
+		// (no AWS instance role on a droplet) — source them from beta-DO-VaultKmsUnsealCreds.
+		vaultSpec.KMSKeyID = strings.TrimSpace(os.Getenv("DO_VAULT_KMS_KEY_ID"))
+		vaultSpec.KMSRegion = strings.TrimSpace(os.Getenv("DO_VAULT_KMS_REGION"))
+		if vaultSpec.KMSRegion == "" {
+			vaultSpec.KMSRegion = "eu-west-1"
+		}
+		vaultSpec.AWSAccessKeyID = os.Getenv("DO_VAULT_KMS_ACCESS_KEY_ID")
+		vaultSpec.AWSSecretKey = os.Getenv("DO_VAULT_KMS_SECRET_ACCESS_KEY")
+		// Optional stable public addresses so beta-vault A-record / a DO LB origin
+		// survives a droplet roll (durable-DO-edge memo). Off unless DO_VAULT_RESERVED_IPS=1.
+		vaultSpec.ReservedIPs = strings.TrimSpace(os.Getenv("DO_VAULT_RESERVED_IPS")) == "1"
+		// The go-discover DO tag auto-join needs DIGITALOCEAN_TOKEN in the droplet env.
+		// The catalog emits the placeholder line
+		//   Environment=DIGITALOCEAN_TOKEN=${DIGITALOCEAN_TOKEN}
+		// which is NOT valid inside a terraform heredoc (HCL parses ${...} as an
+		// interpolation of an undeclared symbol and errors), so the harness substitutes
+		// the real token into estate.tf at RENDER time (same inline model as the KMS
+		// creds; generated/ is gitignored). Fail fast so a bad render never reaches
+		// terraform.
+		if strings.TrimSpace(os.Getenv("DIGITALOCEAN_TOKEN")) == "" {
+			return fmt.Errorf("missing env DIGITALOCEAN_TOKEN — required for DO_VAULT_HA=1 (vault raft auto-join by DO tag; source from beta-DigitalOceanToken)")
+		}
+		// Fail fast on the awskms bridge if its required seal params are missing.
+		if seal == catalog.VaultSealAWSKMS {
+			for name, v := range map[string]string{
+				"DO_VAULT_KMS_KEY_ID":            vaultSpec.KMSKeyID,
+				"DO_VAULT_KMS_ACCESS_KEY_ID":     vaultSpec.AWSAccessKeyID,
+				"DO_VAULT_KMS_SECRET_ACCESS_KEY": vaultSpec.AWSSecretKey,
+			} {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("missing env %s — required for DO_VAULT_HA=1 with the awskms seal bridge (source from beta-DO-VaultKmsUnsealCreds / beta-vault-auto-unseal; see cutover/README.md)", name)
+				}
+			}
+		}
+	}
+
 	// PrivateDBHost: reach pyx-main-db over the shared VPC private endpoint (the
 	// mesh_app secret stores the public host).
-	docs, err := catalog.AssembleDOBaseline(ctx, catalog.MustEmbedded(), in, secrets, catalog.DOBaselineOptions{PrivateDBHost: true, EdgeTLSOrigins: edgeTLS, FullServiceBootstraps: full})
+	docs, err := catalog.AssembleDOBaseline(ctx, catalog.MustEmbedded(), in, secrets, catalog.DOBaselineOptions{PrivateDBHost: true, EdgeTLSOrigins: edgeTLS, FullServiceBootstraps: full, VaultHA: vaultHA, VaultHASpec: vaultSpec})
 	if err != nil {
 		return fmt.Errorf("assemble DO baseline: %w", err)
 	}
@@ -215,6 +271,20 @@ provider "digitalocean" {
 		"# Reproduce: go run ./cutover/render.go  (see cutover/README.md)\n" +
 		"# Source: catalog.DOBaselineInput(\"Frankfurt\",\"x86_64\",\"ubuntu\",\"1.30\")\n\n"
 	estate := header + strings.Join(docs, "\n\n") + "\n"
+	if vaultHA {
+		// Substitute the catalog's DIGITALOCEAN_TOKEN placeholder (see the DO_VAULT_HA
+		// block above). indentUserData HCL-escapes it to $${DIGITALOCEAN_TOKEN} so
+		// terraform passes the LITERAL ${DIGITALOCEAN_TOKEN} through to the systemd
+		// drop-in — where nothing ever expands it and raft auto-join silently fails.
+		// Inline the real token at render time instead (generated/ is gitignored).
+		doToken := strings.TrimSpace(os.Getenv("DIGITALOCEAN_TOKEN"))
+		for _, placeholder := range []string{
+			"Environment=DIGITALOCEAN_TOKEN=$${DIGITALOCEAN_TOKEN}",
+			"Environment=DIGITALOCEAN_TOKEN=${DIGITALOCEAN_TOKEN}",
+		} {
+			estate = strings.ReplaceAll(estate, placeholder, "Environment=DIGITALOCEAN_TOKEN="+doToken)
+		}
+	}
 	if err := writeFile(filepath.Join(outDir, "estate.tf"), estate); err != nil {
 		return err
 	}
