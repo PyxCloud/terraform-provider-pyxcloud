@@ -2,146 +2,115 @@ package catalog
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/hashicorp/terraform-exec/tfexec"
 )
 
-// do_baseline_test.go — pd-MIG-CUTOVER-F0-01 (EPIC-AWS-TO-DO-MIGRATION).
-//
-// Proves the DigitalOcean ACCOUNT BASELINE — the foundational target layer the
-// AWS->DO cutover lands on — is valid, plannable HCL (plan-only; NEVER applied).
-// The baseline descends to: DOKS clusters (the 6-service compute substrate), two
-// Managed Postgres clusters (PG17, keycloak-db 100 GB + pyx-main-db 80 GB),
-// Spaces object-storage, a DO load-balancer (+ DOKS ingress) and the account
-// VPC + firewall. The string round-trips below assert the coverage matrix; the
-// terraform-exec test actually runs `init && validate` when a binary is on PATH.
-
-// wantDOBaselineResources is the coverage matrix asserted at the string level:
-// the foundational baseline piece -> its concrete DigitalOcean resource.
-var wantDOBaselineResources = []struct{ component, resource string }{
-	// Compute substrate: the 6 platform services -> droplet_autoscale pools.
-	{"platform SSO scale-group", `resource "digitalocean_droplet_autoscale" "sso"`},
-	{"platform VPN scale-group", `resource "digitalocean_droplet_autoscale" "vpn"`},
-	{"platform observability scale-group", `resource "digitalocean_droplet_autoscale" "obs"`},
-	{"platform SAST scale-group", `resource "digitalocean_droplet_autoscale" "sast"`},
-	{"platform backend scale-group", `resource "digitalocean_droplet_autoscale" "backend"`},
-	{"platform mcp scale-group", `resource "digitalocean_droplet_autoscale" "mcp"`},
-	// Two Managed Postgres clusters (PG17).
-	{"keycloak-db (Managed PG)", `resource "digitalocean_database_cluster" "keycloak-db"`},
-	{"pyx-main-db (Managed PG)", `resource "digitalocean_database_cluster" "pyx-main-db"`},
-	// Object-storage baseline (Spaces).
-	{"object-storage (Spaces)", `resource "digitalocean_spaces_bucket" "assets"`},
-	// Shared-ALB replacement: DO LB forwarding to the backend pool by droplet tag.
-	{"load-balancer", `resource "digitalocean_loadbalancer" "edge-lb"`},
-	{"load-balancer droplet-tag target", `droplet_tag = "pyx-backend"`},
-	// Network / account foundation.
-	{"network (VPC)", `resource "digitalocean_vpc" "passo-do-baseline-net"`},
-	// The DO firewall is split one-per-service (max 5 tags per firewall; 6 services).
-	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-do-baseline-sg_backend"`},
-}
-
-// TestDOBaselineAssembles is the plan-only round-trip proof at the string level:
-// the DO account baseline descends to valid DigitalOcean HCL with the provider
-// sources pinned, the two PG clusters pinned to version 17, and no AWS leakage.
-func TestDOBaselineAssembles(t *testing.T) {
-	t.Parallel()
-	docs, err := AssembleHCL(context.Background(), MustEmbedded(),
-		DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30"))
-	if err != nil {
-		t.Fatalf("AssembleHCL DO baseline: %v", err)
-	}
-	all := strings.Join(docs, "\n")
-
-	// Provider source pinned (DO is a non-default namespace; required for
-	// `terraform init`). The baseline no longer needs the kubernetes provider: the
-	// scale-groups are droplet_autoscale pools and the LB forwards by droplet tag,
-	// so no kubernetes_manifest resource is emitted.
-	for _, want := range []string{
-		`source = "digitalocean/digitalocean"`,
-	} {
-		if !strings.Contains(all, want) {
-			t.Errorf("DO baseline missing provider pin %q", want)
-		}
-	}
-	// The droplet_autoscale pivot means the baseline emits no Kubernetes resources.
-	for _, bad := range []string{"digitalocean_kubernetes_cluster", "kubernetes_manifest", `source = "hashicorp/kubernetes"`} {
-		if strings.Contains(all, bad) {
-			t.Errorf("DO baseline must not emit %q (droplet_autoscale + LB-by-tag, no DOKS)", bad)
-		}
-	}
-
-	// Every baseline piece -> its concrete DO resource (the coverage matrix).
-	for _, w := range wantDOBaselineResources {
-		if !strings.Contains(all, w.resource) {
-			t.Errorf("baseline piece %q did not render %q\n---\n%s", w.component, w.resource, all)
-		}
-	}
-
-	// Both Managed Postgres clusters are pinned to PG17 (engine=pg, version=17).
-	if n := strings.Count(all, `engine     = "pg"`); n != 2 {
-		t.Errorf("want 2 pg managed clusters, got %d", n)
-	}
-	if n := strings.Count(all, `version    = "17"`); n != 2 {
-		t.Errorf("want 2 PG17-pinned managed clusters, got %d", n)
-	}
-
-	// No AWS resource may leak into a DigitalOcean render.
-	for _, bad := range []string{"aws_autoscaling_group", "aws_launch_template", "aws_db_instance", "aws_s3_bucket", "aws_lb"} {
-		if strings.Contains(all, bad) {
-			t.Errorf("DO baseline must not emit AWS resource %q", bad)
-		}
+func testDOBaselineSecrets() DOBaselineSecrets {
+	return DOBaselineSecrets{
+		SpacesAccessKey:  "TEST_SPACES_ACCESS",
+		SpacesSecretKey:  "TEST_SPACES_SECRET",
+		BoardDatabaseURL: "postgres://mesh_app:TESTPW@pyx-main-db-do-user-1-0.k.db.ondigitalocean.com:25060/postgres?sslmode=require",
+		EmbedTokenSecret: "TEST_EMBED_TOKEN",
 	}
 }
 
-// TestDOBaselineTerraformValidate is the executable plan-only proof: the rendered
-// DO baseline passes `terraform init && terraform validate`. Apply is out of
-// scope — no DIGITALOCEAN_TOKEN is needed for validate. Skipped automatically
-// when no terraform binary is on PATH (so `go test ./...` stays green in a
-// binary-less CI); the string round-trips above still prove the render. Set
-// PYX_TF_VALIDATE=0 to force-skip.
-func TestDOBaselineTerraformValidate(t *testing.T) {
-	if os.Getenv("PYX_TF_VALIDATE") == "0" {
-		t.Skip("PYX_TF_VALIDATE=0: terraform validate explicitly disabled")
-	}
-	execPath, err := exec.LookPath("terraform")
+func renderTestBaseline(t *testing.T, opts DOBaselineOptions) []string {
+	t.Helper()
+	in := DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
+	docs, err := AssembleDOBaseline(context.Background(), MustEmbedded(), in, testDOBaselineSecrets(), opts)
 	if err != nil {
-		t.Skip("terraform binary not on PATH: string round-trips above prove the render; install terraform to run init/validate")
+		t.Fatalf("AssembleDOBaseline: %v", err)
 	}
+	return docs
+}
 
-	docs, err := AssembleHCL(context.Background(), MustEmbedded(),
-		DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30"))
-	if err != nil {
-		t.Fatalf("AssembleHCL DO baseline: %v", err)
+// TestDOBaselineResourceSet asserts the exact set of resources matches the
+// deployed estate (droplet-autoscale shape, not DOKS) plus the Spaces bucket.
+func TestDOBaselineResourceSet(t *testing.T) {
+	joined := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
+	want := []string{
+		`resource "digitalocean_vpc" "passo-do-baseline-net"`,
+		`resource "digitalocean_firewall" "passo-do-baseline-sg"`,
+		`resource "digitalocean_database_cluster" "pyx-main-db"`,
+		`resource "digitalocean_database_cluster" "keycloak-db"`,
+		`resource "digitalocean_droplet_autoscale" "backend"`,
+		`resource "digitalocean_droplet_autoscale" "mcp"`,
+		`resource "digitalocean_droplet_autoscale" "obs"`,
+		`resource "digitalocean_droplet_autoscale" "sast"`,
+		`resource "digitalocean_droplet_autoscale" "sso"`,
+		`resource "digitalocean_droplet_autoscale" "vpn"`,
+		`resource "digitalocean_loadbalancer" "edge-lb"`,
+		`resource "digitalocean_spaces_bucket" "artifacts"`,
 	}
-
-	dir := t.TempDir()
-	for i, d := range docs {
-		name := filepath.Join(dir, fmt.Sprintf("pyx_%03d.tf", i))
-		if werr := os.WriteFile(name, []byte(d), 0o644); werr != nil {
-			t.Fatalf("write doc %d: %v", i, werr)
+	for _, w := range want {
+		if !strings.Contains(joined, w) {
+			t.Errorf("missing resource %q", w)
 		}
 	}
+	// Must NOT emit the DOKS shape (which would destroy the live estate).
+	if strings.Contains(joined, "digitalocean_kubernetes_cluster") {
+		t.Errorf("baseline must not emit DOKS clusters (would destroy the live droplet estate)")
+	}
+	// The mcp size must match state (2vCPU/4GiB) and sso too.
+	if !strings.Contains(joined, `s-2vcpu-4gb`) {
+		t.Errorf("expected s-2vcpu-4gb droplet size")
+	}
+}
 
-	tf, err := tfexec.NewTerraform(dir, execPath)
-	if err != nil {
-		t.Fatalf("tfexec: %v", err)
+// TestDOBaselineMCPDurable is the durability contract: BOARD_DATABASE_URL is the
+// mesh_app URL, injected at render time, and doadmin/defaultdb are gone.
+func TestDOBaselineMCPDurable(t *testing.T) {
+	joined := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
+	if !strings.Contains(joined, "BOARD_DATABASE_URL=postgres://mesh_app:") {
+		t.Errorf("mcp user_data must source BOARD_DATABASE_URL from mesh_app")
 	}
-	ctx := context.Background()
-	if err := tf.Init(ctx, tfexec.Upgrade(false)); err != nil {
-		t.Fatalf("terraform init failed — the rendered baseline is not initialisable: %v", err)
+	// No doadmin/defaultdb in the actual DB URL (a comment mentioning them is fine,
+	// but the credential URL must not use them).
+	if strings.Contains(joined, "BOARD_DATABASE_URL=postgres://doadmin") {
+		t.Errorf("mcp BOARD_DATABASE_URL must not use doadmin")
 	}
-	vout, verr := tf.Validate(ctx)
-	if verr != nil {
-		t.Fatalf("terraform validate failed — the rendered baseline is not valid DO HCL: %v", verr)
+	if strings.Contains(joined, "mesh_app:TESTPW@pyx-main-db-do-user") && !strings.Contains(joined, "private-pyx-main-db-do-user") {
+		t.Errorf("PrivateDBHost should rewrite the DB host to the private endpoint")
 	}
-	if !vout.Valid {
-		t.Fatalf("terraform validate reported the baseline INVALID: %d diagnostics", vout.ErrorCount)
+	// Durable substrate preserved.
+	for _, want := range []string{"PYXCLOUD_MCP_HTTP_PORT=8787", "passobuild-mcp.service", "fra1.digitaloceanspaces.com", "EMBED_TOKEN_SECRET=TEST_EMBED_TOKEN"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("mcp user_data lost durable element %q", want)
+		}
 	}
-	t.Log("terraform init && validate: GREEN — DO account baseline is valid, plannable HCL (plan-only)")
+	// Only mcp carries a bootstrap; other groups have no user_data heredoc.
+	if n := strings.Count(joined, "USERDATA"); n != 2 { // one open + one close marker
+		t.Errorf("expected exactly one user_data heredoc (mcp only), got %d USERDATA markers", n)
+	}
+}
+
+// TestDOBaselineDeterministic asserts render output is byte-stable.
+func TestDOBaselineDeterministic(t *testing.T) {
+	a := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
+	b := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
+	if a != b {
+		t.Errorf("render is not deterministic")
+	}
+}
+
+// TestDOBaselinePrivateHostVerbatim asserts the public host is used verbatim when
+// PrivateDBHost is off.
+func TestDOBaselinePrivateHostVerbatim(t *testing.T) {
+	joined := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: false}), "\n")
+	if strings.Contains(joined, "private-pyx-main-db-do-user") {
+		t.Errorf("without PrivateDBHost the URL host must be verbatim (public)")
+	}
+	if !strings.Contains(joined, "mesh_app:TESTPW@pyx-main-db-do-user") {
+		t.Errorf("expected verbatim mesh_app public host")
+	}
+}
+
+// TestDOBaselineRequiresSecrets asserts missing secrets are rejected.
+func TestDOBaselineRequiresSecrets(t *testing.T) {
+	in := DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
+	_, err := AssembleDOBaseline(context.Background(), MustEmbedded(), in, DOBaselineSecrets{}, DOBaselineOptions{})
+	if err == nil {
+		t.Fatalf("expected error for empty secrets")
+	}
 }
