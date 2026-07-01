@@ -124,6 +124,57 @@ func DOBaselineComponents(arch, os, kubernetesVersion string) []AssembleComponen
 	return comps
 }
 
+// DOBaselineComponentsWithDOBootstraps is DOBaselineComponents but the six
+// platform scale-groups carry their DigitalOcean bootstrap user_data
+// (UserDataByProvider["digitalocean"]) threaded via the unified F2-02 wiring
+// (PlatformScaleGroupComponentsWithDOBootstraps). This is what the cutover renders
+// to prove the plan is ADDITIVE: the pre-existing baseline pools get user_data
+// SET (an in-place change), the Managed Postgres clusters and the VPC are
+// untouched. All six services' DO scripts are rendered from the given specs;
+// secrets stay Terraform variables (declared by the assembler's union block).
+func DOBaselineComponentsWithDOBootstraps(arch, os, kubernetesVersion string, specs DOBootstrapSpecs) ([]AssembleComponent, error) {
+	sgs, err := PlatformScaleGroupComponentsWithDOBootstraps(arch, os, kubernetesVersion, specs)
+	if err != nil {
+		return nil, err
+	}
+	// Reuse the exact same non-compute baseline (DBs, Spaces, LB) by taking the
+	// bare baseline and swapping its scale-group components for the bootstrapped
+	// ones (matched by name), so the ONLY difference vs the deployed baseline is the
+	// user_data — keeping the plan a clean in-place change.
+	base := DOBaselineComponents(arch, os, kubernetesVersion)
+	byName := map[string]AssembleComponent{}
+	for _, sg := range sgs {
+		byName[sg.Name] = sg
+	}
+	out := make([]AssembleComponent, 0, len(base))
+	for _, c := range base {
+		if c.Type == "virtual-machine-scale-group" {
+			if sg, ok := byName[c.Name]; ok {
+				out = append(out, sg)
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// DOBaselineInputWithDOBootstraps is DOBaselineInput with the six platform
+// scale-groups carrying their DigitalOcean bootstrap user_data.
+func DOBaselineInputWithDOBootstraps(region, arch, os, kubernetesVersion string, specs DOBootstrapSpecs) (AssembleInput, error) {
+	comps, err := DOBaselineComponentsWithDOBootstraps(arch, os, kubernetesVersion, specs)
+	if err != nil {
+		return AssembleInput{}, err
+	}
+	return AssembleInput{
+		Name:       "passo-do-baseline",
+		Provider:   ProviderDigitalOcean,
+		Region:     region,
+		Expose:     []int{443},
+		Components: comps,
+	}, nil
+}
+
 // DOBaselineInput is the canonical DigitalOcean account-baseline AssembleInput —
 // the single source the F0 cutover foundation renders. Provider is always
 // digitalocean (this is the DO target layer); region/arch/os/kubernetesVersion
