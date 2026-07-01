@@ -114,6 +114,17 @@ type AssembleComponent struct {
 	VaultHA              *AssembleVaultHA
 	VPNAccess            *AssembleVPNAccess
 	PipelineControlPlane *AssemblePipelineControlPlane
+	StaticSite           *AssembleStaticSite
+}
+
+// AssembleStaticSite is the config for a `static-site` component (AWS Amplify ->
+// DO Spaces static website + Cloudflare CDN). pd-MIG-CUTOVER-F1-01 (GAP-1).
+type AssembleStaticSite struct {
+	CustomDomain     string
+	BuildOutputDir   string
+	IndexDocument    string
+	ErrorDocument    string
+	CloudflareZoneID string
 }
 
 // AssemblePipelineControlPlane is the config for a `pipeline-control-plane`
@@ -849,6 +860,28 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, osHCL)
+		case "static-site", "static-website", "static-hosting", "frontend-app", "spa":
+			ssSpec := StaticSiteSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.StaticSite != nil {
+				ssSpec.CustomDomain = c.StaticSite.CustomDomain
+				ssSpec.BuildOutputDir = c.StaticSite.BuildOutputDir
+				ssSpec.IndexDocument = c.StaticSite.IndexDocument
+				ssSpec.ErrorDocument = c.StaticSite.ErrorDocument
+				ssSpec.CloudflareZoneID = c.StaticSite.CloudflareZoneID
+			}
+			ssPlan, err := TranslateStaticSite(ctx, cat, ssSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			ssHCL, err := RenderStaticSiteHCL(ssPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			// On DO the static-site descends to a Cloudflare CDN front — pin the provider.
+			if ssPlan.UsesCloudflare {
+				needsCloudflare = true
+			}
+			docs = append(docs, ssHCL)
 		case "container-registry", "image-registry":
 			crSpec := ContainerRegistrySpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.ContainerRegistry != nil {
@@ -1441,6 +1474,13 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
 		}
 	}
+	// Cloudflare components each declare `variable "cloudflare_zone_id"` inline when
+	// no explicit zone id is set (so every renderer is usable standalone). When an
+	// environment has MORE THAN ONE such component (e.g. the 3 static-site CDN
+	// fronts), that yields a duplicate-variable declaration terraform rejects. Dedupe
+	// to a single declaration hoisted to the top, keeping each renderer self-contained.
+	docs = dedupeCloudflareZoneIDVar(docs)
+
 	// Declare the out-of-band db_password variable once when any managed-database is
 	// present — the managed_database render references var.db_password (the password
 	// is supplied out of band, never in the topology/state).
@@ -1476,6 +1516,31 @@ var cloudProviderSource = map[string][2]string{
 	ProviderAlibaba:      {"alicloud", "aliyun/alicloud"},
 	ProviderOVH:          {"ovh", "ovh/ovh"},
 	ProviderStackIt:      {"stackit", "stackitcloud/stackit"},
+}
+
+// cloudflareZoneIDVarDecl is the inline variable declaration the Cloudflare
+// renderers emit when no explicit zone id is set. It must appear at most once per
+// terraform module.
+const cloudflareZoneIDVarDecl = "variable \"cloudflare_zone_id\" {\n  type = string\n}\n\n"
+
+// dedupeCloudflareZoneIDVar strips the inline `variable "cloudflare_zone_id"`
+// declaration from every doc that carries it and, if any did, prepends a single
+// declaration. Renderers stay self-contained (each declares the var so it works
+// standalone); the assembler guarantees module-level uniqueness.
+func dedupeCloudflareZoneIDVar(docs []string) []string {
+	found := false
+	out := make([]string, 0, len(docs))
+	for _, d := range docs {
+		if strings.Contains(d, cloudflareZoneIDVarDecl) {
+			found = true
+			d = strings.Replace(d, cloudflareZoneIDVarDecl, "", 1)
+		}
+		out = append(out, d)
+	}
+	if found {
+		out = append([]string{cloudflareZoneIDVarDecl}, out...)
+	}
+	return out
 }
 
 // requiredProvidersBlock returns the terraform{required_providers{...}} HCL when

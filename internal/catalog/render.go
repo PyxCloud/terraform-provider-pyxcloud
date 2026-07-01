@@ -1664,6 +1664,18 @@ func renderObjectStorageAWS(p ObjectStoragePlan) string {
 		fmt.Fprintf(&b, "  target_prefix = %q\n", p.AccessLogs.TargetPrefix)
 		b.WriteString("}\n")
 	}
+	// Static-website hosting (static-site component): the AWS v4+ website sub-resource.
+	if p.Website != nil {
+		fmt.Fprintf(&b, "\nresource \"aws_s3_bucket_website_configuration\" %q {\n", label)
+		fmt.Fprintf(&b, "  bucket = aws_s3_bucket.%s.id\n", label)
+		b.WriteString("  index_document {\n")
+		fmt.Fprintf(&b, "    suffix = %q\n", p.Website.IndexDocument)
+		b.WriteString("  }\n")
+		b.WriteString("  error_document {\n")
+		fmt.Fprintf(&b, "    key = %q\n", p.Website.ErrorDocument)
+		b.WriteString("  }\n")
+		b.WriteString("}\n")
+	}
 	return b.String()
 }
 
@@ -1759,6 +1771,17 @@ func renderObjectStorageDO(p ObjectStoragePlan) string {
 	if p.AccessLogs != nil {
 		fmt.Fprintf(&b, "\n# NOTE: server access logging (target %q) has no DO Spaces equivalent; "+
 			"front the bucket with a CDN/edge log pipeline if access logs are required.\n", p.AccessLogs.TargetBucket)
+	}
+	// Static-website hosting (static-site component, pd-MIG-CUTOVER-F1-01): the DO
+	// Terraform provider's digitalocean_spaces_bucket resource exposes no
+	// index_document/error_document arguments (unlike S3). The website index/error
+	// docs are served by the Cloudflare CDN front (the static-site component pairs
+	// this bucket with a Cloudflare proxy), which owns SPA routing/fallback. Record
+	// the intent as a comment rather than emitting an unsupported argument.
+	if p.Website != nil {
+		fmt.Fprintf(&b, "\n# static-website origin: index=%q error=%q — served via the paired Cloudflare CDN "+
+			"front (DO Spaces has no native index/error-document argument).\n",
+			p.Website.IndexDocument, p.Website.ErrorDocument)
 	}
 	return b.String()
 }

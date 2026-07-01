@@ -107,6 +107,40 @@ func prodObjectStorageComponents() []AssembleComponent {
 	return out
 }
 
+// prodStaticSites is the 3 production frontends historically served via AWS
+// Amplify static hosting (GAP-1). Each descends to aws_amplify_app on AWS and to
+// a DigitalOcean Spaces static website + Cloudflare CDN on DO (static-site
+// component, pd-MIG-CUTOVER-F1-01). The custom domain is the public host the CDN
+// serves; the built bundle already lives in the matching object-storage bucket.
+var prodStaticSites = []struct {
+	name   string
+	domain string
+	role   string
+}{
+	{"marketing", "passo.build", "marketing site (pyx-frontend bundle)"},
+	{"console", "app.passo.build", "console SPA (app-assets bundle)"},
+	{"vibe", "vibe.passo.build", "vibe SPA (vibe-assets bundle)"},
+}
+
+// prodStaticSiteComponents materialises the 3 frontends as canonical static-site
+// components (GAP-1 closure). They descend on BOTH providers: Amplify on AWS,
+// Spaces static website + Cloudflare CDN on DO.
+func prodStaticSiteComponents() []AssembleComponent {
+	out := make([]AssembleComponent, 0, len(prodStaticSites))
+	for _, s := range prodStaticSites {
+		out = append(out, AssembleComponent{
+			Name: s.name, Type: "static-site",
+			StaticSite: &AssembleStaticSite{
+				CustomDomain:   s.domain,
+				BuildOutputDir: "dist",
+				IndexDocument:  "index.html",
+				ErrorDocument:  "index.html", // SPA client-side routing fallback
+			},
+		})
+	}
+	return out
+}
+
 // prodManagedDatabaseComponents is the two production Managed Postgres clusters
 // (the concrete migration targets), PG17, HA, encrypted. -> aws_db_instance /
 // digitalocean_database_cluster.
@@ -252,12 +286,11 @@ func prodPlatformPeerComponents(provider string) []AssembleComponent {
 //
 //   - SES sending domain: AWS-only (email.go hard-errors on DO). F1-05: external
 //     provider (e.g. SendGrid/Postmark) or keep SES cross-cloud.
-//   - the 3 frontends (marketing / console / vibe): historically AWS Amplify
-//     static hosting. There is NO DO static-site catalog component today. F1-01:
-//     a new static-site component (Spaces static hosting + Cloudflare CDN). The
-//     built bundles already live in object-storage (app-assets / pyx-frontend /
-//     vibe-assets); the gap is the managed static-site HOSTING/CDN wrapper, which
-//     Amplify provided and DO does not have a first-class equivalent for.
+//
+// NOTE: the 3 frontends (marketing / console / vibe) are NO LONGER a bespoke gap.
+// GAP-1 is closed (pd-MIG-CUTOVER-F1-01): they descend via the new static-site
+// component (Amplify on AWS, DO Spaces static website + Cloudflare CDN on DO) and
+// are now part of the estate on BOTH providers — see prodStaticSiteComponents.
 func prodBespokeAWSOnlyComponents() []AssembleComponent {
 	return []AssembleComponent{
 		// SES transactional-email sending domain (passo.build). AWS-only.
@@ -285,6 +318,10 @@ func ProdEstateComponents(provider, arch, os, kubernetesVersion string) []Assemb
 	// The shared platform peer layer (LB, registry, kv, tracing, monitoring, TLS,
 	// cron, reserved-ip, queue, secrets/Vault-HA).
 	comps = append(comps, prodPlatformPeerComponents(provider)...)
+	// The 3 frontends (marketing / console / vibe). GAP-1 closed (pd-MIG-CUTOVER-F1-01):
+	// they now descend on BOTH providers — Amplify on AWS, Spaces static website +
+	// Cloudflare CDN on DO — so the full estate covers them for DigitalOcean.
+	comps = append(comps, prodStaticSiteComponents()...)
 	// AWS-only bespoke components — only on AWS. On DO they are documented gaps and
 	// deliberately excluded so the DO plan is clean.
 	if lc(provider) == ProviderAWS {
