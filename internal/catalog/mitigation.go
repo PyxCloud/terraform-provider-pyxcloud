@@ -68,6 +68,18 @@ func Mitigatable(componentType string) bool {
 	return ok
 }
 
+var vaultHAAliasTypes = map[string]bool{
+	"secrets-manager": true,
+	"kms":             true,
+	"encryption-key":  true,
+}
+
+// VaultHAAliasable reports whether a raw component should be redirected to the
+// DigitalOcean Vault-HA operator path before the VM mitigation fallback runs.
+func VaultHAAliasable(componentType string, provider string) bool {
+	return vaultHAAliasTypes[mitigationType(componentType)] && mitigationType(provider) == ProviderDigitalOcean
+}
+
 // nativeSupport records which providers have a managed as-a-Service for each
 // mitigatable component (derived from the catalog's per-provider render support).
 // A provider absent here for a type means: mitigate (self-host on a VM).
@@ -131,15 +143,15 @@ var nativeSupport = map[string]map[string]bool{
 	"encryption-key": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	// monitoring is native on DO via the LGTM operator-pattern stack (kube-prometheus-stack
 	// + Loki + Grafana + Alertmanager), not a self-hosted-VM mitigation (pd-MIG-LGTM-MONITORING).
-	"monitoring":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
-	"synthetics":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
-	"uptime-check":        {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"monitoring":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"synthetics":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"uptime-check": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	// DigitalOcean and Linode have no managed WAF; they route through Cloudflare WAF
 	// (cloudflare_ruleset) instead of the degraded single-VM ModSecurity mitigation
 	// (pd-MIG-B2-WAF-CLOUDFLARE). Mark both as natively supported so the mitigation
 	// fallback in assemble.go is NOT taken for these providers.
-	"waf-service": {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true, ProviderLinode: true},
-	"waf":         {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true, ProviderLinode: true},
+	"waf-service":         {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true, ProviderLinode: true},
+	"waf":                 {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true, ProviderLinode: true},
 	"serverless-function": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
 	"managed-kubernetes":  {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true},
 	"container-service":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true},
