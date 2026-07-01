@@ -108,9 +108,19 @@ func TestProdEstateAssemblesForDO(t *testing.T) {
 		}
 	}
 
-	// The 6 platform services -> 6 DOKS clusters.
-	if n := strings.Count(all, `resource "digitalocean_kubernetes_cluster"`); n != 6 {
-		t.Errorf("want 6 digitalocean_kubernetes_cluster, got %d", n)
+	// The 6 platform services -> 6 droplet_autoscale pools (ASG lift-and-shift, not DOKS).
+	if n := strings.Count(all, `resource "digitalocean_droplet_autoscale"`); n != 6 {
+		t.Errorf("want 6 digitalocean_droplet_autoscale, got %d", n)
+	}
+	// Scale-groups are no longer DOKS clusters.
+	if n := strings.Count(all, `resource "digitalocean_kubernetes_cluster"`); n != 0 {
+		t.Errorf("want 0 digitalocean_kubernetes_cluster (scale-groups are droplet_autoscale now), got %d", n)
+	}
+	// Each pool carries its per-service droplet tag; the firewall applies by those tags.
+	for _, tag := range []string{"pyx-sso", "pyx-backend", "pyx-mcp"} {
+		if !strings.Contains(all, `tags = ["`+tag+`"]`) {
+			t.Errorf("droplet_autoscale pool missing per-service tag %q", tag)
+		}
 	}
 	// The two Managed Postgres -> digitalocean_database_cluster (+ JIT Redis = 3 total).
 	if n := strings.Count(all, `resource "digitalocean_database_cluster"`); n != 3 {
@@ -140,23 +150,19 @@ func TestProdEstateAssemblesForDO(t *testing.T) {
 	for _, want := range []string{
 		`resource "digitalocean_container_registry" "app-images"`,
 		`resource "digitalocean_loadbalancer" "edge-lb"`,
-		`resource "kubernetes_manifest" "edge-lb_ingress"`,
 		`resource "helm_release" "app-secrets_operator"`, // Vault-HA operator (secrets)
 		`resource "kubernetes_cron_job_v1" "nightly"`,    // scheduled-trigger
 		`resource "digitalocean_reserved_ip" "vpn-endpoint"`,
 		`resource "digitalocean_vpc" "passo-prod-net"`,
 		`resource "digitalocean_firewall" "passo-prod-sg"`,
-		// GAP-4 parity: the DOKS Ingress backends a DISTINCT service per host
-		// (admin->sso, app->backend, mcp->mcp) — the DO analogue of the AWS
-		// per-TargetName target groups.
-		`host = "admin.passo.build"`,
-		`host = "app.passo.build"`,
-		`host = "mcp.passo.build"`,
-		`name = "sso-svc"`,
-		`name = "backend-svc"`,
-		`name = "mcp-svc"`,
-		// The admin-VPN gate preserved as the ingress source-range whitelist.
-		`"nginx.ingress.kubernetes.io/whitelist-source-range" = "10.8.0.0/24"`,
+		// The LB forwards to the backend droplet_autoscale pool by droplet tag
+		// (the DO analogue of an ASG target-group attachment).
+		`droplet_tag = "pyx-backend"`,
+		// The HTTPS forwarding rule passes TLS through to the droplets (valid rule
+		// without wiring a managed certificate resource).
+		`tls_passthrough = true`,
+		// The estate firewall applies to the droplet pools by their per-service tags.
+		`variable "do_ssh_keys"`,
 		// GAP-2 resolved (F1-05): transactional email renders on DO as an SMTP-relay
 		// config (no managed DO email primitive, no hard error).
 		`output "email-sender_smtp_relay"`,

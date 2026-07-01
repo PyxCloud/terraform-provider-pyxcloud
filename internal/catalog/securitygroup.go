@@ -96,6 +96,12 @@ type SecurityGroupSpec struct {
 	// correctness. A SourcePrefixList that is not present here is a hard plan-time
 	// error (never a silent empty rule).
 	PrefixLists map[string][]PrefixEntry
+	// DropletTags are the DigitalOcean droplet tags this firewall applies to. DO
+	// firewalls attach to droplets by tag (there is no VPC-scoped firewall), so the
+	// assembler passes the per-service scale-group tags ("pyx-<svc>") here and the
+	// renderer emits `tags = [...]`, making the firewall apply to every
+	// droplet_autoscale pool droplet. Ignored on non-DO providers.
+	DropletTags []string
 }
 
 // RulePlan is one concrete, resolved firewall rule in the translated plan.
@@ -132,6 +138,11 @@ type SecurityGroupPlan struct {
 	Description  string     `json:"description"`   // ASCII-sanitised description
 	Rules        []RulePlan `json:"rules"`         // concrete rules (expose expanded + explicit)
 	ResourceType string     `json:"resource_type"` // top provider resource, e.g. aws_security_group
+	// DropletTags are the DigitalOcean droplet tags this firewall applies to (the
+	// per-service scale-group tags "pyx-<svc>"). DO firewalls attach by tag; the
+	// renderer emits `tags = [...]` so the firewall covers every droplet_autoscale
+	// pool droplet. Empty / ignored on non-DO providers.
+	DropletTags []string `json:"droplet_tags,omitempty"`
 }
 
 // asciiOnly strips any non-ASCII byte from a description. AWS's
@@ -254,6 +265,7 @@ func TranslateSecurityGroup(ctx context.Context, cat RegionCatalog, spec Securit
 		NetworkName: spec.Network,
 		Description: asciiOnly(spec.Description),
 		Rules:       rules,
+		DropletTags: append([]string(nil), spec.DropletTags...),
 	}
 	if plan.Description == "" {
 		plan.Description = "Managed by PyxCloud"

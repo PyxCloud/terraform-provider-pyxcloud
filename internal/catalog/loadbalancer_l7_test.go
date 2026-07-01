@@ -86,11 +86,12 @@ func TestRenderLoadBalancerAWSL7Rules(t *testing.T) {
 	}
 }
 
-// TestRenderLoadBalancerDOL7Ingress asserts that on DigitalOcean the L7 rules
-// render a DOKS Ingress (the forwarding_rule cannot express host/path/source-IP)
-// and that the admin-VPN gate is preserved as the ingress-nginx source-range
-// whitelist (documented constraint).
-func TestRenderLoadBalancerDOL7Ingress(t *testing.T) {
+// TestRenderLoadBalancerDONoIngress asserts that on DigitalOcean, since the
+// scale-group is now a digitalocean_droplet_autoscale pool (plain droplets + LB),
+// the LB no longer emits a DOKS Ingress (kubernetes_manifest) — there is no
+// cluster in front of the pool. Even with L7 rules declared, the DO render stays
+// a pure DO load-balancer forwarding by droplet tag.
+func TestRenderLoadBalancerDONoIngress(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateLoadBalancer(context.Background(), MustEmbedded(), l7Spec("digitalocean"))
 	if err != nil {
@@ -100,27 +101,15 @@ func TestRenderLoadBalancerDOL7Ingress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`resource "kubernetes_manifest" "web-lb_ingress"`,
-		`kind       = "Ingress"`,
-		`host = "admin.example.com"`,
-		`host = "api.example.com"`,
-		`path     = "/v1"`,
-		// Admin-VPN gate preserved as the ingress source-range whitelist.
-		`"nginx.ingress.kubernetes.io/whitelist-source-range" = "10.8.0.0/24"`,
-	} {
-		if !strings.Contains(hcl, want) {
-			t.Errorf("do L7 ingress HCL missing %q:\n%s", want, hcl)
+	// No Kubernetes Ingress is emitted any more (droplet_autoscale pivot).
+	for _, bad := range []string{"kubernetes_manifest", "kind       = \"Ingress\"", "whitelist-source-range"} {
+		if strings.Contains(hcl, bad) {
+			t.Errorf("DO LB must not emit DOKS ingress %q (droplet_autoscale + LB-by-tag):\n%s", bad, hcl)
 		}
 	}
-	// A DO LB WITHOUT rules must NOT emit an ingress (back-compat).
-	noRules, _ := TranslateLoadBalancer(context.Background(), MustEmbedded(), LoadBalancerSpec{
-		Name: "plain", Region: "Frankfurt", Provider: "digitalocean",
-		Listeners: []LBListenerSpec{{Port: 80, Protocol: "http"}},
-	})
-	plainHCL, _ := RenderLoadBalancerHCL(noRules)
-	if strings.Contains(plainHCL, "kubernetes_manifest") {
-		t.Errorf("plain DO LB must not emit an ingress:\n%s", plainHCL)
+	// It IS a pure DO load-balancer.
+	if !strings.Contains(hcl, `resource "digitalocean_loadbalancer" "web-lb"`) {
+		t.Errorf("DO LB should still render a digitalocean_loadbalancer:\n%s", hcl)
 	}
 }
 
