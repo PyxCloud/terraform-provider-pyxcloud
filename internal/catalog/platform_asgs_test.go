@@ -12,7 +12,7 @@ import (
 func TestPlatformServicesCanonicalShape(t *testing.T) {
 	t.Parallel()
 	svcs := PlatformServices()
-	wantNames := []string{"sso", "vpn", "obs", "sast", "backend"}
+	wantNames := []string{"sso", "vpn", "obs", "sast", "backend", "mcp"}
 	if len(svcs) != len(wantNames) {
 		t.Fatalf("want %d platform services, got %d", len(wantNames), len(svcs))
 	}
@@ -34,8 +34,8 @@ func TestPlatformServicesCanonicalShape(t *testing.T) {
 func TestPlatformScaleGroupComponentsAreScaleGroupsOfOne(t *testing.T) {
 	t.Parallel()
 	comps := PlatformScaleGroupComponents("", "", "")
-	if len(comps) != 5 {
-		t.Fatalf("want 5 components, got %d", len(comps))
+	if len(comps) != 6 {
+		t.Fatalf("want 6 components, got %d", len(comps))
 	}
 	for _, c := range comps {
 		if c.Type != "virtual-machine-scale-group" {
@@ -76,7 +76,7 @@ func TestPlatformASGsRoundTripDO(t *testing.T) {
 	}
 	// Each of the 5 services -> a DOKS cluster with an auto-scaling, self-healing
 	// node-pool (min_nodes=1 = the ASG-of-1 self-heal floor).
-	for _, svc := range []string{"sso", "vpn", "obs", "sast", "backend"} {
+	for _, svc := range []string{"sso", "vpn", "obs", "sast", "backend", "mcp"} {
 		if !strings.Contains(all, `resource "digitalocean_kubernetes_cluster" "`+svc+`"`) {
 			t.Errorf("platform service %q did not emit a DOKS cluster:\n%s", svc, all)
 		}
@@ -115,8 +115,8 @@ func TestPlatformASGsRoundTripAWS(t *testing.T) {
 	all := strings.Join(docs, "\n")
 	// Each service renders an AWS autoscaling group of 1.
 	n := strings.Count(all, `resource "aws_autoscaling_group"`)
-	if n != 5 {
-		t.Errorf("want 5 aws_autoscaling_group resources, got %d\n%s", n, all)
+	if n != 6 {
+		t.Errorf("want 6 aws_autoscaling_group resources, got %d\n%s", n, all)
 	}
 	for _, want := range []string{
 		`min_size            = 1`,

@@ -7,8 +7,8 @@ package catalog
 // to plan cleanly end-to-end (plan-only, no apply). It is the representative
 // "everything at once" topology the dry-run milestone validates:
 //
-//   - the 5 platform services (SSO / VPN / observability / SAST / backend) as
-//     canonical scale-groups of 1 (PlatformScaleGroupComponents -> DOKS node-pools)
+//   - the 6 platform services (SSO / VPN / observability / SAST / backend / MCP)
+//     as canonical scale-groups of 1 (PlatformScaleGroupComponents -> DOKS node-pools)
 //   - container-registry (AWS ECR -> DO Container Registry)
 //   - key-value-store (DynamoDB JIT allowlist -> DO Managed Redis)
 //   - object-storage with S3->Spaces parity (lifecycle + SSE + policy + access-logs)

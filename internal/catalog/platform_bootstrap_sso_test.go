@@ -126,8 +126,8 @@ func TestPlatformBootstrapWiresSSOUserData(t *testing.T) {
 func TestPlatformScaleGroupComponentsBackwardCompatible(t *testing.T) {
 	t.Parallel()
 	comps := PlatformScaleGroupComponents("", "", "")
-	if len(comps) != 5 {
-		t.Fatalf("want 5 components, got %d", len(comps))
+	if len(comps) != 6 {
+		t.Fatalf("want 6 components, got %d", len(comps))
 	}
 	for _, c := range comps {
 		if c.ScaleGroup == nil || c.ScaleGroup.UserData != "" {
