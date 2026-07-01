@@ -225,6 +225,19 @@ type DOBaselineOptions struct {
 	// to their full bootstrap). Off by default so the legacy mcp-only render is
 	// unchanged.
 	FullServiceBootstraps bool
+	// VaultHA, when true, appends the 3-node Raft Vault droplet cluster
+	// (vaultha_droplet_do.go) to the baseline: 3 fixed digitalocean_droplet nodes
+	// with a block volume each, a private-only :8200/:8201 firewall, cloud-auto-join
+	// peer discovery by DO tag, and a configurable seal stanza (AWS-KMS bridge by
+	// default). This is Phase 0 of the Vault-HA-on-DO migration
+	// (pd-MIG-VAULT-HA-HARDEN). OFF BY DEFAULT so it never perturbs the existing
+	// baseline render (0 change to the deployed estate). The harness gates it on the
+	// DO_VAULT_HA=1 env flag; VaultHASpec/VaultHASecrets below carry the render-time
+	// seal + auto-join credentials (never committed, never in tf state).
+	VaultHA bool
+	// VaultHASpec tunes the Vault cluster (seal mode, reserved IPs). Only consulted
+	// when VaultHA is true. Zero value -> AWS-KMS bridge seal, no reserved IPs.
+	VaultHASpec VaultDropletSpec
 }
 
 // AssembleDOBaseline renders the cutover baseline as concrete terraform documents
@@ -434,6 +447,33 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
     prevent_destroy = true
   }
 }`, doBaselineSpacesBucket, region))
+
+	// 7. Vault-HA 3-node Raft droplet cluster (Phase 0, pd-MIG-VAULT-HA-HARDEN).
+	//    OPT-IN via opts.VaultHA (harness DO_VAULT_HA=1). Off => 0 change to the base
+	//    estate. Sized via the SAME catalog SKU/image resolvers every service uses.
+	if opts.VaultHA {
+		vaultRow, err := cat.ResolveSKU(ctx, csp, cspRegion, "x86_64", 2, 4)
+		if err != nil {
+			return nil, fmt.Errorf("do-baseline: resolve SKU for vault (2vCPU/4GiB): %w", err)
+		}
+		vaultImg, err := cat.ResolveImage(ctx, csp, cspRegion, "ubuntu", "24.04", "x86_64")
+		if err != nil {
+			return nil, fmt.Errorf("do-baseline: resolve image for vault: %w", err)
+		}
+		vspec := opts.VaultHASpec
+		if strings.TrimSpace(vspec.Name) == "" {
+			vspec.Name = vaultDropletTag
+		}
+		vspec.Region = region
+		vspec.Size = vaultRow.Name
+		vspec.Image = vaultImg.Image
+		vspec.VPCRef = "digitalocean_vpc." + doBaselineName + "-net.id"
+		vaultDocs, verr := RenderVaultDropletCluster(vspec)
+		if verr != nil {
+			return nil, fmt.Errorf("do-baseline: vault-ha cluster: %w", verr)
+		}
+		docs = append(docs, vaultDocs...)
+	}
 
 	return docs, nil
 }
