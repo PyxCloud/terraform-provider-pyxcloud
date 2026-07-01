@@ -14,7 +14,7 @@ package catalog
 // It is the single abstract source the F0 cutover renders BOTH ways:
 //
 //   - ProdEstateInput(aws, …)          — the SOURCE estate, everything as it runs
-//     on AWS today (incl. the AWS-only components: SES + the 3 Amplify frontends).
+//     on AWS today (email = native SES; incl. the AWS-only 3 Amplify frontends).
 //   - ProdEstateInput(digitalocean, …) — the TARGET estate, the same topology
 //     MINUS the components that have no DigitalOcean catalog mapping (the bespoke
 //     gaps, enumerated in docs/cutover/BESPOKE-GAPS.md and excluded here so the DO
@@ -249,28 +249,43 @@ func prodPlatformPeerComponents(provider string) []AssembleComponent {
 	}
 }
 
+// prodEmailComponent is the transactional-email sending domain (passo.build) that
+// backs invites / passkey / notifications. It is provider-agnostic and present in
+// BOTH renders (F1-05, GAP-2 resolved):
+//   - AWS: native SES (aws_ses_domain_identity + aws_ses_domain_dkim).
+//   - DO:  an SMTP-relay config (no managed DO email primitive). The relay defaults
+//     to the AWS SES SMTP endpoint (SES is region-global, reachable cross-cloud with
+//     IAM SMTP creds), keeping the verified sending domain working post-cutover; a
+//     3rd-party relay (SendGrid/Postmark/Mailgun) is opt-in. Credentials are a
+//     REFERENCE resolved from the secrets manager (Vault-HA on DO) — never inline.
+//     See docs/cutover/EMAIL-PATH.md.
+func prodEmailComponent() AssembleComponent {
+	return AssembleComponent{
+		Name: "email-sender", Type: "email",
+		// Domain only: DO relay defaults (AWS SES SMTP, port 587, Vault-resolved
+		// creds-ref) are applied by TranslateEmail. To switch to a 3rd-party relay,
+		// set RelayHost/CredentialsRef here.
+		Email: &AssembleEmail{Domain: "passo.build"},
+	}
+}
+
 // prodBespokeAWSOnlyComponents are the production components that have NO
 // DigitalOcean catalog mapping today — the residual bespoke gaps. They appear in
 // the AWS SOURCE estate (where they run natively) but are EXCLUDED from the DO
 // TARGET estate (they would be a hard plan-time error). Each is enumerated with
 // its proposed F1 target in docs/cutover/BESPOKE-GAPS.md.
 //
-//   - SES sending domain: AWS-only (email.go hard-errors on DO). F1-05: external
-//     provider (e.g. SendGrid/Postmark) or keep SES cross-cloud.
 //   - the 3 frontends (marketing / console / vibe): historically AWS Amplify
 //     static hosting. There is NO DO static-site catalog component today. F1-01:
 //     a new static-site component (Spaces static hosting + Cloudflare CDN). The
 //     built bundles already live in object-storage (app-assets / pyx-frontend /
 //     vibe-assets); the gap is the managed static-site HOSTING/CDN wrapper, which
 //     Amplify provided and DO does not have a first-class equivalent for.
+//
+// NOTE: SES / transactional email is NO LONGER here — GAP-2 is resolved (F1-05):
+// the email component now renders on DO too (SMTP-relay). See prodEmailComponent.
 func prodBespokeAWSOnlyComponents() []AssembleComponent {
-	return []AssembleComponent{
-		// SES transactional-email sending domain (passo.build). AWS-only.
-		{
-			Name: "email-sender", Type: "email",
-			Email: &AssembleEmail{Domain: "passo.build"},
-		},
-	}
+	return []AssembleComponent{}
 }
 
 // ProdEstateComponents returns the canonical full-prod estate for the given
@@ -290,8 +305,12 @@ func ProdEstateComponents(provider, arch, os, kubernetesVersion string) []Assemb
 	// The shared platform peer layer (LB, registry, kv, tracing, monitoring, TLS,
 	// cron, reserved-ip, queue, secrets/Vault-HA).
 	comps = append(comps, prodPlatformPeerComponents(provider)...)
+	// Transactional email (passo.build) — provider-agnostic (F1-05, GAP-2 resolved):
+	// SES on AWS, SMTP-relay config on DO. Present in BOTH renders.
+	comps = append(comps, prodEmailComponent())
 	// AWS-only bespoke components — only on AWS. On DO they are documented gaps and
-	// deliberately excluded so the DO plan is clean.
+	// deliberately excluded so the DO plan is clean (currently: the 3 frontends,
+	// F1-01, which have no component to model with yet).
 	if lc(provider) == ProviderAWS {
 		comps = append(comps, prodBespokeAWSOnlyComponents()...)
 	}

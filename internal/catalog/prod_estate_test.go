@@ -107,9 +107,20 @@ func TestProdEstateAssemblesForDO(t *testing.T) {
 		`resource "digitalocean_reserved_ip" "vpn-endpoint"`,
 		`resource "digitalocean_vpc" "passo-prod-net"`,
 		`resource "digitalocean_firewall" "passo-prod-sg"`,
+		// GAP-2 resolved (F1-05): transactional email renders on DO as an SMTP-relay
+		// config (no managed DO email primitive, no hard error).
+		`output "email-sender_smtp_relay"`,
+		`email-smtp.eu-west-1.amazonaws.com`, // default relay = AWS SES SMTP (cross-cloud)
+		`credentials_ref = "email-sender-smtp-credentials"`, // creds-REFERENCE, never inline
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("DO prod estate missing %q", want)
+		}
+	}
+	// The SMTP-relay config must never carry inline secret material.
+	for _, bad := range []string{"password =", "smtp_password", "secret_access_key"} {
+		if strings.Contains(all, bad) {
+			t.Errorf("DO email SMTP-relay must not emit inline secret %q", bad)
 		}
 	}
 

@@ -257,6 +257,12 @@ type AssemblePrefixList struct {
 // AssembleEmail is the config for an `email` / `email-service` component.
 type AssembleEmail struct {
 	Domain string
+	// SMTP-relay overrides (only used on a non-AWS placement — the DO email path).
+	// All optional; when empty the relay defaults to the AWS SES SMTP endpoint
+	// (cross-cloud). See docs/cutover/EMAIL-PATH.md.
+	RelayHost      string // opt-in 3rd-party relay (SendGrid/Postmark/Mailgun); default = AWS SES SMTP
+	RelayPort      int    // SMTP submission port (default 587 / STARTTLS)
+	CredentialsRef string // reference to the SMTP credentials secret — NEVER an inline secret
 }
 
 // AssembleKMS is the config for a `kms` / `encryption-key` component.
@@ -1205,7 +1211,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if c.Email == nil {
 				return nil, fmt.Errorf("component %q (email): config is required", c.Name)
 			}
-			emPlan, err := TranslateEmail(ctx, cat, EmailSpec{Name: c.Name, Region: in.Region, Provider: in.Provider, Domain: c.Email.Domain})
+			emPlan, err := TranslateEmail(ctx, cat, EmailSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider, Domain: c.Email.Domain,
+				RelayHost: c.Email.RelayHost, RelayPort: c.Email.RelayPort, CredentialsRef: c.Email.CredentialsRef,
+			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
 			}
