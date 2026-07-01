@@ -101,6 +101,26 @@ func TestRenderBackendDOAWSCouplingsAdapted(t *testing.T) {
 	}
 }
 
+// TestRenderBackendDOSetsLangchain4jOpenAIKey is the F2-02 backend blocker
+// regression: the app config maps quarkus.langchain4j.openai.api-key from the LLM
+// key with an sk-noop default, but an EMPTY UBICLOUD_LLM_API_KEY= line overrides
+// that default with "" and fails SmallRye config validation (SRCFG00040) at boot.
+// The bootstrap MUST set QUARKUS_LANGCHAIN4J_OPENAI_API_KEY directly from the same
+// (sensitive) LLM key variable so the property is always satisfied.
+func TestRenderBackendDOSetsLangchain4jOpenAIKey(t *testing.T) {
+	t.Parallel()
+	ud, err := RenderBackendDOUserData(BackendBootstrapSpec{Environment: "beta"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(ud, "QUARKUS_LANGCHAIN4J_OPENAI_API_KEY=${var.ubicloud_llm_api_key}") {
+		t.Error("backend bootstrap must set QUARKUS_LANGCHAIN4J_OPENAI_API_KEY from the LLM key var (F2-02 SRCFG00040 blocker)")
+	}
+	if !strings.Contains(ud, "UBICLOUD_LLM_API_KEY=${var.ubicloud_llm_api_key}") {
+		t.Error("backend bootstrap must keep UBICLOUD_LLM_API_KEY wired from the LLM key var")
+	}
+}
+
 // TestRenderBackendDOInlinesNoSecretValues is the security invariant: every
 // credential is referenced by Terraform variable, never embedded as a literal.
 func TestRenderBackendDOInlinesNoSecretValues(t *testing.T) {
