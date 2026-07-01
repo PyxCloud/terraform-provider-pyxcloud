@@ -414,5 +414,43 @@ func RenderVPNBootstrapUserData(spec VPNBootstrapSpec) (string, error) {
 	w("/usr/local/bin/wg-internal-dns-refresh.sh || true")
 	w("/usr/local/bin/wg-prune-inactive.sh || true")
 
-	return b.String(), nil
+	// The VPN bootstrap is dense with bash parameter expansions (${endpoint%%:*},
+	// ${peer_endpoints["$pubkey"]:-}, ${DO_TOKEN}, …). The DO scale-group renderer
+	// bakes user_data into an UNQUOTED HCL heredoc (vmHeredoc), so Terraform would
+	// try to interpolate every ${...}. Escape ALL bash expansions to $${...} so
+	// Terraform passes them through verbatim, leaving ONLY the intentional
+	// ${var.<x>} secret references for Terraform to resolve. Idempotent for this
+	// render (it emits no $${ of its own).
+	return escapeBashExpansionsForHeredoc(b.String()), nil
+}
+
+// escapeBashExpansionsForHeredoc converts every bash `${...}` expansion in a
+// user_data script to the Terraform-escaped `$${...}` form, EXCEPT the deliberate
+// `${var.<x>}` Terraform variable references which must survive to be interpolated.
+// This lets a bootstrap author write natural bash without hand-escaping every
+// expansion while keeping the heredoc valid HCL (the DO scale-group renderer bakes
+// user_data into an unquoted heredoc). Only `${` sequences NOT already escaped
+// (i.e. not preceded by an extra `$`) and NOT beginning `${var.` are rewritten.
+func escapeBashExpansionsForHeredoc(s string) string {
+	var out strings.Builder
+	out.Grow(len(s) + 32)
+	for i := 0; i < len(s); i++ {
+		if s[i] == '$' && i+1 < len(s) && s[i+1] == '{' {
+			// Already Terraform-escaped ("$${")? Leave it untouched.
+			if i > 0 && s[i-1] == '$' {
+				out.WriteByte(s[i])
+				continue
+			}
+			// A deliberate Terraform variable reference — keep verbatim.
+			if strings.HasPrefix(s[i:], "${var.") {
+				out.WriteByte(s[i])
+				continue
+			}
+			// A bare bash expansion — escape it for the heredoc.
+			out.WriteString("$$")
+			continue
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
 }
