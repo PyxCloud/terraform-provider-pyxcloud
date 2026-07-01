@@ -78,8 +78,8 @@ func TestRenderCloudfareCDNHCLContents(t *testing.T) {
 		`type    = "CNAME"`,
 		`content = "lb-12345.do.example.com"`,
 		`proxied = true`,
-		`resource "cloudflare_zone_settings_override"`,
-		`always_online`,
+		`resource "cloudflare_zone_setting"`,
+		`setting_id = "always_online"`,
 	} {
 		if !strings.Contains(hcl, want) {
 			t.Errorf("cloudflare-cdn HCL missing %q\n---\n%s", want, hcl)

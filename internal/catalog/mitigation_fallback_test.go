@@ -75,11 +75,14 @@ func TestAssembleHCLFallbackServicesSelfHostOnVM(t *testing.T) {
 			image:      "haproxy:2.9",
 		},
 		{
-			name:       "digitalocean email uses SMTP relay",
-			provider:   ProviderDigitalOcean,
+			// F1-05 (BESPOKE GAP-2): email on DO no longer VM-mitigates — it renders a
+			// native SMTP-relay config instead (see ses_test.go / prod_estate_test.go).
+			// Other non-AWS providers (here Ubicloud) still VM-mitigate email.
+			name:       "ubicloud email uses SMTP VM",
+			provider:   ProviderUbicloud,
 			region:     "Frankfurt",
 			component:  AssembleComponent{Name: "mail", Type: "email", Email: &AssembleEmail{Domain: "example.com"}},
-			vmResource: "resource \"digitalocean_droplet\"",
+			vmResource: "resource \"ubicloud_vm\"",
 			image:      "bytemark/smtp",
 		},
 		{
@@ -183,9 +186,12 @@ func TestNativeSupportMatchesRendererSurface(t *testing.T) {
 			fallback: []string{ProviderUbicloud, ProviderOVH},
 		},
 		{
+			// F1-05 (BESPOKE GAP-2): DO is now natively supported via the SMTP-relay
+			// render (AWS SES SMTP cross-cloud by default) — not the single-VM
+			// mitigation. Other non-AWS providers still VM-mitigate email.
 			component: "email",
-			native:    []string{ProviderAWS},
-			fallback:  []string{ProviderGCP, ProviderDigitalOcean, ProviderAzure, ProviderLinode, ProviderUbicloud, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderOVH, ProviderStackIt},
+			native:    []string{ProviderAWS, ProviderDigitalOcean},
+			fallback:  []string{ProviderGCP, ProviderAzure, ProviderLinode, ProviderUbicloud, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderOVH, ProviderStackIt},
 		},
 		{
 			component: "block-storage",

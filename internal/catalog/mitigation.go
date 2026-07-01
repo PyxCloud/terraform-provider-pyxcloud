@@ -161,8 +161,14 @@ var nativeSupport = map[string]map[string]bool{
 	},
 	"cdn-service":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
 	"cdn":           {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
-	"email-service": {ProviderAWS: true},
-	"email":         {ProviderAWS: true},
+	// email on DO has no managed transactional-email primitive, but F1-05
+	// (pd-MIG-CUTOVER-F1-05, BESPOKE GAP-2) routes it through the native catalog
+	// SMTP-relay render (AWS SES SMTP cross-cloud by default, or a 3rd-party relay)
+	// instead of the degraded single-VM SMTP mitigation. Mark DO natively supported
+	// so the mitigation fallback in assemble.go is NOT taken — mirrors the B1/B2/B4
+	// operator-alias precedents (queue/WAF/secrets). See docs/cutover/EMAIL-PATH.md.
+	"email-service": {ProviderAWS: true, ProviderDigitalOcean: true},
+	"email":         {ProviderAWS: true, ProviderDigitalOcean: true},
 	"block-storage": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 }
 
