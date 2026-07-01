@@ -41,6 +41,20 @@ func TestRenderBackendDOUsesDOMainDBAndNoIMDS(t *testing.T) {
 		t.Error("bootstrap should name the DO pyx-main-db target database (mesh_app)")
 	}
 
+	// F2-02 root-cause fix: the DO pyx-main-db secret is a libpq URI (postgres://...),
+	// which pgjdbc rejects. The bootstrap MUST normalize it in place to jdbc:postgresql://
+	// and split out the username/password vars, or the native binary crash-loops at boot
+	// ("Driver does not support the provided URL" -> Hibernate SessionFactory build fails).
+	if !strings.Contains(ud, "jdbc:postgresql://") {
+		t.Error("bootstrap must normalize the DB URL to the jdbc:postgresql:// scheme (pgjdbc rejects postgres://)")
+	}
+	if !strings.Contains(ud, "PYX_MAIN_DATABASE_USERNAME=") {
+		t.Error("bootstrap must derive PYX_MAIN_DATABASE_USERNAME from the libpq URI (Quarkus binds it separately)")
+	}
+	if !strings.Contains(ud, "PYX_MAIN_DATABASE_PASSWORD=") {
+		t.Error("bootstrap must derive PYX_MAIN_DATABASE_PASSWORD from the libpq URI (Quarkus binds it separately)")
+	}
+
 	// NO AWS IMDS health-probe: the 169.254.169.254 metadata lookup must be gone.
 	if strings.Contains(ud, "169.254.169.254") {
 		t.Error("DO bootstrap must NOT contain the AWS IMDS 169.254.169.254 health-probe (DO metadata differs)")
