@@ -25,8 +25,16 @@ state, **plus** the DO Spaces artifact bucket (now that Spaces keys exist):
 | `digitalocean_loadbalancer` | `edge-lb` (fronts the `pyx-backend` tag on 443) |
 | `digitalocean_spaces_bucket` | `pyx-artifacts-fra1` (release-artifact store) |
 
-State: `s3://pyxcloud-terraform-state/cutover/do-baseline-fra1.tfstate`
-(backend region `eu-west-1`).
+State: `s3://pyx-terraform-state/cutover/do-baseline-fra1.tfstate` on the
+S3-compatible **DigitalOcean Spaces** endpoint `https://fra1.digitaloceanspaces.com`
+(bucket versioning ON; locking via native S3 lockfile, `use_lockfile=true`). The
+terraform `s3` backend reads the Spaces keys from `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` at init/plan/apply time — export the
+`beta-DigitalOceanSpacesKeys` values into those before running terraform.
+
+> The state was migrated off AWS S3 (`s3://pyxcloud-terraform-state`, `eu-west-1`)
+> onto Spaces via `terraform init -migrate-state`. The legacy AWS bucket is kept as
+> a cold backup until the AWS-decommission step — do not delete it yet.
 
 ### Why droplet-autoscale, not DOKS
 
@@ -65,8 +73,10 @@ from the committed catalog + Secrets Manager, so it is never committed.
 
 ## Reproducible workflow
 
-Prereqs: `go`, `terraform`, `aws` (creds for the S3 backend + Secrets Manager),
-`python3`. Run from the repo root (`terraform-provider-pyxcloud/`).
+Prereqs: `go`, `terraform` (>= 1.11 for `use_lockfile`), `aws` (creds for Secrets
+Manager), `python3`. Run from the repo root (`terraform-provider-pyxcloud/`). The
+state backend is DigitalOcean Spaces (S3-compatible); its credentials are the
+Spaces keys exported into `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (step 1).
 
 ### 1. Export credentials from Secrets Manager
 
@@ -87,6 +97,10 @@ export DIGITALOCEAN_TOKEN="$(aws secretsmanager get-secret-value \
   --secret-id beta-DigitalOceanToken --query SecretString --output text)"
 export SPACES_ACCESS_KEY_ID="$DO_SPACES_ACCESS_KEY"
 export SPACES_SECRET_ACCESS_KEY="$DO_SPACES_SECRET_KEY"
+
+# --- terraform s3 backend credentials = the SAME Spaces keys (state lives on Spaces) ---
+export AWS_ACCESS_KEY_ID="$DO_SPACES_ACCESS_KEY"
+export AWS_SECRET_ACCESS_KEY="$DO_SPACES_SECRET_KEY"
 ```
 
 ### 2. Render (deterministic)
@@ -96,11 +110,11 @@ go run ./cutover/render.go
 # -> writes cutover/generated/{backend.tf,variables.tf,estate.tf}
 ```
 
-### 3. Init (S3 backend) + plan/apply
+### 3. Init (Spaces backend) + plan/apply
 
 ```bash
 cd cutover/generated
-terraform init                                              # S3 backend
+terraform init                                              # DigitalOcean Spaces backend (fra1)
 terraform plan  -var 'do_ssh_keys=["57496891"]'            # expect: 0 to destroy
 terraform apply -var 'do_ssh_keys=["57496891"]'
 ```
