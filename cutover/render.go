@@ -84,7 +84,14 @@ func run() error {
 	// resolved at apply from -var (see variables.tf + cutover/README.md).
 	full := strings.TrimSpace(os.Getenv("DO_FULL_SERVICE_BOOTSTRAPS")) == "1"
 	if full {
-		secrets.SSOKCDBURL = os.Getenv("DO_SSO_KCDB_URL")
+		// The sso render (RenderSSODOBootstrapUserData) emits KC_DB_URL verbatim and
+		// requires the jdbc form (jdbc:postgresql://host:port/db?params). The
+		// beta-DO-keycloak-db-url secret is stored as a libpq URI
+		// (postgres://user:pass@host:port/db?sslmode=require) — pgjdbc rejects that
+		// scheme ("Driver does not support the provided URL") and Keycloak crash-loops.
+		// Normalize to jdbc here (creds are injected separately via KC_DB_USERNAME/
+		// KC_DB_PASSWORD), mirroring the backend #127/#128 jdbc-normalize fix.
+		secrets.SSOKCDBURL = normalizeJDBC(os.Getenv("DO_SSO_KCDB_URL"))
 		secrets.SSOKCDBUsername = os.Getenv("DO_SSO_KCDB_USERNAME")
 		secrets.SSOKCDBPassword = os.Getenv("DO_SSO_KCDB_PASSWORD")
 		secrets.SSOAdminPassword = os.Getenv("DO_SSO_ADMIN_PASSWORD")
@@ -187,6 +194,27 @@ provider "digitalocean" {
 	fmt.Printf("rendered %d resource documents to %s/estate.tf (+ backend.tf, variables.tf)\n", len(docs), outDir)
 	fmt.Printf("next: (cd %s && terraform init && terraform plan -var 'do_ssh_keys=[\"57496891\"]')\n", outDir)
 	return nil
+}
+
+// normalizeJDBC converts a libpq postgres URI (postgres://user:pass@host:port/db?q)
+// to the jdbc:postgresql://host:port/db?q form Keycloak/pgjdbc requires, dropping the
+// embedded credentials (they are injected separately as KC_DB_USERNAME/KC_DB_PASSWORD).
+// An input that is already jdbc form (or empty) is returned unchanged.
+func normalizeJDBC(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.HasPrefix(raw, "jdbc:") {
+		return raw
+	}
+	// strip scheme
+	rest := raw
+	if i := strings.Index(rest, "://"); i >= 0 {
+		rest = rest[i+3:]
+	}
+	// strip creds (user:pass@)
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
+		rest = rest[at+1:]
+	}
+	return "jdbc:postgresql://" + rest
 }
 
 func writeFile(path, content string) error {
