@@ -1,0 +1,10 @@
+# The rendered estate carries render-time-injected secrets (Spaces keys, EMBED
+# token, the mesh_app BOARD_DATABASE_URL) baked into the mcp launch template.
+# It is REPRODUCIBLE from the committed catalog + Secrets Manager, so it is never
+# committed. Re-render with `go run ./cutover/render.go` (see README.md).
+generated/
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log

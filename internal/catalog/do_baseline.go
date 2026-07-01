@@ -1,0 +1,481 @@
+package catalog
+
+import (
+	"context"
+	"fmt"
+	"strings"
+)
+
+// do_baseline.go — pd-MIG-CUTOVER-F2-02 (EPIC-AWS-TO-DO-MIGRATION).
+//
+// The AWS -> DigitalOcean cutover baseline (blue/green, no DNS/traffic, AWS
+// untouched) was historically applied by re-rendering catalog HCL into a throw-
+// away /tmp directory on every apply, with only the S3 state persisting
+// (s3://pyxcloud-terraform-state/cutover/do-baseline-fra1.tfstate, 11 resources).
+// That is not reproducible: re-applies and user_data changes are ephemeral.
+//
+// This file is the COMMITTED, deterministic source for that baseline. It renders
+// the EXACT deployed estate so a `terraform plan` against the existing S3 state is
+// clean, and it makes the mcp control-plane droplet DURABLE across replacement by
+// baking a correct BOARD_DATABASE_URL (the mesh_app URL) into the launch template.
+//
+// WHY A DEDICATED ASSEMBLER (not the generic AssembleHCL scale-group path):
+// the canonical `virtual-machine-scale-group` descends to a DOKS
+// `digitalocean_kubernetes_cluster` node-pool on DigitalOcean (scalegroup.go).
+// The live cutover estate was instead applied as `digitalocean_droplet_autoscale`
+// groups (a droplet fleet with a CPU target, self-healing floor of 1). Rendering
+// the DOKS shape against the existing droplet-autoscale state would plan a full
+// destroy+recreate of every service — unacceptable for a live blue estate. This
+// assembler therefore emits the droplet-autoscale shape that MATCHES state, so the
+// harness is reconciled with reality and the plan stays additive (<= 1 change).
+//
+// The estate this reproduces (see the S3 state, serial 12):
+//   - 1 VPC (passo-do-baseline-net, 10.0.1.0/24, fra1)
+//   - 1 firewall (passo-do-baseline-sg): inbound 443, egress icmp/tcp/udp all
+//   - 2 managed PG clusters (pyx-main-db, keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes
+//   - 6 droplet-autoscale groups: backend / mcp / obs / sast / sso / vpn
+//   - 1 regional load-balancer (edge-lb) fronting the backend droplet tag on 443
+//   - 1 Spaces bucket (pyx-artifacts-fra1) — the mcp/backend artifact store
+//     (INCLUDED now that beta-DigitalOceanSpacesKeys exists)
+
+// doBaselineName is the estate prefix used for the VPC/firewall names, matching
+// the deployed state resource names so the plan is import-clean.
+const doBaselineName = "passo-do-baseline"
+
+// doBaselineSpacesBucket is the DO Spaces bucket the droplets fetch their release
+// artifact from (aws s3 cp --endpoint-url against fra1.digitaloceanspaces.com).
+const doBaselineSpacesBucket = "pyx-artifacts-fra1"
+
+// DOBaselineService is one droplet-autoscale group in the cutover baseline.
+type DOBaselineService struct {
+	// Name is the autoscale-group name and matches the deployed state.
+	Name string
+	// Tag is the droplet tag the firewall and load-balancer select on.
+	Tag string
+	// CPU / RAM are the requested sizing, resolved to a concrete droplet SKU by
+	// the catalog (the SAME ResolveSKU path every VM uses) — never hand-picked.
+	CPU int
+	RAM int
+	// Durable marks the mcp service whose user_data must carry the mesh_app
+	// BOARD_DATABASE_URL so a droplet replacement re-bootstraps correctly.
+	Durable bool
+}
+
+// DOBaselineServices is the canonical ordered list of the 6 cutover droplet
+// groups. Deterministic (slice, not map) so the emitted HCL is stable.
+func DOBaselineServices() []DOBaselineService {
+	return []DOBaselineService{
+		{Name: "backend", Tag: "pyx-backend", CPU: 2, RAM: 4},
+		{Name: "mcp", Tag: "pyx-mcp", CPU: 2, RAM: 4, Durable: true},
+		{Name: "obs", Tag: "pyx-obs", CPU: 4, RAM: 8},
+		{Name: "sast", Tag: "pyx-sast", CPU: 2, RAM: 4},
+		{Name: "sso", Tag: "pyx-sso", CPU: 2, RAM: 4},
+		{Name: "vpn", Tag: "pyx-vpn", CPU: 2, RAM: 2},
+	}
+}
+
+// DOBaselineInput is the catalog-native descriptor for the cutover baseline.
+// It mirrors the AssembleInput surface (name/provider/region/components) so the
+// harness reads the same way as the generic estate, while AssembleDOBaseline
+// renders the droplet-autoscale shape that matches the live S3 state.
+//
+// region is the DO slug ("fra1"); arch/os/kubernetesVersion take the canonical
+// defaults when empty (kubernetesVersion is unused by the droplet path but kept
+// for signature parity with FullEstateInput / the migration dry-run).
+func DOBaselineInput(region, arch, os, kubernetesVersion string) AssembleInput {
+	arch = strings.TrimSpace(arch)
+	if arch == "" {
+		arch = "x86_64"
+	}
+	os = strings.TrimSpace(os)
+	if os == "" {
+		os = "ubuntu"
+	}
+	comps := make([]AssembleComponent, 0, len(DOBaselineServices()))
+	for _, s := range DOBaselineServices() {
+		comps = append(comps, AssembleComponent{
+			Name: s.Name,
+			Type: "virtual-machine-scale-group",
+			ScaleGroup: &AssembleScaleGroup{
+				Architecture: arch,
+				CPU:          itoa(s.CPU),
+				RAM:          itoa(s.RAM),
+				OS:           os,
+				Min:          1, Max: 1, Desired: 1,
+				Health:            HealthEC2,
+				KubernetesVersion: strings.TrimSpace(kubernetesVersion),
+			},
+		})
+	}
+	return AssembleInput{
+		Name:       doBaselineName,
+		Provider:   ProviderDigitalOcean,
+		Region:     region,
+		CIDR:       "10.0.1.0/24",
+		Subnets:    []string{"10.0.1.0/24"},
+		Expose:     []int{443},
+		Components: comps,
+	}
+}
+
+// DOBaselineSecrets carries the render-time-injected credentials so NOTHING
+// secret is committed. Every field is fetched from AWS Secrets Manager by the
+// harness (cutover/render.go) at render time and baked into the launch template,
+// exactly as EMBED_TOKEN_SECRET already was — the droplet has no AWS role, so it
+// cannot fetch these itself.
+type DOBaselineSecrets struct {
+	// SpacesAccessKey / SpacesSecretKey are beta-DigitalOceanSpacesKeys — the S3
+	// (SigV4) client credentials used ONLY to pull the release artifact from DO
+	// Spaces at boot. Also used for the Spaces bucket provider config.
+	SpacesAccessKey string
+	SpacesSecretKey string
+	// BoardDatabaseURL is beta-DO-pyx-main-db-url (the mesh_app URL) — the DURABLE
+	// fix: BOARD_DATABASE_URL now points at mesh_app on pyx-main-db, NOT doadmin /
+	// defaultdb / beta-DO-pyx-db-password. Injected here so a droplet replacement
+	// re-bootstraps with the correct DB identity.
+	BoardDatabaseURL string
+	// EmbedTokenSecret is beta/passobuild-mcp-embed-token — the MCP embed token,
+	// injected at render time (unchanged behaviour, kept durable).
+	EmbedTokenSecret string
+}
+
+// UsePrivateDBHost, when true, rewrites the BoardDatabaseURL host to the DO
+// managed-PG PRIVATE endpoint (private-<host>) so the mcp droplet reaches the DB
+// over the shared VPC rather than the public internet. The mesh_app secret stores
+// the public host; same-VPC connectivity wants the private one. Default (zero
+// value = false) uses the URL verbatim; the harness enables it.
+func (s DOBaselineSecrets) privateURL(enable bool) string {
+	u := strings.TrimSpace(s.BoardDatabaseURL)
+	if !enable || u == "" {
+		return u
+	}
+	// postgres://user:pw@HOST:port/db?query — rewrite HOST only if not already private.
+	at := strings.LastIndex(u, "@")
+	if at < 0 {
+		return u
+	}
+	head, tail := u[:at+1], u[at+1:] // tail = host:port/db?query
+	if strings.HasPrefix(tail, "private-") {
+		return u
+	}
+	return head + "private-" + tail
+}
+
+// DOBaselineOptions tunes the render. Zero value is the harness default.
+type DOBaselineOptions struct {
+	// PrivateDBHost rewrites the mesh_app URL to the private VPC endpoint (same
+	// VPC as the droplets). The harness sets this true.
+	PrivateDBHost bool
+}
+
+// AssembleDOBaseline renders the cutover baseline as concrete terraform documents
+// that MATCH the deployed S3 state (droplet-autoscale shape). This is the
+// committed, deterministic replacement for the ad-hoc /tmp renderer.
+//
+// The mcp droplet's user_data is made durable: BOARD_DATABASE_URL is sourced from
+// secrets.BoardDatabaseURL (the mesh_app URL from beta-DO-pyx-main-db-url),
+// injected at render time — so a future roll (droplet replacement) re-bootstraps
+// against mesh_app, not the stale doadmin/defaultdb URL that was baked into state.
+func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secrets DOBaselineSecrets, opts DOBaselineOptions) ([]string, error) {
+	if in.Provider != ProviderDigitalOcean {
+		return nil, fmt.Errorf("do-baseline: provider must be digitalocean, got %q", in.Provider)
+	}
+	if strings.TrimSpace(in.Region) == "" {
+		return nil, fmt.Errorf("do-baseline: region is required")
+	}
+	if secrets.SpacesAccessKey == "" || secrets.SpacesSecretKey == "" {
+		return nil, fmt.Errorf("do-baseline: Spaces keys are required (beta-DigitalOceanSpacesKeys)")
+	}
+	if secrets.BoardDatabaseURL == "" {
+		return nil, fmt.Errorf("do-baseline: BoardDatabaseURL is required (beta-DO-pyx-main-db-url / mesh_app)")
+	}
+	if secrets.EmbedTokenSecret == "" {
+		return nil, fmt.Errorf("do-baseline: EmbedTokenSecret is required (beta/passobuild-mcp-embed-token)")
+	}
+
+	// Resolve the abstract region_name (e.g. "Frankfurt") to the concrete DO slug
+	// (fra1) via the catalog — the SAME resolution every component uses. All DO
+	// resource `region` attributes and SKU/image lookups use the concrete slug.
+	regionRow, err := cat.ResolveRegion(ctx, in.Region, ProviderDigitalOcean)
+	if err != nil {
+		return nil, fmt.Errorf("do-baseline: resolve region %q: %w", in.Region, err)
+	}
+	csp, cspRegion := regionRow.CSP, regionRow.CSPRegion
+	region := cspRegion
+	var docs []string
+
+	// 1. VPC (matches passo-do-baseline-net).
+	docs = append(docs, fmt.Sprintf(`resource "digitalocean_vpc" %q {
+  name     = %q
+  region   = %q
+  ip_range = %q
+}`, doBaselineName+"-net", doBaselineName+"-net", region, in.CIDR))
+
+	// 2. Firewall (matches passo-do-baseline-sg): inbound 443, egress icmp/tcp/udp.
+	tags := make([]string, 0, len(DOBaselineServices()))
+	for _, s := range DOBaselineServices() {
+		tags = append(tags, s.Tag)
+	}
+	docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
+  name = %q
+  tags = %s
+
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "443"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  outbound_rule {
+    protocol              = "icmp"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  outbound_rule {
+    protocol              = "udp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+}`, doBaselineName+"-sg", doBaselineName+"-sg", hclStringList(tags)))
+
+	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes.
+	for _, db := range []string{"pyx-main-db", "keycloak-db"} {
+		docs = append(docs, fmt.Sprintf(`resource "digitalocean_database_cluster" %q {
+  name                 = %q
+  engine               = "pg"
+  version              = "17"
+  size                 = "db-s-2vcpu-4gb"
+  region               = %q
+  node_count           = 2
+  private_network_uuid = digitalocean_vpc.%s.id
+  tags                 = ["pyxcloud"]
+}`, db, db, region, doBaselineName+"-net"))
+	}
+
+	// 4. Droplet-autoscale groups (6 services), sized via the catalog SKU resolver.
+	for _, svc := range DOBaselineServices() {
+		row, err := cat.ResolveSKU(ctx, csp, cspRegion, "x86_64", svc.CPU, svc.RAM)
+		if err != nil {
+			return nil, fmt.Errorf("do-baseline: resolve SKU for %s (%dvCPU/%dGiB): %w", svc.Name, svc.CPU, svc.RAM, err)
+		}
+		img, err := cat.ResolveImage(ctx, csp, cspRegion, "ubuntu", "24.04", "x86_64")
+		if err != nil {
+			return nil, fmt.Errorf("do-baseline: resolve image for %s: %w", svc.Name, err)
+		}
+		userData := ""
+		if svc.Durable {
+			userData = renderMCPUserData(secrets, opts)
+		}
+		udBlock := ""
+		if userData != "" {
+			udBlock = fmt.Sprintf("\n    user_data = <<-USERDATA\n%s\n    USERDATA\n", indentUserData(userData))
+		}
+		docs = append(docs, fmt.Sprintf(`resource "digitalocean_droplet_autoscale" %q {
+  name = %q
+
+  config {
+    min_instances             = 1
+    max_instances             = 1
+    target_cpu_utilization    = 0.6
+  }
+
+  droplet_template {
+    size               = %q
+    region             = %q
+    image              = %q
+    ssh_keys           = var.do_ssh_keys
+    vpc_uuid           = digitalocean_vpc.%s.id
+    tags               = [%q]
+    with_droplet_agent = true%s
+  }
+}`, svc.Name, svc.Name, row.Name, region, img.Image, doBaselineName+"-net", svc.Tag, udBlock))
+	}
+
+	// 5. Regional load-balancer (edge-lb) fronting the backend tag on 443.
+	docs = append(docs, fmt.Sprintf(`resource "digitalocean_loadbalancer" "edge-lb" {
+  name        = "edge-lb"
+  region      = %q
+  size_unit   = 1
+  droplet_tag = "pyx-backend"
+  vpc_uuid    = digitalocean_vpc.%s.id
+
+  forwarding_rule {
+    entry_port      = 443
+    entry_protocol  = "https"
+    target_port     = 443
+    target_protocol = "https"
+    tls_passthrough = true
+  }
+
+  healthcheck {
+    protocol                 = "http"
+    port                     = 8080
+    path                     = "/q/health"
+    check_interval_seconds   = 30
+    response_timeout_seconds = 5
+    healthy_threshold        = 3
+    unhealthy_threshold      = 3
+  }
+}`, region, doBaselineName+"-net"))
+
+	// 6. Spaces bucket (pyx-artifacts-fra1) — the release-artifact store. INCLUDED
+	//    now that beta-DigitalOceanSpacesKeys exists; the spaces provider creds come
+	//    from the same secret (wired in the backend/provider block by the harness).
+	docs = append(docs, fmt.Sprintf(`resource "digitalocean_spaces_bucket" "artifacts" {
+  name   = %q
+  region = %q
+  acl    = "private"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}`, doBaselineSpacesBucket, region))
+
+	return docs, nil
+}
+
+// mcpUserDataTemplate is the durable mcp bootstrap. %[1]s = Spaces access key,
+// %[2]s = Spaces secret key, %[3]s = Spaces bucket, %[4]s = BOARD_DATABASE_URL
+// (mesh_app), %[5]s = EMBED token. It keeps :8787, systemd, and the Spaces
+// artifact fetch identical to the deployed unit; the ONLY durability change is
+// that BOARD_DATABASE_URL is the mesh_app URL, injected at render time.
+const mcpUserDataTemplate = `#!/bin/bash
+# mcp board-OS MCP server — DigitalOcean droplet bootstrap (F2-02, durable).
+# BOARD_DATABASE_URL sources beta-DO-pyx-main-db-url (mesh_app), injected at
+# render time (no AWS role on the box), same mechanism as EMBED_TOKEN_SECRET.
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+log() { echo "[mcp-bootstrap] $*"; }
+
+log "apt update + base deps"
+apt-get update -y
+apt-get install -y ca-certificates curl unzip tar coreutils
+
+if ! command -v aws >/dev/null 2>&1; then
+  log "install aws cli v2 (spaces client)"
+  arch="$(dpkg --print-architecture)"
+  case "$arch" in
+    amd64) awsurl="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" ;;
+    arm64) awsurl="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" ;;
+    *)     awsurl="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" ;;
+  esac
+  curl -fsSL "$awsurl" -o /tmp/awscliv2.zip
+  (cd /tmp && unzip -q awscliv2.zip && ./aws/install --update)
+fi
+
+log "create service user + dirs"
+id passobuild-mcp >/dev/null 2>&1 || useradd --system --home /opt/passobuild-mcp --shell /usr/sbin/nologin passobuild-mcp
+install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /opt/passobuild-mcp
+install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /var/log/passobuild-mcp
+
+log "fetch artifact from DO Spaces"
+export AWS_ACCESS_KEY_ID='%[1]s'
+export AWS_SECRET_ACCESS_KEY='%[2]s'
+export AWS_DEFAULT_REGION='fra1'
+aws s3 cp --endpoint-url https://fra1.digitaloceanspaces.com \
+  s3://%[3]s/beta/mcp.tar.gz /tmp/mcp.tar.gz
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+tar -xzf /tmp/mcp.tar.gz -C /opt/passobuild-mcp --strip-components=1
+chown -R passobuild-mcp:passobuild-mcp /opt/passobuild-mcp
+chmod +x /opt/passobuild-mcp/passobuild-mcp
+
+log "write /etc/passobuild-mcp.env"
+umask 027
+cat > /etc/passobuild-mcp.env <<'ENVEOF'
+NODE_ENV=production
+PYXCLOUD_MCP_HTTP_PORT=8787
+PYXCLOUD_MCP_PUBLIC_URL=https://mcp.passo.build
+PYXCLOUD_MCP_AUTH_ISSUER_URL=https://beta-auth.pyxcloud.io/realms/passobuild
+PYXCLOUD_MCP_AUTH_AUDIENCE=https://mcp.passo.build/mcp,passobuild-mcp
+PYXCLOUD_MCP_SERVICE_COMMAND_B64=Li9wYXNzb2J1aWxkLW1jcA==
+# DURABLE: mesh_app on pyx-main-db (beta-DO-pyx-main-db-url), NOT doadmin/defaultdb.
+BOARD_DATABASE_URL=%[4]s
+BOARD_ADMIN_ROLES=board-admin
+BOARD_DECOMPOSE_MIN_COMPLEXITY=6
+BOARD_VERIFY_MIN_COMPLEXITY=9
+BOARD_OPTIMIZE_MIN_COMPLEXITY=6
+EMBED_TOKEN_SECRET=%[5]s
+ENVEOF
+chown root:passobuild-mcp /etc/passobuild-mcp.env
+chmod 0640 /etc/passobuild-mcp.env
+umask 022
+
+log "write start wrapper + systemd unit"
+cat > /usr/local/bin/passobuild-mcp-start <<'WRAPEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd /opt/passobuild-mcp/app 2>/dev/null || cd /opt/passobuild-mcp
+command="$(printf '%%s' "${PYXCLOUD_MCP_SERVICE_COMMAND_B64:-}" | base64 --decode 2>/dev/null || true)"
+if [ -z "$command" ]; then
+  echo "PYXCLOUD_MCP_SERVICE_COMMAND is not set." >&2
+  exit 78
+fi
+exec bash -lc "$command"
+WRAPEOF
+chmod 0755 /usr/local/bin/passobuild-mcp-start
+
+cat > /etc/systemd/system/passobuild-mcp.service <<'UNITEOF'
+[Unit]
+Description=passo.build remote MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=passobuild-mcp
+Group=passobuild-mcp
+EnvironmentFile=/etc/passobuild-mcp.env
+WorkingDirectory=/opt/passobuild-mcp
+ExecStart=/usr/local/bin/passobuild-mcp-start
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/passobuild-mcp /var/log/passobuild-mcp
+StandardOutput=append:/var/log/passobuild-mcp/service.log
+StandardError=append:/var/log/passobuild-mcp/service.log
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+log "enable + start"
+systemctl daemon-reload
+systemctl enable passobuild-mcp.service
+systemctl restart passobuild-mcp.service
+log "bootstrap done"`
+
+func renderMCPUserData(s DOBaselineSecrets, opts DOBaselineOptions) string {
+	return fmt.Sprintf(mcpUserDataTemplate,
+		s.SpacesAccessKey,
+		s.SpacesSecretKey,
+		doBaselineSpacesBucket,
+		s.privateURL(opts.PrivateDBHost),
+		s.EmbedTokenSecret,
+	)
+}
+
+// indentUserData prepares the bootstrap script for a terraform <<-USERDATA
+// heredoc: it ESCAPES the terraform template sequences "${" and "%{" (which the
+// shell uses for parameter/arithmetic expansion) to "$${" / "%%{" so terraform
+// treats the whole body as a literal, then indents each line by 6 spaces for a
+// deterministic, gofmt-stable rendering.
+func indentUserData(s string) string {
+	s = strings.ReplaceAll(s, "${", "$${")
+	s = strings.ReplaceAll(s, "%{", "%%{")
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l == "" {
+			continue
+		}
+		lines[i] = "      " + l
+	}
+	return strings.Join(lines, "\n")
+}
+
+func itoa(n int) string { return fmt.Sprintf("%d", n) }
