@@ -111,6 +111,42 @@ func PlatformScaleGroupComponents(arch, os, kubernetesVersion string) []Assemble
 // RenderSSOBootstrapUserData.
 type PlatformBootstraps map[string]string
 
+// PlatformBootstrapsByProvider carries PER-PROVIDER bootstrap overrides, keyed
+// first by the canonical service name then by the provider-facing name
+// (aws | gcp | digitalocean | …). It threads a provider-specific boot script into
+// AssembleScaleGroup.UserDataByProvider, which WINS over the generic UserData on a
+// matching provider and falls back to UserData otherwise. This is how a single
+// canonical service carries, e.g., the AWS S3/Secrets-Manager/CloudWatch obs
+// bootstrap on AWS and the DO Spaces/apt/no-CloudWatch obs bootstrap on
+// DigitalOcean — one topology, two provider boot scripts (SPEC §1). Build the obs
+// DO entry with RenderOBSDOBootstrapUserData.
+type PlatformBootstrapsByProvider map[string]map[string]string
+
+// PlatformBootstrapsWithOBSDO returns the given base bootstraps plus the
+// canonical observability aggregator bootstrap for DigitalOcean wired into the
+// obs service's digitalocean provider slot. The base map (if any) is copied, not
+// mutated. Secrets are referenced by Terraform variable name (injected at
+// render), never inlined.
+func PlatformBootstrapsWithOBSDO(base PlatformBootstrapsByProvider, spec OBSDOBootstrapSpec) (PlatformBootstrapsByProvider, error) {
+	ud, err := RenderOBSDOBootstrapUserData(spec)
+	if err != nil {
+		return nil, err
+	}
+	out := PlatformBootstrapsByProvider{}
+	for svc, byProv := range base {
+		cp := map[string]string{}
+		for prov, v := range byProv {
+			cp[prov] = v
+		}
+		out[svc] = cp
+	}
+	if out["obs"] == nil {
+		out["obs"] = map[string]string{}
+	}
+	out["obs"]["digitalocean"] = ud
+	return out, nil
+}
+
 // PlatformScaleGroupComponentsWithBootstrap is PlatformScaleGroupComponents plus
 // the per-service bootstrap user_data. This is the wiring point that turns "a
 // scale-group of 1" into "the canonical SSO/VPN/backend service": the bootstrap
@@ -118,6 +154,17 @@ type PlatformBootstraps map[string]string
 // which the existing scale-group renderer descends to the provider's
 // launch-template/cloud-init — no new translator (SPEC §1).
 func PlatformScaleGroupComponentsWithBootstrap(arch, os, kubernetesVersion string, bootstraps PlatformBootstraps) []AssembleComponent {
+	return PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersion, bootstraps, nil)
+}
+
+// PlatformScaleGroupComponentsWithProviderBootstrap is
+// PlatformScaleGroupComponentsWithBootstrap plus PER-PROVIDER bootstrap overrides
+// threaded into each scale-group's UserDataByProvider. This is the wiring point
+// for a provider-specific boot script (e.g. the obs DigitalOcean bootstrap) that
+// must differ from the generic UserData on that one provider while every other
+// provider falls back to UserData — one canonical component, provider-specific
+// boot scripts, no forked topology (SPEC §1).
+func PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersion string, bootstraps PlatformBootstraps, byProvider PlatformBootstrapsByProvider) []AssembleComponent {
 	arch = strings.TrimSpace(arch)
 	os = strings.TrimSpace(os)
 	kubernetesVersion = strings.TrimSpace(kubernetesVersion)
@@ -125,6 +172,13 @@ func PlatformScaleGroupComponentsWithBootstrap(arch, os, kubernetesVersion strin
 	svcs := PlatformServices()
 	out := make([]AssembleComponent, 0, len(svcs))
 	for _, s := range svcs {
+		var udbp map[string]string
+		if byProvider != nil && len(byProvider[s.Name]) > 0 {
+			udbp = map[string]string{}
+			for prov, v := range byProvider[s.Name] {
+				udbp[prov] = v
+			}
+		}
 		out = append(out, AssembleComponent{
 			Name: s.Name,
 			Type: "virtual-machine-scale-group",
@@ -136,12 +190,13 @@ func PlatformScaleGroupComponentsWithBootstrap(arch, os, kubernetesVersion strin
 				// Scale-group of 1: min=desired=1 (self-heal floor), max=1 (a single
 				// canonical platform member; scale the fleet by editing the abstract
 				// topology, not by forking a per-cloud ASG).
-				Min:               s.MinDesired,
-				Max:               s.MinDesired,
-				Desired:           s.MinDesired,
-				Health:            s.Health,
-				KubernetesVersion: kubernetesVersion,
-				UserData:          bootstraps[s.Name],
+				Min:                s.MinDesired,
+				Max:                s.MinDesired,
+				Desired:            s.MinDesired,
+				Health:             s.Health,
+				KubernetesVersion:  kubernetesVersion,
+				UserData:           bootstraps[s.Name],
+				UserDataByProvider: udbp,
 			},
 		})
 	}
