@@ -40,7 +40,18 @@ type ScaleGroupSpec struct {
 
 	// UserData is the cloud-init/bootstrap script baked into the launch template
 	// (e.g. the native-binary pull + systemd unit). Provider-neutral plaintext.
+	// It is the DEFAULT used for any provider without a UserDataByProvider entry.
 	UserData string
+	// UserDataByProvider carries per-provider bootstrap overrides keyed by the
+	// provider-facing name (aws | gcp | digitalocean | …). When TranslateScaleGroup
+	// resolves for a provider, a matching entry here WINS over the generic UserData
+	// field; a missing entry falls back to UserData. This lets one canonical
+	// scale-group carry a provider-specific bootstrap (e.g. the AWS ASG pulls the
+	// artifact + fetches secrets via the instance role, while the DigitalOcean
+	// droplet_autoscale pull fetches from Spaces with injected keys) without forking
+	// the topology or inventing a second component. Keys are matched
+	// case-insensitively.
+	UserDataByProvider map[string]string
 	// InstanceProfile is the IAM instance-profile/service-account name to attach
 	// (wired from a sibling iam component).
 	InstanceProfile string
@@ -157,6 +168,14 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 
 	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
 
+	// Resolve the effective bootstrap: a per-provider override (case-insensitive
+	// key) WINS over the generic UserData, so one canonical scale-group can carry a
+	// provider-specific bootstrap (e.g. the DO droplet_autoscale fetches the
+	// artifact from Spaces with injected keys, while AWS pulls it via the instance
+	// role). A missing entry falls back to the generic UserData. Deterministic: no
+	// map iteration, a single keyed lookup.
+	userData := resolveUserDataForProvider(spec.UserData, spec.UserDataByProvider, provider)
+
 	// Linode and StackIt have no native VM autoscaling primitive and (unlike DO)
 	// no node-pool mapping wired here — clean plan-time error rather than an
 	// invented resource. This mirrors the catalog, whose Linode/StackIt
@@ -261,7 +280,7 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		Max:             max,
 		Desired:         desired,
 		Health:          health,
-		UserData:        spec.UserData,
+		UserData:        userData,
 		InstanceProfile: spec.InstanceProfile,
 		RootDiskGB:      spec.RootDiskGB,
 		Zones:           zones,
@@ -290,6 +309,27 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		plan.ResourceType = "alicloud_ess_scaling_group"
 	}
 	return plan, nil
+}
+
+// resolveUserDataForProvider picks the effective scale-group bootstrap for a
+// provider: a per-provider override (matched case-insensitively against the
+// already-lowercased provider name) wins over the generic default; an absent or
+// empty override falls back to the default. Keeping the default when the override
+// is empty means "no per-provider entry" and "explicit empty override" both fall
+// through to the shared bootstrap, which is the least-surprising behaviour.
+func resolveUserDataForProvider(defaultUD string, byProvider map[string]string, provider string) string {
+	if len(byProvider) == 0 {
+		return defaultUD
+	}
+	for k, v := range byProvider {
+		if strings.EqualFold(strings.TrimSpace(k), provider) {
+			if strings.TrimSpace(v) != "" {
+				return v
+			}
+			break
+		}
+	}
+	return defaultUD
 }
 
 // normalizeBounds applies the canonical defaulting: a zero max becomes max(min,

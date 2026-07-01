@@ -48,8 +48,14 @@ type AssembleScaleGroup struct {
 	Desired         int
 	Health          string // ec2 | elb
 	UserData        string
-	InstanceProfile string
-	RootDiskGB      int
+	// UserDataByProvider carries per-provider bootstrap overrides keyed by the
+	// provider-facing name (aws | gcp | digitalocean | …). A matching entry WINS
+	// over UserData when the environment renders for that provider; a missing entry
+	// falls back to UserData. This lets one canonical scale-group carry a
+	// provider-specific bootstrap without forking the topology.
+	UserDataByProvider map[string]string
+	InstanceProfile    string
+	RootDiskGB         int
 	// KubernetesVersion pins the DOKS control-plane version when the scale-group
 	// is placed on DigitalOcean (mapped to a digitalocean_kubernetes_cluster
 	// node_pool). Empty -> "latest". Other providers ignore it.
@@ -723,7 +729,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				Architecture: sg.Architecture, CPU: atoiOrZero(sg.CPU), RAM: atoiOrZero(sg.RAM),
 				OS: sg.OS, OSVersion: sg.OSVersion,
 				Min: sg.Min, Max: sg.Max, Desired: sg.Desired, Health: sg.Health,
-				UserData: sg.UserData, InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
+				UserData: sg.UserData, UserDataByProvider: sg.UserDataByProvider,
+				InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
 				KubernetesVersion: sg.KubernetesVersion,
 				Network:           netName, SecurityGroup: vmSG, Subnets: subnetNames,
 			})
