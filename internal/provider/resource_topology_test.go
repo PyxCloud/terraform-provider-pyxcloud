@@ -409,11 +409,12 @@ func TestResourceTranslateScaleGroupNil(t *testing.T) {
 	}
 }
 
-// TestResourceTranslateScaleGroupDOKS asserts a DigitalOcean scale-group maps to
-// a DOKS node pool (the AWS->DO migration keystone) rather than hard-failing: DO
-// has no native VM ASG primitive, so the scale-group resolves to a
-// digitalocean_kubernetes_cluster with self-heal bounds preserved.
-func TestResourceTranslateScaleGroupDOKS(t *testing.T) {
+// TestResourceTranslateScaleGroupDO asserts a DigitalOcean scale-group maps to a
+// droplet_autoscale pool (the AWS->DO migration keystone) rather than hard-failing:
+// DO's native VM-autoscaling primitive is digitalocean_droplet_autoscale (a
+// lift-and-shift of the AWS ASG, VM+systemd not DOKS), with self-heal bounds
+// preserved.
+func TestResourceTranslateScaleGroupDO(t *testing.T) {
 	t.Parallel()
 	r := &topologyResource{catalog: catalog.MustEmbedded()}
 	plan, err := r.translateScaleGroup(context.Background(), topologyModel{
@@ -426,13 +427,13 @@ func TestResourceTranslateScaleGroupDOKS(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("DO scale-group should map to DOKS, got error: %v", err)
+		t.Fatalf("DO scale-group should map to droplet_autoscale, got error: %v", err)
 	}
 	if plan == nil {
-		t.Fatal("expected a DOKS plan for DO scale-group, got nil")
+		t.Fatal("expected a droplet_autoscale plan for DO scale-group, got nil")
 	}
-	if plan.ResourceType.ValueString() != "digitalocean_kubernetes_cluster" {
-		t.Errorf("resource_type = %q, want digitalocean_kubernetes_cluster", plan.ResourceType.ValueString())
+	if plan.ResourceType.ValueString() != "digitalocean_droplet_autoscale" {
+		t.Errorf("resource_type = %q, want digitalocean_droplet_autoscale", plan.ResourceType.ValueString())
 	}
 }
 

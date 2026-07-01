@@ -438,9 +438,10 @@ func TestRenderLoadBalancerDO(t *testing.T) {
 		`entry_port      = 80`,
 		`entry_protocol  = "https"`,
 		`entry_port      = 443`,
+		`tls_passthrough = true`, // HTTPS rule valid without a managed certificate
 		`healthcheck {`,
 		`sticky_sessions {`,
-		`droplet_tag = "pyxcloud"`,
+		`droplet_tag = "pyx-web"`, // forwards to the target pool by per-service tag
 	} {
 		if !strings.Contains(hcl, want) {
 			t.Errorf("do LB HCL missing %q:\n%s", want, hcl)

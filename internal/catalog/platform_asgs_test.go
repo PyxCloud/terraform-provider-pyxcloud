@@ -51,11 +51,12 @@ func TestPlatformScaleGroupComponentsAreScaleGroupsOfOne(t *testing.T) {
 	}
 }
 
-// TestPlatformASGsRoundTripDO is the plan-only round-trip proof: the 5 platform
+// TestPlatformASGsRoundTripDO is the plan-only round-trip proof: the 6 platform
 // services, expressed as canonical scale-groups, descend to VALID DigitalOcean
-// resources — each becomes a DOKS node-pool with auto_scale and the self-heal
-// min_nodes=1 floor. This is the canonical scale-group -> DOKS mapping the task
-// asks for, exercised through the real assembler (no backend, plan-only).
+// resources — each becomes a digitalocean_droplet_autoscale pool (a lift-and-shift
+// of the AWS ASG: VM+systemd, NOT DOKS) with the self-heal min_instances=1 floor.
+// A scale-group of 1 (min==max==1) is a FIXED pool: no target-based scaling.
+// Exercised through the real assembler (no backend, plan-only).
 func TestPlatformASGsRoundTripDO(t *testing.T) {
 	t.Parallel()
 	cat := MustEmbedded()
@@ -74,24 +75,34 @@ func TestPlatformASGsRoundTripDO(t *testing.T) {
 	if !strings.Contains(all, `source = "digitalocean/digitalocean"`) {
 		t.Errorf("missing digitalocean provider source pin:\n%s", all)
 	}
-	// Each of the 5 services -> a DOKS cluster with an auto-scaling, self-healing
-	// node-pool (min_nodes=1 = the ASG-of-1 self-heal floor).
+	// Each of the 6 services -> a droplet_autoscale pool carrying its per-service tag.
 	for _, svc := range []string{"sso", "vpn", "obs", "sast", "backend", "mcp"} {
-		if !strings.Contains(all, `resource "digitalocean_kubernetes_cluster" "`+svc+`"`) {
-			t.Errorf("platform service %q did not emit a DOKS cluster:\n%s", svc, all)
+		if !strings.Contains(all, `resource "digitalocean_droplet_autoscale" "`+svc+`"`) {
+			t.Errorf("platform service %q did not emit a droplet_autoscale pool:\n%s", svc, all)
+		}
+		if !strings.Contains(all, `tags = ["pyx-`+svc+`"]`) {
+			t.Errorf("platform service %q pool missing per-service tag pyx-%s:\n%s", svc, svc, all)
 		}
 	}
 	for _, want := range []string{
-		`auto_scale = true`,
-		`min_nodes  = 1`, // self-heal floor on every node-pool
-		`node_count = 1`, // scale-group of 1
-		`version = "1.30"`,
+		`min_instances = 1`, // self-heal floor on every pool
+		`max_instances = 1`, // scale-group of 1 (fixed pool)
+		`with_droplet_agent = true`,
+		`ssh_keys = var.do_ssh_keys`,
 	} {
 		if !strings.Contains(all, want) {
-			t.Errorf("platform DOKS HCL missing %q\n%s", want, all)
+			t.Errorf("platform droplet_autoscale HCL missing %q\n%s", want, all)
 		}
 	}
-	// DO has no native VM ASG: no AWS launch-template / autoscaling-group must leak.
+	// A fixed pool (min==max) must NOT emit target-based scaling.
+	if strings.Contains(all, "target_cpu_utilization") {
+		t.Errorf("scale-groups of 1 are fixed pools; no target_cpu_utilization expected:\n%s", all)
+	}
+	// Scale-groups are droplet pools, not DOKS clusters.
+	if strings.Contains(all, "digitalocean_kubernetes_cluster") || strings.Contains(all, "node_pool") {
+		t.Errorf("DO platform scale-groups must not emit DOKS resources:\n%s", all)
+	}
+	// DO has no AWS ASG: no AWS launch-template / autoscaling-group must leak.
 	if strings.Contains(all, "aws_autoscaling_group") || strings.Contains(all, "aws_launch_template") {
 		t.Errorf("DO platform ASGs must not emit AWS ASG resources:\n%s", all)
 	}

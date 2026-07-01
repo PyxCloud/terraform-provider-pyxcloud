@@ -9,7 +9,8 @@ package catalog
 // cutover phase depends on:
 //
 //   - the compute substrate: the 6 platform services as canonical scale-groups
-//     of 1 -> DOKS kubernetes clusters (node-pools), sized from the catalog.
+//     of 1 -> digitalocean_droplet_autoscale pools (VM+systemd lift-and-shift of
+//     the AWS ASGs, NOT DOKS), sized from the catalog.
 //   - TWO Managed Postgres clusters (PG17) as the concrete migration targets for
 //     the two production databases:
 //       * keycloak-db  — 100 GB (the SSO/Keycloak store)
@@ -19,8 +20,8 @@ package catalog
 //   - object-storage (Spaces) — the object-storage baseline the ~18 bucket
 //     targets land in (one representative Spaces bucket with the private-by-
 //     default + versioning + lifecycle parity the migration carries).
-//   - a DO Load Balancer (+ the DOKS ingress path) — the shared-ALB replacement
-//     fronting the backend service.
+//   - a DO Load Balancer forwarding to the backend droplet_autoscale pool by
+//     droplet tag — the shared-ALB replacement fronting the backend service.
 //   - the VPC / network foundation + the account firewall: AssembleHCL
 //     synthesises `digitalocean_vpc` + `digitalocean_firewall` from the estate
 //     name automatically, so every baseline resource above is placed in the one
@@ -54,13 +55,14 @@ const (
 
 // DOBaselineComponents returns the DigitalOcean account-baseline as a slice of
 // canonical AssembleComponents. It REUSES the existing catalog components (no new
-// resource types are invented): the 6 platform scale-groups (-> DOKS), two
-// managed-databases (-> digitalocean_database_cluster), one object-storage (->
-// digitalocean_spaces_bucket) and one load-balancer (-> digitalocean_loadbalancer
-// + DOKS ingress). The VPC + firewall are synthesised by AssembleHCL.
+// resource types are invented): the 6 platform scale-groups (->
+// digitalocean_droplet_autoscale), two managed-databases (->
+// digitalocean_database_cluster), one object-storage (-> digitalocean_spaces_bucket)
+// and one load-balancer (-> digitalocean_loadbalancer forwarding by droplet tag).
+// The VPC + firewall are synthesised by AssembleHCL.
 //
 // arch/os default to the environment-wide defaults when empty; kubernetesVersion
-// pins the DOKS control-plane version for every node-pool.
+// is a legacy no-op (scale-groups are droplet pools now, not DOKS).
 func DOBaselineComponents(arch, os, kubernetesVersion string) []AssembleComponent {
 	// The compute substrate: the 6 platform services -> DOKS clusters, sized for
 	// the services from the catalog (the same canonical scale-group-of-1 pattern
@@ -102,8 +104,8 @@ func DOBaselineComponents(arch, os, kubernetesVersion string) []AssembleComponen
 			},
 		},
 		// The shared-ALB replacement: a DO load-balancer fronting the backend
-		// scale-group, with the DOKS L7 ingress path. -> digitalocean_loadbalancer
-		// + kubernetes_manifest ingress.
+		// scale-group, forwarding to the backend droplet_autoscale pool by droplet
+		// tag. -> digitalocean_loadbalancer (droplet_tag = "pyx-backend").
 		AssembleComponent{
 			Name: "edge-lb", Type: "load-balancer",
 			LB: &AssembleLB{

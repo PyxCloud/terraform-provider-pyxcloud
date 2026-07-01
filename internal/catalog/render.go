@@ -275,8 +275,16 @@ func renderSGDO(p SecurityGroupPlan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "resource \"digitalocean_firewall\" %q {\n", name)
 	fmt.Fprintf(&b, "  name = %q\n", p.SGName)
-	// DO firewalls attach to droplets/tags, not VPCs; the network association is
-	// carried via the droplets that join later. We expose it as a tag for intent.
+	// DO firewalls attach to droplets by TAG (there is no VPC-scoped firewall). The
+	// per-service scale-group tags ("pyx-<svc>") are threaded from the assembler, so
+	// the firewall applies to every droplet_autoscale pool droplet — the DO analogue
+	// of an AWS security-group's instance membership.
+	if len(p.DropletTags) > 0 {
+		tags := make([]string, len(p.DropletTags))
+		copy(tags, p.DropletTags)
+		sort.Strings(tags)
+		fmt.Fprintf(&b, "  tags = %s\n", hclStringList(tags))
+	}
 	for _, r := range p.Rules {
 		blockName := "inbound_rule"
 		cidrKey := "source_addresses"
@@ -474,9 +482,10 @@ func renderVMDO(p VMPlan) string {
 //   - GCP: google_compute_instance_template +
 //     google_compute_region_instance_group_manager +
 //     google_compute_region_autoscaler (min/max replicas, health check).
-//   - DigitalOcean: digitalocean_kubernetes_cluster + an auto-scaling node_pool
-//     (DO has no native VM ASG primitive, so the scale-group maps to a DOKS node
-//     pool — the canonical DO autoscaling answer; min_nodes>=1 self-heal).
+//   - DigitalOcean: digitalocean_droplet_autoscale (a pool of droplets — DO's
+//     native VM autoscaling primitive; a lift-and-shift of the AWS ASG, VM+systemd
+//     not DOKS; config min/max mirroring the ASG, droplet_template with the same
+//     user_data/VPC/size; min_instances>=1 self-heal).
 //
 // Linode and StackIt still never reach here for a scale-group: TranslateScaleGroup
 // rejects them with ErrAutoscaleUnsupported (no native VM ASG primitive and no
@@ -502,10 +511,10 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 	case ProviderAlibaba:
 		return renderASGAlibaba(plan), nil
 	case ProviderDigitalOcean:
-		// DO has no native VM ASG primitive; the scale-group is mapped to a DOKS
-		// cluster with an auto-scaling node pool (the canonical DO autoscaling
-		// answer). Self-heal: min_nodes >= 1 (DOKS keeps >=1 healthy node and
-		// replaces failed ones — the ASG-of-1 pattern).
+		// DO's native VM autoscaling primitive: a digitalocean_droplet_autoscale
+		// pool (a lift-and-shift of the AWS ASG — droplets + systemd via user_data,
+		// NOT DOKS). Self-heal: min_instances >= 1 keeps >=1 healthy droplet and
+		// replaces failed ones — the ASG-of-1 pattern.
 		return renderScaleGroupDO(plan), nil
 	case ProviderLinode:
 		return "", fmt.Errorf(
@@ -603,45 +612,75 @@ func renderASGAWS(p ScaleGroupPlan) string {
 	return b.String()
 }
 
-// renderScaleGroupDO maps an abstract scale-group onto DigitalOcean. DO has no
-// native VM autoscaling primitive, so the group renders to a
-// digitalocean_kubernetes_cluster with an auto-scaling node_pool (DOKS) — the
-// canonical DO autoscaling answer the old ErrAutoscaleUnsupported pointed to.
+// doDropletAutoscaleImage is the base droplet image slug for a DO scale-group
+// pool. The catalog OS resolution yields a DOKS/marketplace family token, but a
+// droplet_autoscale droplet_template takes a plain droplet image slug. Ubuntu
+// 24.04 LTS x86_64 is the canonical platform base (matches the AWS Ubuntu base
+// the ASG user_data assumes).
+const doDropletAutoscaleImage = "ubuntu-24-04-x64"
+
+// doScaleGroupTag returns the per-service droplet tag a DO scale-group pool
+// carries ("pyx-<svc>"). The load-balancer forwards to the pool by this tag and
+// the firewall applies to it by this tag — the tag IS the wiring between the
+// pool, the LB and the firewall (the DO analogue of the AWS ASG target-group /
+// SG membership).
+func doScaleGroupTag(groupName string) string {
+	return "pyx-" + tfName(groupName)
+}
+
+// renderScaleGroupDO maps an abstract scale-group onto DigitalOcean's native
+// VM-autoscaling primitive: a digitalocean_droplet_autoscale pool. This is a
+// direct lift-and-shift of the AWS aws_autoscaling_group — a pool of droplets
+// (VM + systemd via user_data), NOT a DOKS cluster. It mirrors the ASG the AWS
+// side renders: the same catalog-resolved droplet SKU (size), the same
+// user_data the ASG bakes into its launch template, placed in the estate VPC,
+// tagged so the LB and firewall target it.
 //
-// Self-heal semantics are preserved: auto_scale=true with min_nodes>=1 keeps at
-// least one healthy node and lets DOKS replace failed ones — the production
-// ASG-of-1 pattern. The node SIZE is the catalog-resolved droplet SKU (the same
-// virtual_machine SKU resolution the VM/ASG components use), and the pool joins
-// the place's VPC (vpc_uuid). DO clusters are region-scoped (no sub-zones), which
-// is why ScaleGroupPlan.Zones is empty for DO.
+// Scaling semantics mirror the ASG bounds:
+//   - fixed pool (min == max): a static-count pool (config { min_instances =
+//     max_instances }), the self-healing ASG-of-N pattern (a failed droplet is
+//     replaced, the count held). This is what the platform scale-groups-of-1 use.
+//   - elastic pool (min < max): a target-based pool
+//     (target_cpu_utilization = 0.6) that scales between min and max.
+//
+// Self-heal floor: min_instances >= 1 (enforced in TranslateScaleGroup for DO)
+// keeps at least one healthy droplet. DO pools are region-scoped (no sub-zones),
+// which is why ScaleGroupPlan.Zones is empty for DO.
 func renderScaleGroupDO(p ScaleGroupPlan) string {
 	name := tfName(p.GroupName)
+	tag := doScaleGroupTag(p.GroupName)
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "resource \"digitalocean_kubernetes_cluster\" %q {\n", name)
-	fmt.Fprintf(&b, "  name    = %q\n", name)
-	fmt.Fprintf(&b, "  region  = %q\n", p.CSPRegion)
-	ver := p.KubernetesVersion
-	if ver == "" {
-		ver = "latest"
+	fmt.Fprintf(&b, "resource \"digitalocean_droplet_autoscale\" %q {\n", name)
+	fmt.Fprintf(&b, "  name = %q\n", name)
+
+	// config: the ASG min/max, as a fixed or target-based pool.
+	b.WriteString("\n  config {\n")
+	fmt.Fprintf(&b, "    min_instances = %d\n", p.Min)
+	fmt.Fprintf(&b, "    max_instances = %d\n", p.Max)
+	if p.Max > p.Min {
+		// Elastic pool: scale on CPU between min and max (0.6 = the ASG's
+		// target-tracking convention).
+		b.WriteString("    target_cpu_utilization = 0.6\n")
 	}
-	fmt.Fprintf(&b, "  version = %q\n", ver)
-	if p.NetworkName != "" {
-		fmt.Fprintf(&b, "  vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
-	}
-	// Auto-scaling node pool: the scale-group's compute. auto_scale + min/max map
-	// the abstract bounds; desired seeds node_count within [min, max]. min>=1 is
-	// the self-healing floor (enforced in TranslateScaleGroup for DO).
-	b.WriteString("  node_pool {\n")
-	fmt.Fprintf(&b, "    name       = \"%s-pool\"\n", name)
-	fmt.Fprintf(&b, "    size       = %q\n", p.InstanceType)
-	b.WriteString("    auto_scale = true\n")
-	fmt.Fprintf(&b, "    min_nodes  = %d\n", p.Min)
-	fmt.Fprintf(&b, "    max_nodes  = %d\n", p.Max)
-	fmt.Fprintf(&b, "    node_count = %d\n", p.Desired)
-	b.WriteString("    tags = [\"pyxcloud\"]\n")
 	b.WriteString("  }\n")
-	fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
+
+	// droplet_template: the launch spec, mirroring the AWS launch template.
+	b.WriteString("\n  droplet_template {\n")
+	fmt.Fprintf(&b, "    size     = %q\n", p.InstanceType)
+	fmt.Fprintf(&b, "    region   = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "    image    = %q\n", doDropletAutoscaleImage)
+	if p.NetworkName != "" {
+		fmt.Fprintf(&b, "    vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+	}
+	// SSH keys are supplied out of band (fingerprints/ids), never in the topology.
+	b.WriteString("    ssh_keys = var.do_ssh_keys\n")
+	if p.UserData != "" {
+		fmt.Fprintf(&b, "    user_data = %s\n", vmHeredoc(p.UserData))
+	}
+	fmt.Fprintf(&b, "    tags = [%q]\n", tag)
+	b.WriteString("    with_droplet_agent = true\n")
+	b.WriteString("  }\n")
 	b.WriteString("}\n")
 	return b.String()
 }
@@ -1150,12 +1189,18 @@ func renderLBDO(p LoadBalancerPlan) string {
 
 	// One forwarding rule per listener. The LB terminates entry_protocol on
 	// entry_port and forwards to the same target_protocol/port on the droplets.
+	// An HTTPS entry needs either a managed certificate or tls_passthrough; we
+	// pass TLS through to the droplets (the service terminates TLS), which keeps
+	// the rule valid against the DO API without wiring a certificate resource.
 	for _, l := range p.Listeners {
 		b.WriteString("\n  forwarding_rule {\n")
 		fmt.Fprintf(&b, "    entry_protocol  = %q\n", lbDOProto(l.Protocol))
 		fmt.Fprintf(&b, "    entry_port      = %d\n", l.Port)
 		fmt.Fprintf(&b, "    target_protocol = %q\n", lbDOProto(l.Protocol))
 		fmt.Fprintf(&b, "    target_port     = %d\n", l.Port)
+		if lbDOProto(l.Protocol) == "https" {
+			b.WriteString("    tls_passthrough = true\n")
+		}
 		b.WriteString("  }\n")
 	}
 
@@ -1179,139 +1224,26 @@ func renderLBDO(p LoadBalancerPlan) string {
 		b.WriteString("  }\n")
 	}
 
-	// DO has no native VM autoscaling primitive, so a scale-group target on DO is
-	// fronted by a droplet tag (the fixed/managed droplets carry the "pyxcloud"
-	// tag, the same tag the virtual-machine renderer applies). A vm target uses
-	// the same tag selection.
+	// A scale-group target on DO is a digitalocean_droplet_autoscale pool whose
+	// droplets carry the per-service "pyx-<svc>" tag (doScaleGroupTag). The LB
+	// forwards to the pool by that tag — the tag is the wiring between the LB and
+	// the autoscaling pool (the DO analogue of an ASG target-group attachment).
+	// A vm target falls back to the same per-name tag.
 	if p.TargetName != "" {
-		b.WriteString("\n  droplet_tag = \"pyxcloud\"\n")
+		fmt.Fprintf(&b, "\n  droplet_tag = %q\n", doScaleGroupTag(p.TargetName))
 	}
 
 	b.WriteString("}\n")
 
-	// Layer-7 routing rules (pd-MIG-LB-L7-ROUTING). A digitalocean_loadbalancer
-	// forwarding_rule is pure port-to-port mapping: it has NO host/path matching
-	// and NO per-rule source-IP gate, so it cannot express ALB listener-rule
-	// parity. The canonical, plan-time-expressible DO equivalent is a DOKS Ingress
-	// (the same kubernetes_manifest convention the cert-manager / scheduled-trigger
-	// paths use): host + path rules map to ingress rules, and the admin-VPN gate is
-	// preserved as a documented constraint via the ingress-nginx whitelist-source-range
-	// annotation (an in-cluster source-IP allow-list, the DO analogue of the ALB
-	// source_ip condition). This is appended only when L7 rules are declared.
-	if hasLBRoutingRules(p.Listeners) {
-		b.WriteString("\n")
-		b.WriteString(renderLBDOIngress(p))
-	}
+	// NOTE (pd-MIG-CUTOVER-F2-01 pivot): with the scale-group now rendered as a
+	// digitalocean_droplet_autoscale pool (plain droplets + LB), the DOKS Ingress
+	// (kubernetes_manifest) that used to carry the layer-7 host/path routing is no
+	// longer applicable — there is no cluster in front of the pool. Per-host
+	// DISTINCT-service routing is therefore not expressed on DO here (a plain DO
+	// LB forwarding_rule is port-to-port only). The LB forwards all traffic to the
+	// primary target pool by droplet tag; host-based fan-out is a follow-up
+	// (either per-host LBs or an in-pool reverse proxy) — see BESPOKE-GAPS.md.
 	return b.String()
-}
-
-// hasLBRoutingRules reports whether any listener carries layer-7 routing rules.
-func hasLBRoutingRules(listeners []LBListenerPlan) bool {
-	for _, l := range listeners {
-		if len(l.Rules) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// renderLBDOIngress renders the DOKS Ingress that carries the layer-7 routing
-// rules a DO load-balancer forwarding_rule cannot express (host/path match +
-// admin-VPN source-IP gate). Host/path rules become ingress rules; the union of
-// all admin-VPN CIDRs across the rules becomes the ingress-nginx
-// whitelist-source-range annotation (a DOCUMENTED constraint: DO enforces the
-// admin/VPN gate at the in-cluster ingress, not on the managed LB).
-func renderLBDOIngress(p LoadBalancerPlan) string {
-	name := tfName(p.LBName) + "_ingress"
-	var b strings.Builder
-
-	// Collect the deduplicated, deterministic admin-VPN CIDR union for the gate.
-	seen := map[string]bool{}
-	var vpnCIDRs []string
-	for _, l := range p.Listeners {
-		for _, r := range l.Rules {
-			for _, c := range r.AdminVPNCIDRs {
-				if c != "" && !seen[c] {
-					seen[c] = true
-					vpnCIDRs = append(vpnCIDRs, c)
-				}
-			}
-		}
-	}
-	sort.Strings(vpnCIDRs)
-
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", name)
-	b.WriteString("  manifest = {\n")
-	b.WriteString("    apiVersion = \"networking.k8s.io/v1\"\n")
-	b.WriteString("    kind       = \"Ingress\"\n")
-	b.WriteString("    metadata = {\n")
-	fmt.Fprintf(&b, "      name      = %q\n", tfName(p.LBName))
-	b.WriteString("      namespace = \"default\"\n")
-	b.WriteString("      annotations = {\n")
-	b.WriteString("        \"kubernetes.io/ingress.class\" = \"nginx\"\n")
-	if len(vpnCIDRs) > 0 {
-		// Admin-VPN gate: the ingress-nginx source-range whitelist preserves the ALB
-		// source_ip admin/VPN allow-list semantics in-cluster (documented constraint).
-		fmt.Fprintf(&b, "        \"nginx.ingress.kubernetes.io/whitelist-source-range\" = %q\n", strings.Join(vpnCIDRs, ","))
-	}
-	b.WriteString("      }\n")
-	b.WriteString("    }\n")
-	b.WriteString("    spec = {\n")
-	b.WriteString("      rules = [\n")
-	for _, l := range p.Listeners {
-		for _, r := range l.Rules {
-			// One ingress rule per host (or a host-less rule). Each path pattern
-			// becomes an HTTP path on that host, backed by the rule's service.
-			svc := tfName(p.LBName) + "-svc"
-			if r.TargetName != "" {
-				svc = tfName(r.TargetName) + "-svc"
-			}
-			paths := r.PathPatterns
-			if len(paths) == 0 {
-				paths = []string{"/"}
-			}
-			hosts := r.HostHeaders
-			if len(hosts) == 0 {
-				hosts = []string{""}
-			}
-			for _, h := range hosts {
-				b.WriteString("        {\n")
-				if h != "" {
-					fmt.Fprintf(&b, "          host = %q\n", h)
-				}
-				b.WriteString("          http = {\n            paths = [\n")
-				for _, pat := range paths {
-					b.WriteString("              {\n")
-					fmt.Fprintf(&b, "                path     = %q\n", ingressPath(pat))
-					b.WriteString("                pathType = \"Prefix\"\n")
-					b.WriteString("                backend = {\n                  service = {\n")
-					fmt.Fprintf(&b, "                    name = %q\n", svc)
-					fmt.Fprintf(&b, "                    port = { number = %d }\n", l.Port)
-					b.WriteString("                  }\n                }\n")
-					b.WriteString("              },\n")
-				}
-				b.WriteString("            ]\n          }\n")
-				b.WriteString("        },\n")
-			}
-		}
-	}
-	b.WriteString("      ]\n")
-	b.WriteString("    }\n")
-	b.WriteString("  }\n")
-	b.WriteString("}\n")
-	return b.String()
-}
-
-// ingressPath maps an ALB-style path pattern ("/admin/*") to a Kubernetes Ingress
-// Prefix path ("/admin"), trimming the trailing glob the ingress matches by prefix.
-func ingressPath(pattern string) string {
-	pattern = strings.TrimSpace(pattern)
-	pattern = strings.TrimSuffix(pattern, "*")
-	pattern = strings.TrimSuffix(pattern, "/")
-	if pattern == "" {
-		return "/"
-	}
-	return pattern
 }
 
 // RenderManagedDatabaseHCL renders a resolved ManagedDatabasePlan into concrete

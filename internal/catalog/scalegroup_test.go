@@ -99,10 +99,10 @@ func TestTranslateScaleGroupGCP(t *testing.T) {
 	}
 }
 
-// TestTranslateScaleGroupDO asserts a DigitalOcean scale-group maps to a DOKS
-// node pool: DO has no native VM ASG primitive, so the AWS->DO migration renders
-// it as a digitalocean_kubernetes_cluster node_pool (the canonical DO autoscaling
-// answer), reusing the SAME droplet SKU resolution as the VM component.
+// TestTranslateScaleGroupDO asserts a DigitalOcean scale-group maps to a
+// droplet_autoscale pool: DO's native VM-autoscaling primitive is
+// digitalocean_droplet_autoscale (a lift-and-shift of the AWS ASG, VM+systemd not
+// DOKS), reusing the SAME droplet SKU resolution as the VM component.
 func TestTranslateScaleGroupDO(t *testing.T) {
 	t.Parallel()
 	// Frankfurt -> fra1; 2 vCPU / 4 GiB x86_64 -> a concrete DO droplet size.
@@ -112,13 +112,13 @@ func TestTranslateScaleGroupDO(t *testing.T) {
 		Min: 2, Max: 6, Desired: 3, Network: "production",
 	})
 	if err != nil {
-		t.Fatalf("DO scale-group should map to DOKS, got error: %v", err)
+		t.Fatalf("DO scale-group should map to droplet_autoscale, got error: %v", err)
 	}
 	if plan.CSPRegion != "fra1" {
 		t.Errorf("csp_region = %q, want fra1", plan.CSPRegion)
 	}
-	if plan.ResourceType != "digitalocean_kubernetes_cluster" {
-		t.Errorf("resource_type = %q, want digitalocean_kubernetes_cluster", plan.ResourceType)
+	if plan.ResourceType != "digitalocean_droplet_autoscale" {
+		t.Errorf("resource_type = %q, want digitalocean_droplet_autoscale", plan.ResourceType)
 	}
 	if plan.InstanceType == "" {
 		t.Errorf("DO node size should be a catalog-resolved droplet SKU, got empty")
@@ -177,15 +177,16 @@ func TestScaleGroupLinodeStillUnsupported(t *testing.T) {
 	}
 }
 
-// TestRenderScaleGroupDO asserts the DO scale-group renders to a DOKS cluster
-// with an auto-scaling node pool, the VPC wired, and the self-heal min/max/desired.
+// TestRenderScaleGroupDO asserts the DO scale-group renders to a
+// digitalocean_droplet_autoscale pool: an elastic (min<max) config, the
+// droplet_template with the catalog size/region/image/VPC/tag, and self-heal.
 func TestRenderScaleGroupDO(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
 		Name: "web", Region: "Frankfurt", Provider: "digitalocean",
 		Architecture: "x86_64", CPU: 2, RAM: 4, OS: "ubuntu",
 		Min: 1, Max: 5, Desired: 2, Network: "production",
-		KubernetesVersion: "1.30",
+		UserData: "#!/bin/bash\necho hello\n",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -195,19 +196,28 @@ func TestRenderScaleGroupDO(t *testing.T) {
 		t.Fatalf("DO scale-group render should succeed, got: %v", err)
 	}
 	for _, want := range []string{
-		`resource "digitalocean_kubernetes_cluster" "web"`,
-		`region  = "fra1"`,
-		`version = "1.30"`,
+		`resource "digitalocean_droplet_autoscale" "web"`,
+		`config {`,
+		`min_instances = 1`,
+		`max_instances = 5`,
+		`target_cpu_utilization = 0.6`, // elastic pool (min<max)
+		`droplet_template {`,
+		`size     = "s-2vcpu-4gb"`,
+		`region   = "fra1"`,
+		`image    = "ubuntu-24-04-x64"`,
 		`vpc_uuid = digitalocean_vpc.production.id`,
-		`node_pool {`,
-		`name       = "web-pool"`,
-		`auto_scale = true`,
-		`min_nodes  = 1`,
-		`max_nodes  = 5`,
-		`node_count = 2`,
+		`ssh_keys = var.do_ssh_keys`,
+		`tags = ["pyx-web"]`,
+		`with_droplet_agent = true`,
 	} {
 		if !strings.Contains(hcl, want) {
-			t.Errorf("DO DOKS HCL missing %q:\n%s", want, hcl)
+			t.Errorf("DO droplet_autoscale HCL missing %q:\n%s", want, hcl)
+		}
+	}
+	// No DOKS/Kubernetes leakage on the scale-group path any more.
+	for _, bad := range []string{"digitalocean_kubernetes_cluster", "node_pool", "kubernetes_manifest"} {
+		if strings.Contains(hcl, bad) {
+			t.Errorf("DO scale-group must not emit %q (droplet lift-and-shift, not DOKS):\n%s", bad, hcl)
 		}
 	}
 	if !IsASCII(hcl) {
@@ -215,13 +225,14 @@ func TestRenderScaleGroupDO(t *testing.T) {
 	}
 }
 
-// TestRenderScaleGroupDODefaultVersion asserts the DOKS version defaults to
-// "latest" when unset.
-func TestRenderScaleGroupDODefaultVersion(t *testing.T) {
+// TestRenderScaleGroupDOFixedPool asserts a fixed pool (min==max) renders a
+// static-count config with NO target-based scaling (the self-healing ASG-of-N
+// pattern the platform scale-groups-of-1 use).
+func TestRenderScaleGroupDOFixedPool(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
 		Name: "api", Region: "Frankfurt", Provider: "digitalocean",
-		CPU: 2, RAM: 4, Min: 1, Max: 2, Network: "production",
+		CPU: 2, RAM: 4, Min: 1, Max: 1, Desired: 1, Network: "production",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -230,8 +241,11 @@ func TestRenderScaleGroupDODefaultVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(hcl, `version = "latest"`) {
-		t.Errorf("unset DOKS version should default to latest:\n%s", hcl)
+	if !strings.Contains(hcl, `min_instances = 1`) || !strings.Contains(hcl, `max_instances = 1`) {
+		t.Errorf("fixed pool should set min_instances==max_instances==1:\n%s", hcl)
+	}
+	if strings.Contains(hcl, "target_cpu_utilization") {
+		t.Errorf("fixed pool (min==max) must NOT emit target_cpu_utilization:\n%s", hcl)
 	}
 }
 

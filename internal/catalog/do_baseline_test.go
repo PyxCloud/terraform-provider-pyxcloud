@@ -25,21 +25,21 @@ import (
 // wantDOBaselineResources is the coverage matrix asserted at the string level:
 // the foundational baseline piece -> its concrete DigitalOcean resource.
 var wantDOBaselineResources = []struct{ component, resource string }{
-	// Compute substrate: the 6 platform services -> DOKS clusters.
-	{"platform SSO scale-group", `resource "digitalocean_kubernetes_cluster" "sso"`},
-	{"platform VPN scale-group", `resource "digitalocean_kubernetes_cluster" "vpn"`},
-	{"platform observability scale-group", `resource "digitalocean_kubernetes_cluster" "obs"`},
-	{"platform SAST scale-group", `resource "digitalocean_kubernetes_cluster" "sast"`},
-	{"platform backend scale-group", `resource "digitalocean_kubernetes_cluster" "backend"`},
-	{"platform mcp scale-group", `resource "digitalocean_kubernetes_cluster" "mcp"`},
+	// Compute substrate: the 6 platform services -> droplet_autoscale pools.
+	{"platform SSO scale-group", `resource "digitalocean_droplet_autoscale" "sso"`},
+	{"platform VPN scale-group", `resource "digitalocean_droplet_autoscale" "vpn"`},
+	{"platform observability scale-group", `resource "digitalocean_droplet_autoscale" "obs"`},
+	{"platform SAST scale-group", `resource "digitalocean_droplet_autoscale" "sast"`},
+	{"platform backend scale-group", `resource "digitalocean_droplet_autoscale" "backend"`},
+	{"platform mcp scale-group", `resource "digitalocean_droplet_autoscale" "mcp"`},
 	// Two Managed Postgres clusters (PG17).
 	{"keycloak-db (Managed PG)", `resource "digitalocean_database_cluster" "keycloak-db"`},
 	{"pyx-main-db (Managed PG)", `resource "digitalocean_database_cluster" "pyx-main-db"`},
 	// Object-storage baseline (Spaces).
 	{"object-storage (Spaces)", `resource "digitalocean_spaces_bucket" "assets"`},
-	// Shared-ALB replacement: DO LB + DOKS ingress.
-	{"load-balancer (L7)", `resource "digitalocean_loadbalancer" "edge-lb"`},
-	{"load-balancer L7 ingress", `resource "kubernetes_manifest" "edge-lb_ingress"`},
+	// Shared-ALB replacement: DO LB forwarding to the backend pool by droplet tag.
+	{"load-balancer", `resource "digitalocean_loadbalancer" "edge-lb"`},
+	{"load-balancer droplet-tag target", `droplet_tag = "pyx-backend"`},
 	// Network / account foundation.
 	{"network (VPC)", `resource "digitalocean_vpc" "passo-do-baseline-net"`},
 	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-do-baseline-sg"`},
@@ -57,14 +57,21 @@ func TestDOBaselineAssembles(t *testing.T) {
 	}
 	all := strings.Join(docs, "\n")
 
-	// Provider sources pinned (DO + kubernetes are non-default namespaces; required
-	// for `terraform init`).
+	// Provider source pinned (DO is a non-default namespace; required for
+	// `terraform init`). The baseline no longer needs the kubernetes provider: the
+	// scale-groups are droplet_autoscale pools and the LB forwards by droplet tag,
+	// so no kubernetes_manifest resource is emitted.
 	for _, want := range []string{
 		`source = "digitalocean/digitalocean"`,
-		`source = "hashicorp/kubernetes"`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("DO baseline missing provider pin %q", want)
+		}
+	}
+	// The droplet_autoscale pivot means the baseline emits no Kubernetes resources.
+	for _, bad := range []string{"digitalocean_kubernetes_cluster", "kubernetes_manifest", `source = "hashicorp/kubernetes"`} {
+		if strings.Contains(all, bad) {
+			t.Errorf("DO baseline must not emit %q (droplet_autoscale + LB-by-tag, no DOKS)", bad)
 		}
 	}
 

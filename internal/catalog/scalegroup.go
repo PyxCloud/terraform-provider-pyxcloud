@@ -47,10 +47,11 @@ type ScaleGroupSpec struct {
 	// RootDiskGB overrides the root volume size in GiB (0 = provider default).
 	RootDiskGB int
 
-	// KubernetesVersion pins the DOKS control-plane version when this scale-group
-	// is placed on DigitalOcean (mapped to a digitalocean_kubernetes_cluster
-	// node_pool — DO's autoscaling answer). Empty -> "latest". Other providers
-	// ignore it (they use a native VM autoscaling primitive).
+	// KubernetesVersion is a legacy field carried for source-compatibility with
+	// callers that still pass it. DigitalOcean scale-groups now render as
+	// digitalocean_droplet_autoscale (a VM pool, not a DOKS cluster), so this is
+	// IGNORED on every provider. It is retained only to avoid churning the
+	// AssembleScaleGroup plumbing; a future cleanup can drop it entirely.
 	KubernetesVersion string
 
 	// Placement wiring (from the other components). Names are canonical and
@@ -98,10 +99,9 @@ type ScaleGroupPlan struct {
 	SecurityGroup string   `json:"security_group"` // SG/firewall to attach
 	ResourceType  string   `json:"resource_type"`  // top provider resource, e.g. aws_autoscaling_group
 
-	// KubernetesVersion is the DOKS control-plane version for the node-pool
-	// mapping (DigitalOcean has no native VM autoscaling primitive, so a
-	// scale-group renders to a digitalocean_kubernetes_cluster with an
-	// auto-scaling node_pool). Empty -> "latest". Ignored by other providers.
+	// KubernetesVersion is a legacy, now-IGNORED field. DigitalOcean scale-groups
+	// render as digitalocean_droplet_autoscale (a VM pool), not a DOKS cluster, so
+	// no Kubernetes version is used. Retained for source-compatibility only.
 	KubernetesVersion string `json:"kubernetes_version,omitempty"`
 }
 
@@ -119,7 +119,7 @@ func (e ErrAutoscaleUnsupported) Error() string {
 	// Name the provider's managed-kubernetes alternative (LKE / SKE node-pool
 	// autoscaling) so the error directs the user to the supported mapping. Note
 	// DigitalOcean is NOT reached here any more: a DO scale-group maps directly to
-	// a DOKS node pool in TranslateScaleGroup.
+	// a digitalocean_droplet_autoscale pool in TranslateScaleGroup.
 	alt := "a `managed-kubernetes` component (node-pool autoscaling)"
 	if strings.EqualFold(e.Provider, ProviderLinode) {
 		alt = "a `managed-kubernetes` component (LKE node-pool autoscaling)"
@@ -163,12 +163,13 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 	// virtual_machine rows are marked supports_autoscale=false; the user is
 	// directed to managed-kubernetes.
 	//
-	// DigitalOcean has no native VM autoscaling primitive either, BUT the
-	// canonical DO autoscaling answer — the one this error always pointed users
-	// to — is a DOKS node pool. So instead of hard-failing, a DO scale-group is
-	// mapped to a digitalocean_kubernetes_cluster with an auto-scaling node_pool
-	// (handled below; the renderer emits the concrete resources). The droplet
-	// SIZE reuses the SAME virtual_machine SKU resolution as the VM component.
+	// DigitalOcean's native VM-autoscaling primitive is digitalocean_droplet_autoscale
+	// (a pool of droplets with min/max and optional target-based scaling) — a
+	// direct lift-and-shift of the AWS aws_autoscaling_group (VM+systemd, no
+	// Kubernetes). So instead of hard-failing, a DO scale-group is mapped to a
+	// droplet_autoscale pool (handled below; the renderer emits the concrete
+	// resources). The droplet SIZE reuses the SAME virtual_machine SKU resolution
+	// as the VM component.
 	if provider == ProviderLinode || provider == ProviderStackIt {
 		return ScaleGroupPlan{}, ErrAutoscaleUnsupported{
 			Provider:  provider,
@@ -203,12 +204,13 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 
 	min, max, desired := normalizeBounds(spec.Min, spec.Max, spec.Desired)
 
-	// DOKS self-heal floor: a DigitalOcean Kubernetes node pool with auto_scale
-	// requires min_nodes >= 1 (DOKS does not allow scale-to-zero on the cluster's
-	// node pool). This is exactly the canonical self-healing ASG-of-1 pattern —
-	// keep at least one healthy node and let DOKS replace failed ones. Lift a
-	// zero min (and any dependent max/desired) to 1 for DO without weakening the
-	// user's intent for other providers.
+	// DO droplet_autoscale self-heal floor: a droplet_autoscale pool needs
+	// min_instances >= 1 to hold a capacity floor (a zero-min pool can scale to
+	// nothing, defeating self-healing). This is exactly the canonical
+	// self-healing ASG-of-1 pattern — keep at least one healthy droplet and let
+	// the pool replace failed ones. Lift a zero min (and any dependent
+	// max/desired) to 1 for DO without weakening the user's intent for other
+	// providers.
 	if provider == ProviderDigitalOcean {
 		if min < 1 {
 			min = 1
@@ -273,8 +275,9 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 	case ProviderAWS:
 		plan.ResourceType = "aws_autoscaling_group"
 	case ProviderDigitalOcean:
-		// No native VM ASG; the scale-group maps to a DOKS node pool.
-		plan.ResourceType = "digitalocean_kubernetes_cluster"
+		// DO's native VM-autoscaling primitive: a droplet_autoscale pool (an
+		// ASG-of-droplets lift-and-shift of the AWS ASG, NOT a DOKS cluster).
+		plan.ResourceType = "digitalocean_droplet_autoscale"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_region_instance_group_manager"
 	case ProviderAzure:

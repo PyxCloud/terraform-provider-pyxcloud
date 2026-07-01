@@ -654,9 +654,21 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		}
 		// Layer explicit ingress rules (e.g. ALB-scoped service doors) on top of expose.
 		rules = append(rules, in.IngressRules...)
+		// On DigitalOcean a firewall attaches to droplets by TAG. Collect the
+		// per-service scale-group tags ("pyx-<svc>") so the estate firewall applies
+		// to every droplet_autoscale pool droplet (the DO analogue of SG membership).
+		var dropletTags []string
+		if strings.ToLower(in.Provider) == ProviderDigitalOcean {
+			for _, c := range in.Components {
+				if c.Type == "virtual-machine-scale-group" {
+					dropletTags = append(dropletTags, doScaleGroupTag(c.Name))
+				}
+			}
+		}
 		sgPlan, err := TranslateSecurityGroup(ctx, cat, SecurityGroupSpec{
 			Name: sgName, Network: netName, Region: in.Region, Provider: in.Provider,
 			Description: in.Name + " environment", Expose: in.Expose, Rules: rules,
+			DropletTags: dropletTags,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("security-group: %w", err)
@@ -1234,11 +1246,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
-			// A DigitalOcean LB with layer-7 routing rules emits a DOKS Ingress
-			// (kubernetes_manifest) — pin hashicorp/kubernetes so terraform can plan it.
-			if lbPlan.Provider == ProviderDigitalOcean && hasLBRoutingRules(lbPlan.Listeners) {
-				needsKubernetes = true
-			}
+			// A DigitalOcean LB now forwards to a digitalocean_droplet_autoscale pool
+			// by droplet tag (no DOKS Ingress) — it emits pure DO resources, so no
+			// hashicorp/kubernetes pin is needed for the load-balancer itself.
 			docs = append(docs, lbHCL)
 		case "email", "email-service":
 			if c.Email == nil {
@@ -1497,6 +1507,18 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		if c.Type == "managed-database" {
 			docs = append([]string{"variable \"db_password\" {\n  type      = string\n  sensitive = true\n}\n"}, docs...)
 			break
+		}
+	}
+	// Declare the out-of-band do_ssh_keys variable once when a DigitalOcean
+	// scale-group is present — the droplet_autoscale droplet_template references
+	// var.do_ssh_keys (SSH key fingerprints/ids supplied out of band, never in the
+	// topology/state). Default [] keeps `terraform plan` runnable without a value.
+	if strings.ToLower(in.Provider) == ProviderDigitalOcean {
+		for _, c := range in.Components {
+			if c.Type == "virtual-machine-scale-group" {
+				docs = append([]string{"variable \"do_ssh_keys\" {\n  type    = list(string)\n  default = []\n}\n"}, docs...)
+				break
+			}
 		}
 	}
 	// Emit a required_providers block when one is needed: a non-default-namespace
