@@ -203,18 +203,20 @@ func TestBackendDOTerraformValidate(t *testing.T) {
 		t.Fatalf("AssembleHCL backend (DO): %v", err)
 	}
 
-	// The bootstrap references ${var.x}; emit the matching declarations so the
-	// rendered .tf is self-contained and validate-able (the CLI/assembler wires
-	// these to Secrets Manager at apply time).
+	// The consolidated assembler (assemble.go) now emits the `variable {}`
+	// declarations the DO platform bootstraps reference (the union across all six
+	// services), so the rendered .tf is already self-contained — the test no longer
+	// declares them manually (doing so would duplicate the assembler's output and
+	// terraform rejects duplicate variable declarations). We assert the assembler
+	// actually declared the backend's referenced vars below.
+	joined := strings.Join(docs, "\n")
 	plain, sensitive := spec.BackendBootstrapVariableNames()
-	var vb strings.Builder
-	for _, p := range plain {
-		fmt.Fprintf(&vb, "variable %q {\n  type    = string\n  default = \"\"\n}\n\n", p)
+	for _, name := range append(append([]string{}, plain...), sensitive...) {
+		if strings.Contains(joined, "${var."+name+"}") &&
+			!strings.Contains(joined, "variable \""+name+"\" {") {
+			t.Fatalf("assembler did not declare referenced variable %q", name)
+		}
 	}
-	for _, s := range sensitive {
-		fmt.Fprintf(&vb, "variable %q {\n  type      = string\n  sensitive = true\n  default   = \"\"\n}\n\n", s)
-	}
-	docs = append(docs, vb.String())
 
 	dir := t.TempDir()
 	for i, d := range docs {

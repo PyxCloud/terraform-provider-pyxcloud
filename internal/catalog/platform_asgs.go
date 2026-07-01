@@ -176,7 +176,10 @@ func PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersi
 		if byProvider != nil && len(byProvider[s.Name]) > 0 {
 			udbp = map[string]string{}
 			for prov, v := range byProvider[s.Name] {
-				udbp[prov] = v
+				// Normalise provider keys to the lower-case provider-facing name so a
+				// caller-supplied "DigitalOcean"/"digitalocean" both land where the
+				// scale-group translator looks (resolveUserDataForProvider).
+				udbp[strings.ToLower(strings.TrimSpace(prov))] = v
 			}
 		}
 		out = append(out, AssembleComponent{
@@ -201,4 +204,71 @@ func PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersi
 		})
 	}
 	return out
+}
+
+// PlatformScaleGroupComponentsWithBootstraps is an alias for
+// PlatformScaleGroupComponentsWithProviderBootstrap kept so the VPN re-arch wiring
+// call site (pd-MIG-CUTOVER-F2-02) reads naturally: a generic per-service
+// bootstrap PLUS per-service, per-provider overrides. Both feed the same core
+// threading — a DO-specific boot script wins on a DigitalOcean render and falls
+// back to the generic UserData elsewhere, one canonical topology (SPEC §1).
+func PlatformScaleGroupComponentsWithBootstraps(arch, os, kubernetesVersion string, bootstraps PlatformBootstraps, byProvider PlatformBootstrapsByProvider) []AssembleComponent {
+	return PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersion, bootstraps, byProvider)
+}
+
+// DOBootstrapSpecs bundles the per-service DigitalOcean bootstrap specs for all
+// SIX canonical platform services (mcp, sso, obs, sast, backend, vpn). It is the
+// single consolidated input for the F2-02 cutover: one struct, one wiring call,
+// all six DO user_data scripts threaded into the canonical topology's
+// UserDataByProvider["digitalocean"] slots. Any service left as its zero spec
+// still renders (each Render* applies withDefaults); pass only the fields the
+// operator must inject (secrets are referenced by Terraform variable name, never
+// inlined). This closes the F2-02 drift: mcp is now a first-class member of the
+// catalog alongside the five that were previously separate PRs (#119–#123).
+type DOBootstrapSpecs struct {
+	MCP     McpDOBootstrapSpec
+	SSO     SSODOBootstrapSpec
+	OBS     OBSDOBootstrapSpec
+	SAST    SastDOBootstrapSpec
+	Backend BackendBootstrapSpec
+	VPN     VPNBootstrapSpec
+}
+
+// PlatformScaleGroupComponentsWithDOBootstraps is the UNIFIED F2-02 wiring point.
+// It renders the DigitalOcean bootstrap for every one of the six platform
+// services and threads each into its scale-group's
+// UserDataByProvider["digitalocean"] — the single function that supersedes the
+// five per-PR helpers (WithSSODOUserData / PlatformBootstrapsWithOBSDO /
+// PlatformScaleGroupComponentsWithProviderBootstrap for sast /
+// BackendDOScaleGroupComponent / PlatformScaleGroupComponentsWithBootstraps for
+// vpn) and adds mcp. One canonical topology, six provider-specific boot scripts,
+// no forked components (SPEC §1). A DigitalOcean render prefers each DO script; any
+// other provider falls back to the generic UserData (empty here — DO is the
+// migration target). Returns the six canonical scale-group components ready to
+// drop into an AssembleInput.
+func PlatformScaleGroupComponentsWithDOBootstraps(arch, os, kubernetesVersion string, specs DOBootstrapSpecs) ([]AssembleComponent, error) {
+	byProvider := PlatformBootstrapsByProvider{}
+
+	type svcSpec struct {
+		name   string
+		render func() (string, error)
+	}
+	// Deterministic order; each entry renders that service's DO bootstrap.
+	renders := []svcSpec{
+		{"mcp", func() (string, error) { return RenderMcpDOUserData(specs.MCP) }},
+		{"sso", func() (string, error) { return RenderSSODOBootstrapUserData(specs.SSO) }},
+		{"obs", func() (string, error) { return RenderOBSDOBootstrapUserData(specs.OBS) }},
+		{"sast", func() (string, error) { return RenderSastDOBootstrapUserData(specs.SAST) }},
+		{"backend", func() (string, error) { return RenderBackendDOUserData(specs.Backend) }},
+		{"vpn", func() (string, error) { return RenderVPNBootstrapUserData(specs.VPN) }},
+	}
+	for _, r := range renders {
+		ud, err := r.render()
+		if err != nil {
+			return nil, err
+		}
+		byProvider[r.name] = map[string]string{"digitalocean": ud}
+	}
+
+	return PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersion, nil, byProvider), nil
 }

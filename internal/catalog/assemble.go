@@ -1542,15 +1542,18 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 		}
 	}
-	// Declare the SAST DigitalOcean runner's out-of-band secret variables when a
-	// DO scale-group's bootstrap references them. The DO sast runner
-	// (RenderSastDOBootstrapUserData) reaches for Spaces keys, a DO registry token
-	// and a DO API token by ${var.<x>} — the operator wires those to Vault / the
-	// secret source, never the topology. Emit each `variable {}` block at most once
-	// and only when the rendered user_data actually references it, so an estate with
-	// no DO sast runner stays clean. Deterministic order (fixed slice).
+	// Declare the platform-service DigitalOcean bootstraps' out-of-band variables
+	// when a DO scale-group's bootstrap references them. Each of the SIX canonical
+	// services (mcp, sso, obs, sast, backend, vpn) reaches for its secrets — Spaces
+	// keys, the board/main DB URL, registry/API tokens, OIDC/Vault/embed secrets,
+	// WireGuard keys, … — by ${var.<x>}; the operator wires those to Vault / the
+	// secret source, never the topology. We emit the UNION of every referenced
+	// variable across all six, each `variable {}` block at most once and only when
+	// the rendered user_data actually references it, so an estate with no DO platform
+	// bootstrap stays clean. Deterministic order (fixed service slice, then the
+	// per-service deterministic var order). No duplicate declarations: a var already
+	// declared inline by a component (or by an earlier service) is skipped.
 	if strings.ToLower(in.Provider) == ProviderDigitalOcean {
-		_, sastSecretVars := SastDOBootstrapSpec{Environment: "x"}.SastDOBootstrapVariableNames()
 		var userDataBlob strings.Builder
 		for _, c := range in.Components {
 			if c.Type == "virtual-machine-scale-group" && c.ScaleGroup != nil {
@@ -1561,12 +1564,60 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 		}
 		blob := userDataBlob.String()
-		for _, name := range sastSecretVars {
-			ref := "${var." + name + "}"
-			decl := "variable \"" + name + "\" {\n  type = string\n"
-			if strings.Contains(blob, ref) && !strings.Contains(strings.Join(docs, "\n"), decl) {
-				docs = append([]string{decl + "  sensitive = true\n}\n"}, docs...)
+
+		// Collect, in deterministic order, every (name, sensitive) the six DO
+		// bootstraps can reference. A name seen twice keeps its first classification
+		// (sensitive wins if any producer marks it sensitive — handled below).
+		type varDecl struct {
+			name      string
+			sensitive bool
+		}
+		mcpPlain, mcpSens := McpDOBootstrapSpec{Environment: "x"}.McpDOBootstrapVariableNames()
+		obsPlain, obsSens := OBSDOBootstrapSpec{}.OBSDOBootstrapVariableNames()
+		sastPlain, sastSens := SastDOBootstrapSpec{Environment: "x"}.SastDOBootstrapVariableNames()
+		backPlain, backSens := BackendBootstrapSpec{Environment: "x"}.BackendBootstrapVariableNames()
+		vpnPlain, vpnSens := VPNBootstrapSpec{Environment: "x"}.VPNBootstrapVariableNames()
+
+		var ordered []varDecl
+		add := func(names []string, sensitive bool) {
+			for _, n := range names {
+				ordered = append(ordered, varDecl{name: n, sensitive: sensitive})
 			}
+		}
+		// Sensitive first so a name shared plain+sensitive is classified sensitive.
+		add(mcpSens, true)
+		add(obsSens, true)
+		add(sastSens, true)
+		add(backSens, true)
+		add(vpnSens, true)
+		add(mcpPlain, false)
+		add(obsPlain, false)
+		add(sastPlain, false)
+		add(backPlain, false)
+		add(vpnPlain, false)
+
+		seen := map[string]bool{}
+		for _, d := range ordered {
+			if seen[d.name] {
+				continue
+			}
+			seen[d.name] = true
+			ref := "${var." + d.name + "}"
+			// Prefix-match the declaration name so we never double-declare a var already
+			// emitted inline (e.g. db_password, do_ssh_keys) or by another service.
+			declPrefix := "variable \"" + d.name + "\" {"
+			if !strings.Contains(blob, ref) {
+				continue
+			}
+			if strings.Contains(strings.Join(docs, "\n"), declPrefix) {
+				continue
+			}
+			decl := "variable \"" + d.name + "\" {\n  type = string\n"
+			if d.sensitive {
+				decl += "  sensitive = true\n"
+			}
+			decl += "}\n"
+			docs = append([]string{decl}, docs...)
 		}
 	}
 	// Emit a required_providers block when one is needed: a non-default-namespace
