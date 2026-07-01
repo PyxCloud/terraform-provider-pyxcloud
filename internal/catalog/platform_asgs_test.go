@@ -94,9 +94,10 @@ func TestPlatformASGsRoundTripDO(t *testing.T) {
 			t.Errorf("platform droplet_autoscale HCL missing %q\n%s", want, all)
 		}
 	}
-	// A fixed pool (min==max) must NOT emit target-based scaling.
-	if strings.Contains(all, "target_cpu_utilization") {
-		t.Errorf("scale-groups of 1 are fixed pools; no target_cpu_utilization expected:\n%s", all)
+	// Every pool (fixed included) must carry target_cpu_utilization: DO's autoscale
+	// API rejects a pool with no utilization target. 6 platform pools -> 6 targets.
+	if n := strings.Count(all, "target_cpu_utilization = 0.6"); n != 6 {
+		t.Errorf("want 6 target_cpu_utilization (one per platform pool; DO API requires it even for fixed pools), got %d:\n%s", n, all)
 	}
 	// Scale-groups are droplet pools, not DOKS clusters.
 	if strings.Contains(all, "digitalocean_kubernetes_cluster") || strings.Contains(all, "node_pool") {

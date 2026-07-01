@@ -1512,11 +1512,25 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// Declare the out-of-band do_ssh_keys variable once when a DigitalOcean
 	// scale-group is present — the droplet_autoscale droplet_template references
 	// var.do_ssh_keys (SSH key fingerprints/ids supplied out of band, never in the
-	// topology/state). Default [] keeps `terraform plan` runnable without a value.
+	// topology/state; account-specific, so never hardcoded in the catalog).
+	//
+	// IMPORTANT: DO droplet_autoscale pools require a NON-EMPTY ssh_keys list — a
+	// pool created with no keys is rejected. The default is [] only so a bare
+	// `terraform plan` stays runnable; a non-empty value (e.g.
+	// -var 'do_ssh_keys=["<key-id-or-fingerprint>"]') MUST be supplied at apply.
+	// A validation enforces that whatever is passed is non-empty.
 	if strings.ToLower(in.Provider) == ProviderDigitalOcean {
 		for _, c := range in.Components {
 			if c.Type == "virtual-machine-scale-group" {
-				docs = append([]string{"variable \"do_ssh_keys\" {\n  type    = list(string)\n  default = []\n}\n"}, docs...)
+				docs = append([]string{"variable \"do_ssh_keys\" {\n" +
+					"  description = \"DigitalOcean SSH key ids or fingerprints for droplet_autoscale pools. Supplied out of band (account-specific, never in topology/state). MUST be non-empty at apply: DO rejects a pool with no ssh_keys.\"\n" +
+					"  type        = list(string)\n" +
+					"  default     = []\n" +
+					"  validation {\n" +
+					"    condition     = length(var.do_ssh_keys) > 0\n" +
+					"    error_message = \"do_ssh_keys must be non-empty: DigitalOcean droplet_autoscale pools require at least one SSH key.\"\n" +
+					"  }\n" +
+					"}\n"}, docs...)
 				break
 			}
 		}
