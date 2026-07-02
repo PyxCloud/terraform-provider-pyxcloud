@@ -1099,11 +1099,18 @@ func renderLBDO(p LoadBalancerPlan) string {
 	// One forwarding rule per listener. The LB terminates entry_protocol on
 	// entry_port and forwards to the same target_protocol/port on the droplets.
 	for _, l := range p.Listeners {
+		proto := lbDOProto(l.Protocol)
 		b.WriteString("\n  forwarding_rule {\n")
-		fmt.Fprintf(&b, "    entry_protocol  = %q\n", lbDOProto(l.Protocol))
+		fmt.Fprintf(&b, "    entry_protocol  = %q\n", proto)
 		fmt.Fprintf(&b, "    entry_port      = %d\n", l.Port)
-		fmt.Fprintf(&b, "    target_protocol = %q\n", lbDOProto(l.Protocol))
+		fmt.Fprintf(&b, "    target_protocol = %q\n", proto)
 		fmt.Fprintf(&b, "    target_port     = %d\n", l.Port)
+		// DO requires an https forwarding rule to either terminate with a managed
+		// cert or pass TLS through to the droplets. Without a cert configured we
+		// pass through (the origin terminates), matching the estate's edge pattern.
+		if proto == "https" {
+			b.WriteString("    tls_passthrough = true\n")
+		}
 		b.WriteString("  }\n")
 	}
 

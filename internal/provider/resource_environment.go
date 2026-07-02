@@ -44,6 +44,8 @@ type environmentModel struct {
 	Name                            types.String           `tfsdk:"name"`
 	Provider                        types.String           `tfsdk:"cloud"`
 	Region                          types.String           `tfsdk:"region"`
+	CIDR                            types.String           `tfsdk:"cidr"`
+	Subnets                         []types.String         `tfsdk:"subnets"`
 	Expose                          []types.Int64          `tfsdk:"expose"`
 	SecurityRule                    []envSecurityRuleModel `tfsdk:"security_rule"`
 	PyxVPC                          []envComponentModel    `tfsdk:"pyx_vpc"`
@@ -418,6 +420,15 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Required:            true,
 				MarkdownDescription: "Abstract pyx region_name (e.g. `Dublin`); the backend resolves it to a concrete cspRegion.",
 			},
+			"cidr": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "VPC/network CIDR for the synthesised environment network. Empty -> the default `10.0.0.0/16`. Set a distinct range (e.g. `10.0.2.0/24`) to run PARALLEL environments in the same cloud account without overlap.",
+			},
+			"subnets": schema.ListAttribute{
+				Optional:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Subnet CIDRs the environment spreads across (must fall within `cidr`). Empty -> derived defaults. On DigitalOcean (single VPC per region) set this to the same single range as `cidr`.",
+			},
 			"expose": schema.ListAttribute{
 				Optional:            true,
 				ElementType:         types.Int64Type,
@@ -697,6 +708,12 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		Name:     m.Name.ValueString(),
 		Provider: m.Provider.ValueString(),
 		Region:   m.Region.ValueString(),
+		CIDR:     strings.TrimSpace(m.CIDR.ValueString()),
+	}
+	for _, s := range m.Subnets {
+		if v := strings.TrimSpace(s.ValueString()); v != "" {
+			in.Subnets = append(in.Subnets, v)
+		}
 	}
 	for _, p := range m.Expose {
 		in.Expose = append(in.Expose, int(p.ValueInt64()))
