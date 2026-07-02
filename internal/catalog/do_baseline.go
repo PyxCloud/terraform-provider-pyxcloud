@@ -159,6 +159,12 @@ type DOBaselineSecrets struct {
 	// EmbedTokenSecret is beta/passobuild-mcp-embed-token — the MCP embed token,
 	// injected at render time (unchanged behaviour, kept durable).
 	EmbedTokenSecret string
+	// DigitalOceanToken (beta-DigitalOceanToken) + McpReservedIP let the mcp droplet
+	// CLAIM a stable DO reserved IP to itself on boot. With Cloudflare pointing at the
+	// reserved IP, an autoscale roll no longer needs a DNS repoint: the fresh droplet
+	// reassigns the reserved IP to itself. Both empty => claim step is skipped (no-op).
+	DigitalOceanToken string
+	McpReservedIP     string
 }
 
 // UsePrivateDBHost, when true, rewrites the BoardDatabaseURL host to the DO
@@ -419,6 +425,19 @@ if ! command -v aws >/dev/null 2>&1; then
   (cd /tmp && unzip -q awscliv2.zip && ./aws/install --update)
 fi
 
+log "claim reserved IP to self (stable Cloudflare origin, survives autoscale roll)"
+RESERVED_IP='%[7]s'
+if [ -n "$RESERVED_IP" ]; then
+  DROPLET_ID="$(curl -fsS http://169.254.169.254/metadata/v1/id || true)"
+  if [ -n "$DROPLET_ID" ]; then
+    curl -fsS -X POST \
+      -H "Authorization: Bearer %[6]s" -H "Content-Type: application/json" \
+      "https://api.digitalocean.com/v2/reserved_ips/$RESERVED_IP/actions" \
+      -d "{\"type\":\"assign\",\"droplet_id\":$DROPLET_ID}" \
+      || log "reserved-ip assign failed (continuing; Cloudflare may need a manual repoint)"
+  fi
+fi
+
 log "create service user + dirs"
 id passobuild-mcp >/dev/null 2>&1 || useradd --system --home /opt/passobuild-mcp --shell /usr/sbin/nologin passobuild-mcp
 install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /opt/passobuild-mcp
@@ -523,6 +542,8 @@ func renderMCPUserData(s DOBaselineSecrets, opts DOBaselineOptions) string {
 		doBaselineSpacesBucket,
 		s.privateURL(opts.PrivateDBHost),
 		s.EmbedTokenSecret,
+		s.DigitalOceanToken,
+		s.McpReservedIP,
 	)
 }
 

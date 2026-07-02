@@ -64,6 +64,10 @@ func run() error {
 		SpacesSecretKey:  os.Getenv("DO_SPACES_SECRET_KEY"),
 		BoardDatabaseURL: os.Getenv("DO_BOARD_DATABASE_URL"),
 		EmbedTokenSecret: os.Getenv("DO_MCP_EMBED_TOKEN"),
+		// Optional durable-origin reserved IP: when both set, the mcp bootstrap claims
+		// the reserved IP to itself so an autoscale roll keeps the same Cloudflare origin.
+		DigitalOceanToken: os.Getenv("DIGITALOCEAN_TOKEN"),
+		McpReservedIP:     os.Getenv("DO_MCP_RESERVED_IP"),
 	}
 	for name, v := range map[string]string{
 		"DO_SPACES_ACCESS_KEY":  secrets.SpacesAccessKey,
