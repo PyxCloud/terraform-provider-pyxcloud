@@ -424,16 +424,28 @@ id passobuild-mcp >/dev/null 2>&1 || useradd --system --home /opt/passobuild-mcp
 install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /opt/passobuild-mcp
 install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /var/log/passobuild-mcp
 
-log "fetch artifact from DO Spaces"
+log "write artifact fetch script (re-run on every service start for in-place deploys)"
+# The fetch is a root-owned script (0700) with the Spaces creds embedded, so systemd can re-pull the
+# latest artifact in ExecStartPre. That makes a plain reboot/restart a full deploy — the deploy-mcp-do
+# workflow publishes a new tar.gz then reboots the droplet, and self-heal always boots the current
+# binary — WITHOUT changing the droplet IP (no Cloudflare DNS repoint, no rebuild).
+cat > /usr/local/bin/passobuild-mcp-fetch <<'FETCHEOF'
+#!/usr/bin/env bash
+set -euo pipefail
 export AWS_ACCESS_KEY_ID='%[1]s'
 export AWS_SECRET_ACCESS_KEY='%[2]s'
 export AWS_DEFAULT_REGION='fra1'
 aws s3 cp --endpoint-url https://fra1.digitaloceanspaces.com \
   s3://%[3]s/beta/mcp.tar.gz /tmp/mcp.tar.gz
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 tar -xzf /tmp/mcp.tar.gz -C /opt/passobuild-mcp --strip-components=1
 chown -R passobuild-mcp:passobuild-mcp /opt/passobuild-mcp
 chmod +x /opt/passobuild-mcp/passobuild-mcp
+FETCHEOF
+chmod 0700 /usr/local/bin/passobuild-mcp-fetch
+chown root:root /usr/local/bin/passobuild-mcp-fetch
+
+log "initial artifact fetch"
+/usr/local/bin/passobuild-mcp-fetch
 
 log "write /etc/passobuild-mcp.env"
 umask 027
@@ -481,6 +493,8 @@ User=passobuild-mcp
 Group=passobuild-mcp
 EnvironmentFile=/etc/passobuild-mcp.env
 WorkingDirectory=/opt/passobuild-mcp
+# Re-fetch the latest artifact before every start (runs as root via '+'), so reboot/self-heal = deploy.
+ExecStartPre=+/usr/local/bin/passobuild-mcp-fetch
 ExecStart=/usr/local/bin/passobuild-mcp-start
 Restart=always
 RestartSec=5
