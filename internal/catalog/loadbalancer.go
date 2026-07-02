@@ -105,6 +105,9 @@ type LoadBalancerSpec struct {
 	// fixed set). TargetName is the canonical name of that sibling component.
 	TargetKind string
 	TargetName string
+	// TargetTag selects the fronted fleet by provider tag (a DO load-balancer's
+	// droplet_tag). Empty -> "pyxcloud" (every instance).
+	TargetTag string
 
 	// Placement wiring (from the other components). Network is the canonical
 	// VPC/place name; Subnets is the set of canonical subnet names the LB spreads
@@ -165,8 +168,9 @@ type LoadBalancerPlan struct {
 	HealthCheck LBHealthCheckPlan `json:"health_check"`
 	Stickiness  bool              `json:"stickiness"`
 
-	TargetKind string `json:"target_kind"` // scale-group | vm
-	TargetName string `json:"target_name"` // canonical name of the fronted component
+	TargetKind string `json:"target_kind"`          // scale-group | vm
+	TargetName string `json:"target_name"`          // canonical name of the fronted component
+	TargetTag  string `json:"target_tag,omitempty"` // fleet-selection tag (DO droplet_tag); "" -> "pyxcloud"
 
 	// Zones are the concrete AZs/zones the LB spreads across (multi-AZ), derived
 	// from the region catalog. Empty for DigitalOcean (region-scoped).
@@ -240,6 +244,7 @@ func TranslateLoadBalancer(ctx context.Context, cat RegionCatalog, spec LoadBala
 		Stickiness:    spec.Stickiness,
 		TargetKind:    targetKind,
 		TargetName:    strings.TrimSpace(spec.TargetName),
+		TargetTag:     strings.TrimSpace(spec.TargetTag),
 		Zones:         zones,
 		NetworkName:   spec.Network,
 		SubnetNames:   subnets,

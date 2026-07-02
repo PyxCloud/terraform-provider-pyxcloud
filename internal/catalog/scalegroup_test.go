@@ -112,13 +112,13 @@ func TestTranslateScaleGroupDO(t *testing.T) {
 		Min: 2, Max: 6, Desired: 3, Network: "production",
 	})
 	if err != nil {
-		t.Fatalf("DO scale-group should map to DOKS, got error: %v", err)
+		t.Fatalf("DO scale-group should map to droplet-autoscale, got error: %v", err)
 	}
 	if plan.CSPRegion != "fra1" {
 		t.Errorf("csp_region = %q, want fra1", plan.CSPRegion)
 	}
-	if plan.ResourceType != "digitalocean_kubernetes_cluster" {
-		t.Errorf("resource_type = %q, want digitalocean_kubernetes_cluster", plan.ResourceType)
+	if plan.ResourceType != "digitalocean_droplet_autoscale" {
+		t.Errorf("resource_type = %q, want digitalocean_droplet_autoscale", plan.ResourceType)
 	}
 	if plan.InstanceType == "" {
 		t.Errorf("DO node size should be a catalog-resolved droplet SKU, got empty")
@@ -177,15 +177,16 @@ func TestScaleGroupLinodeStillUnsupported(t *testing.T) {
 	}
 }
 
-// TestRenderScaleGroupDO asserts the DO scale-group renders to a DOKS cluster
-// with an auto-scaling node pool, the VPC wired, and the self-heal min/max/desired.
+// TestRenderScaleGroupDO asserts the DO scale-group renders to a native
+// droplet-autoscale group (NOT DOKS): config bounds, droplet_template joining the
+// VPC, per-instance user_data, the fleet tag, and the required ssh_keys.
 func TestRenderScaleGroupDO(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
 		Name: "web", Region: "Frankfurt", Provider: "digitalocean",
 		Architecture: "x86_64", CPU: 2, RAM: 4, OS: "ubuntu",
 		Min: 1, Max: 5, Desired: 2, Network: "production",
-		KubernetesVersion: "1.30",
+		Tag: "pyx-web", SSHKeys: []string{"22222222"}, UserData: "#!/bin/bash\necho hi\n",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -195,19 +196,26 @@ func TestRenderScaleGroupDO(t *testing.T) {
 		t.Fatalf("DO scale-group render should succeed, got: %v", err)
 	}
 	for _, want := range []string{
-		`resource "digitalocean_kubernetes_cluster" "web"`,
-		`region  = "fra1"`,
-		`version = "1.30"`,
-		`vpc_uuid = digitalocean_vpc.production.id`,
-		`node_pool {`,
-		`name       = "web-pool"`,
-		`auto_scale = true`,
-		`min_nodes  = 1`,
-		`max_nodes  = 5`,
-		`node_count = 2`,
+		`resource "digitalocean_droplet_autoscale" "web"`,
+		`config {`,
+		`min_instances          = 1`,
+		`max_instances          = 5`,
+		`target_cpu_utilization = 0.6`,
+		`droplet_template {`,
+		`region             = "fra1"`,
+		`vpc_uuid           = digitalocean_vpc.production.id`,
+		`tags               = ["pyxcloud", "pyx-web"]`,
+		`ssh_keys           = ["22222222"]`,
+		`with_droplet_agent = true`,
+		`user_data          = <<-`,
 	} {
 		if !strings.Contains(hcl, want) {
-			t.Errorf("DO DOKS HCL missing %q:\n%s", want, hcl)
+			t.Errorf("DO droplet-autoscale HCL missing %q:\n%s", want, hcl)
+		}
+	}
+	for _, bad := range []string{"digitalocean_kubernetes_cluster", "node_pool {"} {
+		if strings.Contains(hcl, bad) {
+			t.Errorf("DO scale-group must not emit %q:\n%s", bad, hcl)
 		}
 	}
 	if !IsASCII(hcl) {
@@ -215,9 +223,10 @@ func TestRenderScaleGroupDO(t *testing.T) {
 	}
 }
 
-// TestRenderScaleGroupDODefaultVersion asserts the DOKS version defaults to
-// "latest" when unset.
-func TestRenderScaleGroupDODefaultVersion(t *testing.T) {
+// TestRenderScaleGroupDODefaults asserts that with no user_data and no ssh_keys
+// the droplet-autoscale still renders valid HCL: an empty ssh_keys list (the
+// required arg) and no user_data line.
+func TestRenderScaleGroupDODefaults(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
 		Name: "api", Region: "Frankfurt", Provider: "digitalocean",
@@ -230,8 +239,11 @@ func TestRenderScaleGroupDODefaultVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(hcl, `version = "latest"`) {
-		t.Errorf("unset DOKS version should default to latest:\n%s", hcl)
+	if !strings.Contains(hcl, `ssh_keys           = []`) {
+		t.Errorf("no ssh keys should render an empty (required) list:\n%s", hcl)
+	}
+	if strings.Contains(hcl, "user_data") {
+		t.Errorf("no user_data should omit the user_data argument:\n%s", hcl)
 	}
 }
 

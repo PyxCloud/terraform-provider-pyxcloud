@@ -74,26 +74,29 @@ func TestPlatformASGsRoundTripDO(t *testing.T) {
 	if !strings.Contains(all, `source = "digitalocean/digitalocean"`) {
 		t.Errorf("missing digitalocean provider source pin:\n%s", all)
 	}
-	// Each of the 5 services -> a DOKS cluster with an auto-scaling, self-healing
-	// node-pool (min_nodes=1 = the ASG-of-1 self-heal floor).
+	// Each of the 5 services -> a native droplet-autoscale group (self-healing
+	// min_instances=1 floor), NOT a DOKS cluster — the droplet+systemd runtime the
+	// live estate uses.
 	for _, svc := range []string{"sso", "vpn", "obs", "sast", "backend"} {
-		if !strings.Contains(all, `resource "digitalocean_kubernetes_cluster" "`+svc+`"`) {
-			t.Errorf("platform service %q did not emit a DOKS cluster:\n%s", svc, all)
+		if !strings.Contains(all, `resource "digitalocean_droplet_autoscale" "`+svc+`"`) {
+			t.Errorf("platform service %q did not emit a droplet-autoscale group:\n%s", svc, all)
 		}
 	}
 	for _, want := range []string{
-		`auto_scale = true`,
-		`min_nodes  = 1`, // self-heal floor on every node-pool
-		`node_count = 1`, // scale-group of 1
-		`version = "1.30"`,
+		`min_instances          = 1`, // self-heal floor on every group
+		`target_cpu_utilization = 0.6`,
+		`droplet_template {`,
+		`with_droplet_agent = true`,
 	} {
 		if !strings.Contains(all, want) {
-			t.Errorf("platform DOKS HCL missing %q\n%s", want, all)
+			t.Errorf("platform droplet-autoscale HCL missing %q\n%s", want, all)
 		}
 	}
-	// DO has no native VM ASG: no AWS launch-template / autoscaling-group must leak.
-	if strings.Contains(all, "aws_autoscaling_group") || strings.Contains(all, "aws_launch_template") {
-		t.Errorf("DO platform ASGs must not emit AWS ASG resources:\n%s", all)
+	// Must NOT leak DOKS or AWS ASG resources.
+	for _, bad := range []string{"digitalocean_kubernetes_cluster", "node_pool {", "aws_autoscaling_group", "aws_launch_template"} {
+		if strings.Contains(all, bad) {
+			t.Errorf("DO platform ASGs must not emit %q:\n%s", bad, all)
+		}
 	}
 }
 

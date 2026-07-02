@@ -54,6 +54,15 @@ type AssembleScaleGroup struct {
 	// is placed on DigitalOcean (mapped to a digitalocean_kubernetes_cluster
 	// node_pool). Empty -> "latest". Other providers ignore it.
 	KubernetesVersion string
+	// Tag is an extra provider tag stamped on every instance in the group, used by
+	// sibling components to select the fleet (a DO firewall / load-balancer targets
+	// droplets by tag; an AWS ASG propagates it at launch). Empty -> only the
+	// default "pyxcloud" tag is applied.
+	Tag string
+	// SSHKeys are provider SSH-key IDs/fingerprints attached to every instance
+	// (DO's droplet_template.ssh_keys is a REQUIRED argument). Empty renders an
+	// empty list — the droplets are then reachable only via user_data/console/VPN.
+	SSHKeys []string
 }
 
 // AssembleAttachToExistingALB is the config for an `attach-to-existing-alb` component.
@@ -314,6 +323,9 @@ type AssembleLB struct {
 	Stickiness      bool
 	TargetKind      string // scale-group | vm (default vm)
 	TargetName      string // the VM/scale-group component to front
+	// TargetTag selects the fronted fleet by provider tag (a DO load-balancer's
+	// droplet_tag). Empty -> the default "pyxcloud" tag (fronts every instance).
+	TargetTag string
 }
 
 // AssembleK8s is the config for a `managed-kubernetes` / `container-service` component (network-scoped).
@@ -621,8 +633,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				OS: sg.OS, OSVersion: sg.OSVersion,
 				Min: sg.Min, Max: sg.Max, Desired: sg.Desired, Health: sg.Health,
 				UserData: sg.UserData, InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
-				KubernetesVersion: sg.KubernetesVersion,
-				Network:           netName, SecurityGroup: vmSG, Subnets: subnetNames,
+				KubernetesVersion: sg.KubernetesVersion, Tag: sg.Tag, SSHKeys: sg.SSHKeys,
+				Network: netName, SecurityGroup: vmSG, Subnets: subnetNames,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
@@ -1024,6 +1036,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 					lbSpec.TargetKind = c.LB.TargetKind
 				}
 				lbSpec.TargetName = c.LB.TargetName
+				lbSpec.TargetTag = c.LB.TargetTag
 			}
 			if len(lbSpec.Listeners) == 0 {
 				lbSpec.Listeners = []LBListenerSpec{{Port: 80, Protocol: "http"}}

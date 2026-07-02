@@ -502,10 +502,9 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 	case ProviderAlibaba:
 		return renderASGAlibaba(plan), nil
 	case ProviderDigitalOcean:
-		// DO has no native VM ASG primitive; the scale-group is mapped to a DOKS
-		// cluster with an auto-scaling node pool (the canonical DO autoscaling
-		// answer). Self-heal: min_nodes >= 1 (DOKS keeps >=1 healthy node and
-		// replaces failed ones — the ASG-of-1 pattern).
+		// DO's native droplet-autoscale (digitalocean_droplet_autoscale) over a
+		// droplet_template — carries per-instance user_data (unlike DOKS), matching
+		// the live estate. Self-heal: min_instances >= 1 replaces failed droplets.
 		return renderScaleGroupDO(plan), nil
 	case ProviderLinode:
 		return "", fmt.Errorf(
@@ -603,45 +602,64 @@ func renderASGAWS(p ScaleGroupPlan) string {
 	return b.String()
 }
 
-// renderScaleGroupDO maps an abstract scale-group onto DigitalOcean. DO has no
-// native VM autoscaling primitive, so the group renders to a
-// digitalocean_kubernetes_cluster with an auto-scaling node_pool (DOKS) — the
-// canonical DO autoscaling answer the old ErrAutoscaleUnsupported pointed to.
+// renderScaleGroupDO maps an abstract scale-group onto DigitalOcean's native
+// droplet-autoscale primitive: a digitalocean_droplet_autoscale group over a
+// droplet_template. This is the shape the live estate already runs (mirrors
+// catalog.AssembleDOBaseline) — chosen over a DOKS node pool because it carries
+// per-instance user_data (the durable-bootstrap services rely on it) and keeps
+// the runtime droplet+systemd, not containers.
 //
-// Self-heal semantics are preserved: auto_scale=true with min_nodes>=1 keeps at
-// least one healthy node and lets DOKS replace failed ones — the production
-// ASG-of-1 pattern. The node SIZE is the catalog-resolved droplet SKU (the same
-// virtual_machine SKU resolution the VM/ASG components use), and the pool joins
-// the place's VPC (vpc_uuid). DO clusters are region-scoped (no sub-zones), which
-// is why ScaleGroupPlan.Zones is empty for DO.
+// Self-heal: min_instances>=1 is the floor; the group replaces failed droplets
+// and, with target_cpu_utilization, scales within [min, max]. Fixed N+1 is
+// expressed as min==max==N. The droplet SIZE is the catalog-resolved SKU (the
+// same virtual_machine SKU resolution the VM/ASG components use), the image is
+// the catalog OS slug, and the template joins the place's VPC (vpc_uuid). DO is
+// region-scoped (no sub-zones), so ScaleGroupPlan.Zones is empty for DO.
 func renderScaleGroupDO(p ScaleGroupPlan) string {
 	name := tfName(p.GroupName)
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "resource \"digitalocean_kubernetes_cluster\" %q {\n", name)
-	fmt.Fprintf(&b, "  name    = %q\n", name)
-	fmt.Fprintf(&b, "  region  = %q\n", p.CSPRegion)
-	ver := p.KubernetesVersion
-	if ver == "" {
-		ver = "latest"
-	}
-	fmt.Fprintf(&b, "  version = %q\n", ver)
+	fmt.Fprintf(&b, "resource \"digitalocean_droplet_autoscale\" %q {\n", name)
+	fmt.Fprintf(&b, "  name = %q\n\n", name)
+
+	// config: min/max the abstract bounds (min==max gives a fixed fleet, e.g. N+1);
+	// target_cpu_utilization drives scale-out between them and self-healing.
+	b.WriteString("  config {\n")
+	fmt.Fprintf(&b, "    min_instances          = %d\n", p.Min)
+	fmt.Fprintf(&b, "    max_instances          = %d\n", p.Max)
+	b.WriteString("    target_cpu_utilization = 0.6\n")
+	b.WriteString("  }\n\n")
+
+	// droplet_template: the per-instance shape, including user_data (unlike a DOKS
+	// node pool, this flows the bootstrap script the durable services depend on).
+	b.WriteString("  droplet_template {\n")
+	fmt.Fprintf(&b, "    size               = %q\n", p.InstanceType)
+	fmt.Fprintf(&b, "    region             = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "    image              = %q\n", p.Image)
 	if p.NetworkName != "" {
-		fmt.Fprintf(&b, "  vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+		fmt.Fprintf(&b, "    vpc_uuid           = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
 	}
-	// Auto-scaling node pool: the scale-group's compute. auto_scale + min/max map
-	// the abstract bounds; desired seeds node_count within [min, max]. min>=1 is
-	// the self-healing floor (enforced in TranslateScaleGroup for DO).
-	b.WriteString("  node_pool {\n")
-	fmt.Fprintf(&b, "    name       = \"%s-pool\"\n", name)
-	fmt.Fprintf(&b, "    size       = %q\n", p.InstanceType)
-	b.WriteString("    auto_scale = true\n")
-	fmt.Fprintf(&b, "    min_nodes  = %d\n", p.Min)
-	fmt.Fprintf(&b, "    max_nodes  = %d\n", p.Max)
-	fmt.Fprintf(&b, "    node_count = %d\n", p.Desired)
-	b.WriteString("    tags = [\"pyxcloud\"]\n")
+	// Tags: the default "pyxcloud" plus the optional fleet-selection tag a sibling
+	// firewall/load-balancer targets by (droplet_tag).
+	tags := []string{"\"pyxcloud\""}
+	if p.Tag != "" {
+		tags = append(tags, fmt.Sprintf("%q", p.Tag))
+	}
+	fmt.Fprintf(&b, "    tags               = [%s]\n", strings.Join(tags, ", "))
+	// ssh_keys is a REQUIRED argument on digitalocean_droplet_autoscale's
+	// droplet_template; render the provided key IDs (empty list when none).
+	keys := make([]string, 0, len(p.SSHKeys))
+	for _, k := range p.SSHKeys {
+		if k = strings.TrimSpace(k); k != "" {
+			keys = append(keys, fmt.Sprintf("%q", k))
+		}
+	}
+	fmt.Fprintf(&b, "    ssh_keys           = [%s]\n", strings.Join(keys, ", "))
+	b.WriteString("    with_droplet_agent = true\n")
+	if p.UserData != "" {
+		fmt.Fprintf(&b, "    user_data          = %s\n", vmHeredoc(p.UserData))
+	}
 	b.WriteString("  }\n")
-	fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
 	b.WriteString("}\n")
 	return b.String()
 }
@@ -1109,12 +1127,16 @@ func renderLBDO(p LoadBalancerPlan) string {
 		b.WriteString("  }\n")
 	}
 
-	// DO has no native VM autoscaling primitive, so a scale-group target on DO is
-	// fronted by a droplet tag (the fixed/managed droplets carry the "pyxcloud"
-	// tag, the same tag the virtual-machine renderer applies). A vm target uses
-	// the same tag selection.
+	// A scale-group/vm target on DO is fronted by a droplet tag. Default is the
+	// generic "pyxcloud" tag (every instance); a specific TargetTag (e.g.
+	// "pyx-backend") fronts only that fleet — matching the per-service tag the
+	// droplet-autoscale template stamps.
 	if p.TargetName != "" {
-		b.WriteString("\n  droplet_tag = \"pyxcloud\"\n")
+		dropletTag := p.TargetTag
+		if dropletTag == "" {
+			dropletTag = "pyxcloud"
+		}
+		fmt.Fprintf(&b, "\n  droplet_tag = %q\n", dropletTag)
 	}
 
 	b.WriteString("}\n")

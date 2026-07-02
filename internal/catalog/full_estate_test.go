@@ -27,11 +27,11 @@ import (
 // wantFullEstateResources is the coverage matrix asserted at the string level:
 // canonical component -> concrete DigitalOcean resource.
 var wantFullEstateResources = []struct{ component, resource string }{
-	{"platform SSO scale-group", `resource "digitalocean_kubernetes_cluster" "sso"`},
-	{"platform VPN scale-group", `resource "digitalocean_kubernetes_cluster" "vpn"`},
-	{"platform observability scale-group", `resource "digitalocean_kubernetes_cluster" "obs"`},
-	{"platform SAST scale-group", `resource "digitalocean_kubernetes_cluster" "sast"`},
-	{"platform backend scale-group", `resource "digitalocean_kubernetes_cluster" "backend"`},
+	{"platform SSO scale-group", `resource "digitalocean_droplet_autoscale" "sso"`},
+	{"platform VPN scale-group", `resource "digitalocean_droplet_autoscale" "vpn"`},
+	{"platform observability scale-group", `resource "digitalocean_droplet_autoscale" "obs"`},
+	{"platform SAST scale-group", `resource "digitalocean_droplet_autoscale" "sast"`},
+	{"platform backend scale-group", `resource "digitalocean_droplet_autoscale" "backend"`},
 	{"container-registry", `resource "digitalocean_container_registry" "app-images"`},
 	{"key-value-store", `resource "digitalocean_database_cluster" "jit-allowlist"`},
 	{"object-storage (Spaces)", `resource "digitalocean_spaces_bucket" "assets"`},

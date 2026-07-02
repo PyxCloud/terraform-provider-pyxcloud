@@ -60,6 +60,14 @@ type ScaleGroupSpec struct {
 	Network       string   // canonical network/place name (the VPC)
 	Subnets       []string // canonical subnet names to spread across (multi-AZ)
 	SecurityGroup string   // canonical security-group name to attach
+
+	// Tag is an extra provider tag stamped on every instance in the group so a
+	// sibling firewall/load-balancer can select the fleet by tag (e.g. a DO
+	// load-balancer's droplet_tag). Empty -> only the default "pyxcloud" tag.
+	Tag string
+	// SSHKeys are provider SSH-key IDs/fingerprints for the instances (DO's
+	// droplet_template.ssh_keys is REQUIRED). Empty -> an empty list.
+	SSHKeys []string
 }
 
 // ScaleGroupPlan is the deterministic, catalog-resolved concrete translation of
@@ -96,7 +104,9 @@ type ScaleGroupPlan struct {
 	NetworkName   string   `json:"network_name"`   // VPC/network it lives in
 	SubnetNames   []string `json:"subnet_names"`   // subnets the group spreads across
 	SecurityGroup string   `json:"security_group"` // SG/firewall to attach
-	ResourceType  string   `json:"resource_type"`  // top provider resource, e.g. aws_autoscaling_group
+	Tag           string   `json:"tag,omitempty"`      // extra fleet-selection tag (DO droplet_tag / AWS propagated tag)
+	SSHKeys       []string `json:"ssh_keys,omitempty"` // provider SSH-key IDs/fingerprints (DO droplet_template.ssh_keys, required)
+	ResourceType  string   `json:"resource_type"`      // top provider resource, e.g. aws_autoscaling_group
 
 	// KubernetesVersion is the DOKS control-plane version for the node-pool
 	// mapping (DigitalOcean has no native VM autoscaling primitive, so a
@@ -267,14 +277,19 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		SubnetNames:       subnets,
 		SecurityGroup:     spec.SecurityGroup,
 		KubernetesVersion: strings.TrimSpace(spec.KubernetesVersion),
+		Tag:               strings.TrimSpace(spec.Tag),
+		SSHKeys:           spec.SSHKeys,
 	}
 
 	switch provider {
 	case ProviderAWS:
 		plan.ResourceType = "aws_autoscaling_group"
 	case ProviderDigitalOcean:
-		// No native VM ASG; the scale-group maps to a DOKS node pool.
-		plan.ResourceType = "digitalocean_kubernetes_cluster"
+		// DO has a native droplet-autoscale primitive (digitalocean_droplet_autoscale):
+		// a CPU-driven autoscale group over a droplet_template, min_instances the
+		// self-healing floor. It carries per-instance user_data (unlike a DOKS node
+		// pool), which the durable-bootstrap services depend on. See renderScaleGroupDO.
+		plan.ResourceType = "digitalocean_droplet_autoscale"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_region_instance_group_manager"
 	case ProviderAzure:

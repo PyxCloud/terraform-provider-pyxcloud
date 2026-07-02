@@ -72,8 +72,22 @@ type environmentModel struct {
 	PyxALBAttachment                []envComponentModel    `tfsdk:"pyx_alb_attachment"`
 	PyxVPNAccess                    []envComponentModel    `tfsdk:"pyx_vpn_access"`
 	AccountBinding                  types.String           `tfsdk:"account_binding"`
+	RemoteState                     *envRemoteStateModel   `tfsdk:"remote_state"`
 	WorkDir                         types.String           `tfsdk:"work_dir"`
 	Outputs                         types.Map              `tfsdk:"outputs"`
+}
+
+// envRemoteStateModel configures an S3-compatible remote backend for the
+// environment's terraform state (instead of the default local backend in
+// work_dir). DigitalOcean Spaces speaks the S3 backend protocol, so this lets a
+// production estate keep its state off the apply host and share it across CI /
+// operators. Backend credentials come from the ambient env (AWS_ACCESS_KEY_ID /
+// AWS_SECRET_ACCESS_KEY set to the Spaces keys) — never rendered.
+type envRemoteStateModel struct {
+	Bucket   types.String `tfsdk:"bucket"`
+	Key      types.String `tfsdk:"key"`
+	Region   types.String `tfsdk:"region"`
+	Endpoint types.String `tfsdk:"endpoint"`
 }
 
 // envSecurityRuleModel is one explicit ingress rule scoped to an external
@@ -104,6 +118,8 @@ type envComponentModel struct {
 	UserData                 types.String          `tfsdk:"user_data"`
 	InstanceProfileName      types.String          `tfsdk:"instance_profile"`
 	RootDiskGB               types.Int64           `tfsdk:"root_disk_gb"`
+	Tag                      types.String          `tfsdk:"tag"`
+	SSHKeys                  []types.String        `tfsdk:"ssh_keys"`
 	ALBListenerARN           types.String          `tfsdk:"alb_listener_arn"`
 	HostHeader               types.String          `tfsdk:"host_header"`
 	Port                     types.Int64           `tfsdk:"port"`
@@ -155,6 +171,7 @@ type envComponentModel struct {
 	Stickiness               types.Bool            `tfsdk:"stickiness"`
 	TargetKind               types.String          `tfsdk:"target_kind"`
 	TargetName               types.String          `tfsdk:"target_name"`
+	TargetTag                types.String          `tfsdk:"target_tag"`
 	Domain                   types.String          `tfsdk:"domain"`
 	SizeGB                   types.Int64           `tfsdk:"size_gb"`
 	VolumeType               types.String          `tfsdk:"volume_type"`
@@ -436,6 +453,19 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"the deploy server-side with the binding's stored credentials (no creds on the runner). Mode B " +
 					"requires the server-side managed-deploy gate (DEPLOY-GATE.md §B) and is enabled once that lands.",
 			},
+			"remote_state": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Optional S3-compatible remote backend for this environment's terraform state " +
+					"(DigitalOcean Spaces speaks the S3 backend protocol). Omit for the default local backend in " +
+					"`work_dir`. Backend credentials come from the ambient env (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY " +
+					"set to the Spaces keys) — never rendered.",
+				Attributes: map[string]schema.Attribute{
+					"bucket":   schema.StringAttribute{Optional: true, MarkdownDescription: "State bucket (e.g. `pyxcloud-terraform-state-prod`)."},
+					"key":      schema.StringAttribute{Optional: true, MarkdownDescription: "State object key (e.g. `production/do-fra1.tfstate`)."},
+					"region":   schema.StringAttribute{Optional: true, MarkdownDescription: "Backend region label (e.g. `fra1` for DO Spaces)."},
+					"endpoint": schema.StringAttribute{Optional: true, MarkdownDescription: "S3-compatible endpoint (e.g. `https://fra1.digitaloceanspaces.com`). Empty -> real AWS S3."},
+				},
+			},
 			"pyx_vpc":                             pyxEnvironmentComponentBlock("PyxCloud VPC/network component."),
 			"pyx_network_rule":                    pyxEnvironmentComponentBlock("PyxCloud network rule component."),
 			"pyx_access_policy":                   pyxEnvironmentComponentBlock("PyxCloud access policy component."),
@@ -499,6 +529,8 @@ func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 		"desired":      schema.Int64Attribute{Optional: true, MarkdownDescription: "Desired instances."},
 		"health":       schema.StringAttribute{Optional: true, MarkdownDescription: "Health check kind: `ec2` | `elb`."},
 		"user_data":    schema.StringAttribute{Optional: true, MarkdownDescription: "cloud-init/bootstrap baked into the launch template."},
+		"tag":          schema.StringAttribute{Optional: true, MarkdownDescription: "Extra fleet-selection tag stamped on every instance (a DO load-balancer/firewall targets droplets by tag)."},
+		"ssh_keys":     schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Provider SSH-key IDs/fingerprints attached to every instance (DO droplet_template.ssh_keys, required by DO). Empty -> no keys."},
 		"instance_profile": schema.StringAttribute{
 			Optional:            true,
 			MarkdownDescription: "IAM instance-profile name to attach.",
@@ -555,6 +587,7 @@ func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 		"stickiness":                 schema.BoolAttribute{Optional: true},
 		"target_kind":                schema.StringAttribute{Optional: true, MarkdownDescription: "vm | scale-group."},
 		"target_name":                schema.StringAttribute{Optional: true},
+		"target_tag":                 schema.StringAttribute{Optional: true, MarkdownDescription: "Fleet-selection tag the load-balancer fronts (DO droplet_tag, e.g. `pyx-backend`). Empty -> `pyxcloud`."},
 		"domain":                     schema.StringAttribute{Optional: true, MarkdownDescription: "Sending domain to verify."},
 		"size_gb":                    schema.Int64Attribute{Optional: true},
 		"volume_type":                schema.StringAttribute{Optional: true},
@@ -705,6 +738,10 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			}
 		}
 		if typed.canonicalType == "virtual-machine-scale-group" || hasScaleGroupFields(cm) {
+			var sshKeys []string
+			for _, k := range cm.SSHKeys {
+				sshKeys = append(sshKeys, k.ValueString())
+			}
 			comp.ScaleGroup = &catalog.AssembleScaleGroup{
 				Architecture:    cm.Architecture.ValueString(),
 				CPU:             cm.CPU.ValueString(),
@@ -717,6 +754,8 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				UserData:        cm.UserData.ValueString(),
 				InstanceProfile: cm.InstanceProfileName.ValueString(),
 				RootDiskGB:      int(cm.RootDiskGB.ValueInt64()),
+				Tag:             cm.Tag.ValueString(),
+				SSHKeys:         sshKeys,
 			}
 		}
 		if typed.canonicalType == "attach-to-existing-alb" || nonEmptyString(cm.ALBListenerARN) || nonEmptyString(cm.HostHeader) || nonEmptyString(cm.ScaleGroupName) {
@@ -795,7 +834,7 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			comp.K8s = &catalog.AssembleK8s{Version: cm.Version.ValueString(), Architecture: cm.Architecture.ValueString(), NodeCPU: int(cm.NodeCPU.ValueInt64()), NodeRAM: int(cm.NodeRAM.ValueInt64()), MinNodes: int(cm.MinNodes.ValueInt64()), MaxNodes: int(cm.MaxNodes.ValueInt64()), DesiredNodes: int(cm.DesiredNodes.ValueInt64())}
 		}
 		if typed.canonicalType == "load-balancer" || len(cm.Listeners) > 0 || nonEmptyString(cm.TargetKind) || nonEmptyString(cm.TargetName) {
-			lb := &catalog.AssembleLB{HealthCheckPath: cm.HealthCheckPath.ValueString(), HealthCheckPort: intFromString(cm.HealthCheckPortString), HealthProtocol: cm.HealthProtocol.ValueString(), Stickiness: cm.Stickiness.ValueBool(), TargetKind: cm.TargetKind.ValueString(), TargetName: cm.TargetName.ValueString()}
+			lb := &catalog.AssembleLB{HealthCheckPath: cm.HealthCheckPath.ValueString(), HealthCheckPort: intFromString(cm.HealthCheckPortString), HealthProtocol: cm.HealthProtocol.ValueString(), Stickiness: cm.Stickiness.ValueBool(), TargetKind: cm.TargetKind.ValueString(), TargetName: cm.TargetName.ValueString(), TargetTag: cm.TargetTag.ValueString()}
 			for _, l := range cm.Listeners {
 				lb.Listeners = append(lb.Listeners, catalog.AssembleLBListener{Port: int(l.Port.ValueInt64()), Protocol: l.Protocol.ValueString()})
 			}
@@ -958,6 +997,42 @@ var errModeBNotEnabled = fmt.Errorf("managed-account deploy (Mode B, account_bin
 	"(DEPLOY-GATE.md §B, pending). For now omit account_binding to use Mode A (apply locally with your ambient " +
 	"provider env credentials)")
 
+// renderRemoteBackendHCL renders a `terraform { backend "s3" { ... } }` block for
+// the optional remote_state config. Empty when no backend is set (default local
+// backend). For an S3-compatible endpoint (DigitalOcean Spaces) it adds the
+// skip_*/use_path_style flags terraform's s3 backend needs against non-AWS S3.
+func renderRemoteBackendHCL(rs *envRemoteStateModel) string {
+	if rs == nil {
+		return ""
+	}
+	bucket := strings.TrimSpace(rs.Bucket.ValueString())
+	key := strings.TrimSpace(rs.Key.ValueString())
+	if bucket == "" || key == "" {
+		return ""
+	}
+	region := strings.TrimSpace(rs.Region.ValueString())
+	if region == "" {
+		region = "us-east-1"
+	}
+	endpoint := strings.TrimSpace(rs.Endpoint.ValueString())
+	var b strings.Builder
+	b.WriteString("terraform {\n  backend \"s3\" {\n")
+	fmt.Fprintf(&b, "    bucket = %q\n", bucket)
+	fmt.Fprintf(&b, "    key    = %q\n", key)
+	fmt.Fprintf(&b, "    region = %q\n", region)
+	if endpoint != "" {
+		// S3-compatible (DO Spaces): pin the endpoint and skip the AWS-only checks.
+		fmt.Fprintf(&b, "    endpoints                   = { s3 = %q }\n", endpoint)
+		b.WriteString("    skip_credentials_validation = true\n")
+		b.WriteString("    skip_region_validation      = true\n")
+		b.WriteString("    skip_metadata_api_check     = true\n")
+		b.WriteString("    skip_requesting_account_id  = true\n")
+		b.WriteString("    use_path_style              = true\n")
+	}
+	b.WriteString("  }\n}\n")
+	return b.String()
+}
+
 // translateAndApply translates the topology LOCALLY (catalog.AssembleHCL — the
 // same Translate/Render the round-trip harness uses, no backend round-trip and no
 // token), then runs the resulting terraform in workDir with the ambient provider
@@ -969,6 +1044,12 @@ func (r *environmentResource) translateAndApply(ctx context.Context, m *environm
 	docs, err := catalog.AssembleHCL(ctx, r.catalog, r.assembleInputFromModel(*m))
 	if err != nil {
 		return nil, "", fmt.Errorf("translate: %w", err)
+	}
+	// Optional S3-compatible remote backend (e.g. DigitalOcean Spaces) — a separate
+	// terraform{} block (valid alongside the assembled required_providers block).
+	// Backend creds come from the ambient env (AWS_ACCESS_KEY_ID/SECRET), never rendered.
+	if b := renderRemoteBackendHCL(m.RemoteState); b != "" {
+		docs = append([]string{b}, docs...)
 	}
 	if m.modeB() {
 		outputs, err := r.client.DeployEnvironment(ctx, m.Name.ValueString(), m.AccountBinding.ValueString(), docs)
