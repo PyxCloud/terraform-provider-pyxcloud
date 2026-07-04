@@ -122,6 +122,38 @@ func TestAssembleHCLMessagingAndServerless(t *testing.T) {
 	}
 }
 
+// TestAssembleHCLTwoServerlessDODistinctGitVars guards against a silent variable
+// collision: two DO Functions in one environment must each reference their own
+// git-source variables (var.<name>_repo_url / var.<name>_branch), never a shared
+// generic var.function_repo_url — terraform validate would not catch the overlap.
+func TestAssembleHCLTwoServerlessDODistinctGitVars(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "board-api", Type: "serverless-function", Serverless: &AssembleServerless{Runtime: "go"}},
+			{Name: "webhook-fn", Type: "serverless-function", Serverless: &AssembleServerless{Runtime: "nodejs"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL two DO serverless: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		"var.board-api_repo_url", "var.board-api_branch",
+		"var.webhook-fn_repo_url", "var.webhook-fn_branch",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing per-component git var %q\n---\n%s", want, all)
+		}
+	}
+	for _, collide := range []string{"var.function_repo_url", "var.function_branch"} {
+		if strings.Contains(all, collide) {
+			t.Errorf("generic git var %q would silently collide across functions\n---\n%s", collide, all)
+		}
+	}
+}
+
 func TestAssembleHCLKMS(t *testing.T) {
 	cat, _ := NewEmbedded()
 	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
