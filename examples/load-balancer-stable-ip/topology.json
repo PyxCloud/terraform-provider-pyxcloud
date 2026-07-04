@@ -1,0 +1,11 @@
+{
+  "_comment": "Cost-correct stable-ingress descent (pd-TF-LB stable_ip). A single-instance service fronted only for a fixed public IP (Cloudflare origin) should NOT pay for a digitalocean_loadbalancer that never balances. With load-balancer.StableIP=true the DO render degenerates to a free digitalocean_reserved_ip bound to the target droplet. This is the on-contract expression that supersedes hand-written digitalocean_reserved_ip HCL. Render with: go run ./cmd/pyxenv-render -in examples/load-balancer-stable-ip/topology.json -out examples/load-balancer-stable-ip/rendered",
+  "Name": "edge",
+  "Provider": "digitalocean",
+  "Region": "Frankfurt",
+  "Expose": [443],
+  "Components": [
+    { "Name": "sso", "Type": "virtual-machine", "VM": { "Architecture": "x86_64", "CPU": "2", "RAM": "4", "OS": "ubuntu" } },
+    { "Name": "sso-lb", "Type": "load-balancer", "LB": { "Listeners": [ { "Port": 443, "Protocol": "https" } ], "TargetKind": "vm", "TargetName": "sso", "StableIP": true } }
+  ]
+}

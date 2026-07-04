@@ -1,0 +1,40 @@
+{
+  "Name": "pyx-edge",
+  "Provider": "digitalocean",
+  "Region": "Frankfurt",
+  "CIDR": "10.0.0.0/16",
+  "Subnets": ["10.0.1.0/24"],
+  "Expose": [443],
+  "Components": [
+    {
+      "Name": "pyx-edge",
+      "Type": "virtual-machine-scale-group",
+      "ScaleGroup": {
+        "Architecture": "x86_64",
+        "CPU": "1",
+        "RAM": "2",
+        "OS": "ubuntu",
+        "OSVersion": "24.04",
+        "Min": 2,
+        "Max": 2,
+        "Desired": 2,
+        "Health": "elb",
+        "Tag": "pyx-edge",
+        "SSHKeys": ["57496891"],
+        "UserData": "#!/bin/bash\nset -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\napt-get update -y\napt-get install -y nginx-full\n# One-LB SNI host-router: L4 passthrough (no TLS termination), routes :443 by SNI.\n# Preserves end-to-end TLS to each origin; matches the old per-service LB behaviour\n# while consolidating them into a single ingress. pd-ONE-LB-CONSOLIDATION.\ncat >/etc/nginx/nginx.conf <<'NGINX'\ninclude /etc/nginx/modules-enabled/*.conf;\nuser www-data;\nworker_processes auto;\nevents { worker_connections 2048; }\nstream {\n  map $ssl_preread_server_name $pyx_upstream {\n    auth.pyxcloud.io         sso_prod;\n    vpn-auth.pyxcloud.io     sso_staging;\n    staging-api.pyxcloud.io  backend_staging;\n    mcp.passo.build          mcp_staging;\n    staging-mcp.passo.build  mcp_staging;\n    default                  sink;\n  }\n  upstream sso_prod        { server 164.92.248.51:443; server 207.154.231.103:443; }\n  upstream sso_staging     { server 206.189.53.146:443; }\n  upstream backend_staging { server 104.248.245.240:443; }\n  upstream mcp_staging     { server 178.128.201.212:443; }\n  upstream sink            { server 127.0.0.1:9; }\n  server {\n    listen 443;\n    ssl_preread on;\n    proxy_pass $pyx_upstream;\n    proxy_connect_timeout 5s;\n  }\n}\nNGINX\nnginx -t && systemctl enable nginx && systemctl restart nginx\n"
+      }
+    },
+    {
+      "Name": "pyx-edge-lb",
+      "Type": "load-balancer",
+      "LB": {
+        "Listeners": [{ "Port": 443, "Protocol": "tcp" }],
+        "HealthProtocol": "tcp",
+        "HealthCheckPort": 443,
+        "TargetKind": "scale-group",
+        "TargetName": "pyx-edge",
+        "TargetTag": "pyx-edge"
+      }
+    }
+  ]
+}

@@ -177,16 +177,17 @@ func TestScaleGroupLinodeStillUnsupported(t *testing.T) {
 	}
 }
 
-// TestRenderScaleGroupDO asserts the DO scale-group renders to a
-// digitalocean_droplet_autoscale pool: an elastic (min<max) config, the
-// droplet_template with the catalog size/region/image/VPC/tag, and self-heal.
+// TestRenderScaleGroupDO asserts the DO scale-group renders to a native
+// droplet-autoscale group (NOT DOKS): config bounds, droplet_template joining the
+// VPC with the catalog-resolved size/image, per-instance user_data, the
+// auto-derived + explicit fleet tags, and the required ssh_keys.
 func TestRenderScaleGroupDO(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
 		Name: "web", Region: "Frankfurt", Provider: "digitalocean",
 		Architecture: "x86_64", CPU: 2, RAM: 4, OS: "ubuntu",
 		Min: 1, Max: 5, Desired: 2, Network: "production",
-		UserData: "#!/bin/bash\necho hello\n",
+		Tag: "pyx-web", SSHKeys: []string{"22222222"}, UserData: "#!/bin/bash\necho hi\n",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -198,20 +199,20 @@ func TestRenderScaleGroupDO(t *testing.T) {
 	for _, want := range []string{
 		`resource "digitalocean_droplet_autoscale" "web"`,
 		`config {`,
-		`min_instances = 1`,
-		`max_instances = 5`,
+		`min_instances          = 1`,
+		`max_instances          = 5`,
 		`target_cpu_utilization = 0.6`, // elastic pool (min<max)
 		`droplet_template {`,
-		`size     = "s-2vcpu-4gb"`,
-		`region   = "fra1"`,
-		`image    = "ubuntu-24-04-x64"`,
-		`vpc_uuid = digitalocean_vpc.production.id`,
-		`ssh_keys = var.do_ssh_keys`,
-		`tags = ["pyx-web"]`,
+		`size               = "s-2vcpu-4gb"`,
+		`region             = "fra1"`,
+		`vpc_uuid           = digitalocean_vpc.production.id`,
+		`tags               = ["pyxcloud", "pyx-web"]`,
+		`ssh_keys           = ["22222222"]`,
 		`with_droplet_agent = true`,
+		`user_data          = <<-`,
 	} {
 		if !strings.Contains(hcl, want) {
-			t.Errorf("DO droplet_autoscale HCL missing %q:\n%s", want, hcl)
+			t.Errorf("DO droplet-autoscale HCL missing %q:\n%s", want, hcl)
 		}
 	}
 	// No DOKS/Kubernetes leakage on the scale-group path any more.
@@ -222,6 +223,30 @@ func TestRenderScaleGroupDO(t *testing.T) {
 	}
 	if !IsASCII(hcl) {
 		t.Errorf("rendered HCL is not ASCII:\n%s", hcl)
+	}
+}
+
+// TestRenderScaleGroupDODefaults asserts that with no user_data and no ssh_keys
+// the droplet-autoscale still renders valid HCL: an empty ssh_keys list (the
+// required arg) and no user_data line.
+func TestRenderScaleGroupDODefaults(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
+		Name: "api", Region: "Frankfurt", Provider: "digitalocean",
+		CPU: 2, RAM: 4, Min: 1, Max: 1, Desired: 1, Network: "production",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hcl, err := RenderScaleGroupHCL(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(hcl, `ssh_keys           = []`) {
+		t.Errorf("no ssh keys should render an empty (required) list:\n%s", hcl)
+	}
+	if strings.Contains(hcl, "user_data") {
+		t.Errorf("no user_data should omit the user_data argument:\n%s", hcl)
 	}
 }
 
@@ -243,7 +268,7 @@ func TestRenderScaleGroupDOFixedPool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(hcl, `min_instances = 1`) || !strings.Contains(hcl, `max_instances = 1`) {
+	if !strings.Contains(hcl, `min_instances          = 1`) || !strings.Contains(hcl, `max_instances          = 1`) {
 		t.Errorf("fixed pool should set min_instances==max_instances==1:\n%s", hcl)
 	}
 	if !strings.Contains(hcl, "target_cpu_utilization = 0.6") {

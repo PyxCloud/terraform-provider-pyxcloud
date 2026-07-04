@@ -631,7 +631,7 @@ func TestAssembleHCLObjectStorageParityAWS(t *testing.T) {
 // ASG, so the scale-group maps to a DOKS node pool). It asserts the provider
 // source is pinned, the place's VPC is synthesised and wired, and the self-heal
 // min/max/desired bounds carry through.
-func TestAssembleHCLScaleGroupDOKS(t *testing.T) {
+func TestAssembleHCLScaleGroupDODropletAutoscale(t *testing.T) {
 	cat, _ := NewEmbedded()
 	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
 		Name: "sg-mig", Provider: "digitalocean", Region: "Frankfurt",
@@ -648,40 +648,41 @@ func TestAssembleHCLScaleGroupDOKS(t *testing.T) {
 					Max:          5,
 					Desired:      2,
 					Health:       "elb",
+					Tag:          "pyx-web",
+					SSHKeys:      []string{"11111111"},
+					UserData:     "#!/bin/bash\necho hi\n",
 				},
 			},
 		},
 	})
 	if err != nil {
-		t.Fatalf("AssembleHCL scale-group droplet_autoscale: %v", err)
+		t.Fatalf("AssembleHCL scale-group DO droplet-autoscale: %v", err)
 	}
 	all := strings.Join(docs, "\n")
 	for _, want := range []string{
-		`source = "digitalocean/digitalocean"`,              // provider source pinned
-		`resource "digitalocean_vpc" "sg-mig-net"`,          // place VPC synthesised
-		`resource "digitalocean_droplet_autoscale" "web"`,   // scale-group -> droplet pool
-		`vpc_uuid = digitalocean_vpc.sg-mig-net.id`,         // pool joins the VPC
+		`source = "digitalocean/digitalocean"`,                // provider source pinned
+		`resource "digitalocean_vpc" "sg-mig-net"`,            // place VPC synthesised
+		`resource "digitalocean_droplet_autoscale" "web"`,     // scale-group -> native droplet-autoscale (NOT DOKS)
+		`vpc_uuid           = digitalocean_vpc.sg-mig-net.id`, // template joins the VPC
 		`config {`,
-		`min_instances = 1`, // self-heal: ASG-of-1 floor
-		`max_instances = 5`,
-		`target_cpu_utilization = 0.6`, // elastic (min<max)
+		`min_instances          = 1`, // self-heal floor
+		`max_instances          = 5`,
+		`target_cpu_utilization = 0.6`,
 		`droplet_template {`,
-		`ssh_keys = var.do_ssh_keys`,
-		`tags = ["pyx-web"]`,
+		`tags               = ["pyxcloud", "pyx-web"]`, // default + fleet-selection tag
+		`ssh_keys           = ["11111111"]`,            // required arg, threaded
 		`with_droplet_agent = true`,
-		`variable "do_ssh_keys"`, // out-of-band ssh-keys var declared once
+		`user_data          = <<-`, // per-instance bootstrap flows (unlike DOKS)
 	} {
 		if !strings.Contains(all, want) {
-			t.Errorf("DO scale-group droplet_autoscale HCL missing %q\n%s", want, all)
+			t.Errorf("DO scale-group droplet-autoscale HCL missing %q\n%s", want, all)
 		}
 	}
-	// DO scale-groups are droplet pools, not DOKS clusters.
-	if strings.Contains(all, "digitalocean_kubernetes_cluster") || strings.Contains(all, "node_pool") {
-		t.Errorf("DO scale-group must not emit DOKS resources (droplet lift-and-shift):\n%s", all)
-	}
-	// DO has no AWS ASG: the AWS launch-template / autoscaling-group must NOT appear.
-	if strings.Contains(all, "aws_autoscaling_group") || strings.Contains(all, "aws_launch_template") {
-		t.Errorf("DO scale-group must not emit AWS ASG resources:\n%s", all)
+	// The scale-group must NOT render a DOKS cluster nor AWS ASG resources.
+	for _, bad := range []string{"digitalocean_kubernetes_cluster", "node_pool {", "aws_autoscaling_group", "aws_launch_template"} {
+		if strings.Contains(all, bad) {
+			t.Errorf("DO scale-group must not emit %q:\n%s", bad, all)
+		}
 	}
 }
 
@@ -1118,12 +1119,12 @@ func TestHasOperatorAlternative(t *testing.T) {
 // on DOKS) instead of the single-VM mitigation (a single droplet running Vault).
 //
 // Asserts:
-//  - secrets-manager on DO with a managed-kubernetes component → Vault-HA Helm chart
-//    + CRs (helm_release + kubernetes_manifest); NOT a digitalocean_droplet.
-//  - kms on DO same topology → same Vault-HA output.
-//  - encryption-key (alias of kms) same result.
-//  - Both pin the helm + kubernetes providers.
-//  - Without any managed-kubernetes and no explicit cluster_name, a clear error is returned.
+//   - secrets-manager on DO with a managed-kubernetes component → Vault-HA Helm chart
+//   - CRs (helm_release + kubernetes_manifest); NOT a digitalocean_droplet.
+//   - kms on DO same topology → same Vault-HA output.
+//   - encryption-key (alias of kms) same result.
+//   - Both pin the helm + kubernetes providers.
+//   - Without any managed-kubernetes and no explicit cluster_name, a clear error is returned.
 func TestAssembleHCLB4SecretsVaultAutoAlias(t *testing.T) {
 	t.Parallel()
 	cat, _ := NewEmbedded()

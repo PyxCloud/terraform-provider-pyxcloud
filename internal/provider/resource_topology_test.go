@@ -409,11 +409,11 @@ func TestResourceTranslateScaleGroupNil(t *testing.T) {
 	}
 }
 
-// TestResourceTranslateScaleGroupDO asserts a DigitalOcean scale-group maps to a
-// droplet_autoscale pool (the AWS->DO migration keystone) rather than hard-failing:
-// DO's native VM-autoscaling primitive is digitalocean_droplet_autoscale (a
-// lift-and-shift of the AWS ASG, VM+systemd not DOKS), with self-heal bounds
-// preserved.
+// TestResourceTranslateScaleGroupDO asserts a DigitalOcean scale-group maps to
+// DO's native droplet-autoscale primitive (the AWS->DO migration keystone)
+// rather than a DOKS cluster: digitalocean_droplet_autoscale is a lift-and-shift
+// of the AWS ASG (VM+systemd) carrying per-instance user_data (the durable
+// services need it), matching the live estate, with self-heal bounds preserved.
 func TestResourceTranslateScaleGroupDO(t *testing.T) {
 	t.Parallel()
 	r := &topologyResource{catalog: catalog.MustEmbedded()}

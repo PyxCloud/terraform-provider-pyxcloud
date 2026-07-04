@@ -78,6 +78,7 @@ var pyxComponentTypes = []pyxComponentType{
 	{BlockName: "pyx_queue", CanonicalType: "managed-queue", Description: "PyxCloud queue component."},
 	{BlockName: "pyx_stream", CanonicalType: "event-streaming", Description: "PyxCloud stream component."},
 	{BlockName: "pyx_serverless_function", CanonicalType: "serverless-function", Description: "PyxCloud serverless function component."},
+	{BlockName: "pyx_web_service", CanonicalType: "web-service", Description: "PyxCloud always-on web service (DO App Platform service) — an HTTP/SSE server, distinct from a serverless function."},
 	{BlockName: "pyx_kms", CanonicalType: "kms", Description: "PyxCloud KMS/encryption-key component."},
 	{BlockName: "pyx_cdn", CanonicalType: "cdn", Description: "PyxCloud CDN component."},
 	{BlockName: "pyx_waf", CanonicalType: "waf", Description: "PyxCloud WAF component."},
@@ -272,6 +273,7 @@ type loadBalancerModel struct {
 	Stickiness  types.Bool          `tfsdk:"stickiness"`
 	TargetKind  types.String        `tfsdk:"target_kind"`
 	TargetName  types.String        `tfsdk:"target_name"`
+	StableIP    types.Bool          `tfsdk:"stable_ip"`
 }
 
 // lbListenerPlanModel is one resolved listener in the load-balancer plan.
@@ -407,6 +409,7 @@ type topologyModel struct {
 	PyxQueue                        []componentModel          `tfsdk:"pyx_queue"`
 	PyxStream                       []componentModel          `tfsdk:"pyx_stream"`
 	PyxServerlessFunction           []componentModel          `tfsdk:"pyx_serverless_function"`
+	PyxWebService                   []componentModel          `tfsdk:"pyx_web_service"`
 	PyxKMS                          []componentModel          `tfsdk:"pyx_kms"`
 	PyxCDN                          []componentModel          `tfsdk:"pyx_cdn"`
 	PyxWAF                          []componentModel          `tfsdk:"pyx_waf"`
@@ -481,6 +484,7 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"pyx_queue":                           pyxTopologyComponentBlock("PyxCloud queue component."),
 			"pyx_stream":                          pyxTopologyComponentBlock("PyxCloud stream component."),
 			"pyx_serverless_function":             pyxTopologyComponentBlock("PyxCloud serverless function component."),
+			"pyx_web_service":                     pyxTopologyComponentBlock("PyxCloud always-on web service (DO App Platform service)."),
 			"pyx_kms":                             pyxTopologyComponentBlock("PyxCloud KMS/encryption-key component."),
 			"pyx_cdn":                             pyxTopologyComponentBlock("PyxCloud CDN component."),
 			"pyx_waf":                             pyxTopologyComponentBlock("PyxCloud WAF component."),
@@ -861,6 +865,14 @@ func (r *topologyResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 						Optional: true,
 						MarkdownDescription: "Canonical name of the fronted component; defaults to " +
 							"the topology's scale-group / virtual-machine name.",
+					},
+					"stable_ip": schema.BoolAttribute{
+						Optional: true,
+						MarkdownDescription: "Degenerate to a stable public ingress IP instead of a " +
+							"balancing LB when the intent is a fixed address for a single instance. " +
+							"On DigitalOcean this renders a free `digitalocean_reserved_ip` bound to " +
+							"the target droplet instead of a paid `digitalocean_loadbalancer`. " +
+							"Requires `target_kind = \"vm\"` with `target_name`; DigitalOcean-only.",
 					},
 				},
 			},
@@ -1667,6 +1679,7 @@ func (r *topologyResource) translateLoadBalancer(ctx context.Context, m topology
 		Stickiness:    lb.Stickiness.ValueBool(),
 		TargetKind:    targetKind,
 		TargetName:    targetName,
+		StableIP:      lb.StableIP.ValueBool(),
 		Network:       network,
 		Subnets:       subnets,
 		SecurityGroup: sgName,
@@ -2135,6 +2148,7 @@ func topologyComponentsFromModel(m topologyModel) []client.Component {
 	appendComponents("managed-queue", m.PyxQueue)
 	appendComponents("event-streaming", m.PyxStream)
 	appendComponents("serverless-function", m.PyxServerlessFunction)
+	appendComponents("web-service", m.PyxWebService)
 	appendComponents("kms", m.PyxKMS)
 	appendComponents("cdn", m.PyxCDN)
 	appendComponents("waf", m.PyxWAF)
@@ -2209,6 +2223,8 @@ func appendTopologyComponentModel(m *topologyModel, canonicalType string, cm com
 		m.PyxStream = append(m.PyxStream, cm)
 	case "serverless-function":
 		m.PyxServerlessFunction = append(m.PyxServerlessFunction, cm)
+	case "web-service", "app-service", "app-platform-service":
+		m.PyxWebService = append(m.PyxWebService, cm)
 	case "kms", "encryption-key":
 		m.PyxKMS = append(m.PyxKMS, cm)
 	case "cdn", "cdn-service":

@@ -105,6 +105,19 @@ type LoadBalancerSpec struct {
 	// fixed set). TargetName is the canonical name of that sibling component.
 	TargetKind string
 	TargetName string
+	// TargetTag selects the fronted fleet by provider tag (a DO load-balancer's
+	// droplet_tag). Empty -> "pyxcloud" (every instance).
+	TargetTag string
+
+	// StableIP degenerates the load-balancer to a stable public ingress IP when the
+	// intent is "give this single instance a fixed address" rather than "balance a
+	// fleet". On DigitalOcean a single-droplet pool fronted by a paid
+	// digitalocean_loadbalancer (~$12/mo) that never balances is pure waste; with
+	// StableIP the DO descent emits a free digitalocean_reserved_ip bound to the
+	// target droplet instead. Requires a single VM target (TargetKind=vm,
+	// TargetName set); DigitalOcean-only (aws/gcp keep aws_eip/google_compute_address
+	// via a reserved-ip component). Empty/false = a normal load-balancer.
+	StableIP bool
 
 	// Placement wiring (from the other components). Network is the canonical
 	// VPC/place name; Subnets is the set of canonical subnet names the LB spreads
@@ -165,8 +178,14 @@ type LoadBalancerPlan struct {
 	HealthCheck LBHealthCheckPlan `json:"health_check"`
 	Stickiness  bool              `json:"stickiness"`
 
-	TargetKind string `json:"target_kind"` // scale-group | vm
-	TargetName string `json:"target_name"` // canonical name of the fronted component
+	TargetKind string `json:"target_kind"`          // scale-group | vm
+	TargetName string `json:"target_name"`          // canonical name of the fronted component
+	TargetTag  string `json:"target_tag,omitempty"` // fleet-selection tag (DO droplet_tag); "" -> "pyxcloud"
+
+	// StableIP: the DO load-balancer degenerates to a digitalocean_reserved_ip bound
+	// to the single target droplet (cost-correct stable-ingress descent). See
+	// LoadBalancerSpec.StableIP. When true, ResourceType is digitalocean_reserved_ip.
+	StableIP bool `json:"stable_ip,omitempty"`
 
 	// Zones are the concrete AZs/zones the LB spreads across (multi-AZ), derived
 	// from the region catalog. Empty for DigitalOcean (region-scoped).
@@ -229,6 +248,25 @@ func TranslateLoadBalancer(ctx context.Context, cat RegionCatalog, spec LoadBala
 
 	targetKind := canonicalTargetKind(spec.TargetKind)
 
+	// StableIP degeneration: only valid as a cost-correct DO descent over a single
+	// concrete droplet target. A reserved IP binds to exactly one droplet_id, so it
+	// cannot front a scale-group/tagged fleet — enforce a single VM target, and keep
+	// it DigitalOcean-only (never a silent fallback on other providers, SPEC §4).
+	if spec.StableIP {
+		if provider != ProviderDigitalOcean {
+			return LoadBalancerPlan{}, fmt.Errorf(
+				"load-balancer %q: stable_ip degeneration is DigitalOcean-only (a "+
+					"digitalocean_reserved_ip); on aws/gcp attach a reserved-ip component to the "+
+					"instance or use a full load-balancer", name)
+		}
+		if targetKind != LBTargetVM || strings.TrimSpace(spec.TargetName) == "" {
+			return LoadBalancerPlan{}, fmt.Errorf(
+				"load-balancer %q: stable_ip requires a single VM target (target_kind=vm, "+
+					"target_name set) — a reserved IP binds to one droplet and cannot front a "+
+					"scale-group/tagged fleet", name)
+		}
+	}
+
 	plan := LoadBalancerPlan{
 		Provider:      provider,
 		CSP:           row.CSP,
@@ -240,6 +278,8 @@ func TranslateLoadBalancer(ctx context.Context, cat RegionCatalog, spec LoadBala
 		Stickiness:    spec.Stickiness,
 		TargetKind:    targetKind,
 		TargetName:    strings.TrimSpace(spec.TargetName),
+		TargetTag:     strings.TrimSpace(spec.TargetTag),
+		StableIP:      spec.StableIP,
 		Zones:         zones,
 		NetworkName:   spec.Network,
 		SubnetNames:   subnets,
@@ -253,6 +293,9 @@ func TranslateLoadBalancer(ctx context.Context, cat RegionCatalog, spec LoadBala
 		plan.ResourceType = "google_compute_forwarding_rule"
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_loadbalancer"
+		if spec.StableIP {
+			plan.ResourceType = "digitalocean_reserved_ip"
+		}
 	case ProviderAzure:
 		plan.ResourceType = "azurerm_lb"
 	case ProviderLinode:

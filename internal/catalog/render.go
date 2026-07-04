@@ -540,9 +540,10 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 		return renderASGAlibaba(plan), nil
 	case ProviderDigitalOcean:
 		// DO's native VM autoscaling primitive: a digitalocean_droplet_autoscale
-		// pool (a lift-and-shift of the AWS ASG — droplets + systemd via user_data,
-		// NOT DOKS). Self-heal: min_instances >= 1 keeps >=1 healthy droplet and
-		// replaces failed ones — the ASG-of-1 pattern.
+		// pool over a droplet_template (a lift-and-shift of the AWS ASG — droplets +
+		// systemd via user_data, NOT DOKS), matching the live estate. Self-heal:
+		// min_instances >= 1 keeps >=1 healthy droplet and replaces failed ones —
+		// the ASG-of-1 pattern.
 		return renderScaleGroupDO(plan), nil
 	case ProviderLinode:
 		return "", fmt.Errorf(
@@ -640,80 +641,92 @@ func renderASGAWS(p ScaleGroupPlan) string {
 	return b.String()
 }
 
-// doDropletAutoscaleImage is the base droplet image slug for a DO scale-group
-// pool. The catalog OS resolution yields a DOKS/marketplace family token, but a
-// droplet_autoscale droplet_template takes a plain droplet image slug. Ubuntu
-// 24.04 LTS x86_64 is the canonical platform base (matches the AWS Ubuntu base
-// the ASG user_data assumes).
-const doDropletAutoscaleImage = "ubuntu-24-04-x64"
-
 // doScaleGroupTag returns the per-service droplet tag a DO scale-group pool
-// carries ("pyx-<svc>"). The load-balancer forwards to the pool by this tag and
-// the firewall applies to it by this tag — the tag IS the wiring between the
-// pool, the LB and the firewall (the DO analogue of the AWS ASG target-group /
-// SG membership).
+// carries ("pyx-<svc>") when no explicit ScaleGroupPlan.Tag is set. The
+// load-balancer forwards to the pool by this tag and the firewall applies to it
+// by this tag — the tag IS the wiring between the pool, the LB and the firewall
+// (the DO analogue of the AWS ASG target-group / SG membership). Used by the
+// estate-level firewall DropletTags derivation (see AssembleHCL).
 func doScaleGroupTag(groupName string) string {
 	return "pyx-" + tfName(groupName)
 }
 
 // renderScaleGroupDO maps an abstract scale-group onto DigitalOcean's native
-// VM-autoscaling primitive: a digitalocean_droplet_autoscale pool. This is a
-// direct lift-and-shift of the AWS aws_autoscaling_group — a pool of droplets
-// (VM + systemd via user_data), NOT a DOKS cluster. It mirrors the ASG the AWS
-// side renders: the same catalog-resolved droplet SKU (size), the same
-// user_data the ASG bakes into its launch template, placed in the estate VPC,
-// tagged so the LB and firewall target it.
+// VM-autoscaling primitive: a digitalocean_droplet_autoscale pool over a
+// droplet_template. This is the shape the live estate already runs (mirrors
+// catalog.AssembleDOBaseline) — chosen over a DOKS node pool because it carries
+// per-instance user_data (the durable-bootstrap services rely on it) and keeps
+// the runtime droplet+systemd, not containers. It is a direct lift-and-shift of
+// the AWS aws_autoscaling_group: the same catalog-resolved droplet SKU (size)
+// and image, the same user_data the ASG bakes into its launch template, placed
+// in the estate VPC, tagged so the LB and firewall target it.
 //
 // Scaling semantics mirror the ASG bounds:
-//   - fixed pool (min == max): a static-count pool (config { min_instances =
-//     max_instances }), the self-healing ASG-of-N pattern (a failed droplet is
-//     replaced, the count held). This is what the platform scale-groups-of-1 use.
-//   - elastic pool (min < max): a target-based pool
-//     (target_cpu_utilization = 0.6) that scales between min and max.
+//   - fixed pool (min == max): a static-count pool, the self-healing ASG-of-N
+//     pattern (a failed droplet is replaced, the count held). This is what the
+//     platform scale-groups-of-1 use.
+//   - elastic pool (min < max): a target-based pool (target_cpu_utilization =
+//     0.6) that scales between min and max.
 //
 // The config block always carries target_cpu_utilization = 0.6: DO's autoscale
-// API requires a utilization target on every pool, fixed pools included (a
-// pool with no target is rejected 400). For fixed pools the target is inert.
+// API requires a utilization target on every pool, fixed pools included (a pool
+// with no target is rejected 400). For fixed pools the target is inert.
 //
 // Self-heal floor: min_instances >= 1 (enforced in TranslateScaleGroup for DO)
-// keeps at least one healthy droplet. DO pools are region-scoped (no sub-zones),
-// which is why ScaleGroupPlan.Zones is empty for DO.
+// keeps at least one healthy droplet. DO pools are region-scoped (no
+// sub-zones), so ScaleGroupPlan.Zones is empty for DO.
 func renderScaleGroupDO(p ScaleGroupPlan) string {
 	name := tfName(p.GroupName)
-	tag := doScaleGroupTag(p.GroupName)
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "resource \"digitalocean_droplet_autoscale\" %q {\n", name)
-	fmt.Fprintf(&b, "  name = %q\n", name)
+	fmt.Fprintf(&b, "  name = %q\n\n", name)
 
-	// config: the ASG min/max, as a fixed or target-based pool.
-	b.WriteString("\n  config {\n")
-	fmt.Fprintf(&b, "    min_instances = %d\n", p.Min)
-	fmt.Fprintf(&b, "    max_instances = %d\n", p.Max)
-	// DO's autoscale API rejects a pool that declares no utilization target
-	// (400: "at least one of target_memory_utilization / target_cpu_utilization
-	// required") — this holds even for a FIXED pool (min == max). So emit
-	// target_cpu_utilization unconditionally (0.6 = the ASG's target-tracking
-	// convention). For an elastic pool it drives scaling between min and max;
-	// for a fixed pool it is inert (count is pinned) but still required by the API.
+	// config: min/max the abstract bounds (min==max gives a fixed fleet, e.g. N+1);
+	// target_cpu_utilization drives scale-out between them and self-healing.
+	b.WriteString("  config {\n")
+	fmt.Fprintf(&b, "    min_instances          = %d\n", p.Min)
+	fmt.Fprintf(&b, "    max_instances          = %d\n", p.Max)
 	b.WriteString("    target_cpu_utilization = 0.6\n")
-	b.WriteString("  }\n")
+	b.WriteString("  }\n\n")
 
-	// droplet_template: the launch spec, mirroring the AWS launch template.
-	b.WriteString("\n  droplet_template {\n")
-	fmt.Fprintf(&b, "    size     = %q\n", p.InstanceType)
-	fmt.Fprintf(&b, "    region   = %q\n", p.CSPRegion)
-	fmt.Fprintf(&b, "    image    = %q\n", doDropletAutoscaleImage)
+	// droplet_template: the per-instance shape, including user_data (unlike a DOKS
+	// node pool, this flows the bootstrap script the durable services depend on).
+	b.WriteString("  droplet_template {\n")
+	fmt.Fprintf(&b, "    size               = %q\n", p.InstanceType)
+	fmt.Fprintf(&b, "    region             = %q\n", p.CSPRegion)
+	fmt.Fprintf(&b, "    image              = %q\n", p.Image)
 	if p.NetworkName != "" {
-		fmt.Fprintf(&b, "    vpc_uuid = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
+		fmt.Fprintf(&b, "    vpc_uuid           = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
 	}
-	// SSH keys are supplied out of band (fingerprints/ids), never in the topology.
-	b.WriteString("    ssh_keys = var.do_ssh_keys\n")
-	if p.UserData != "" {
-		fmt.Fprintf(&b, "    user_data = %s\n", vmHeredoc(p.UserData))
+	// Tags: the default "pyxcloud", the per-service fleet-selection tag every
+	// scale-group gets automatically (doScaleGroupTag, "pyx-<name>" — the DO
+	// analogue of an AWS ASG's propagated tag, which a sibling firewall/
+	// load-balancer targets by droplet_tag), plus an optional explicit p.Tag
+	// override/addition (e.g. do_baseline.go's per-service tag). Deduplicated so
+	// an explicit Tag matching the auto-derived convention doesn't repeat.
+	tagSet := []string{"pyxcloud", doScaleGroupTag(p.GroupName)}
+	if p.Tag != "" && p.Tag != tagSet[1] {
+		tagSet = append(tagSet, p.Tag)
 	}
-	fmt.Fprintf(&b, "    tags = [%q]\n", tag)
+	tags := make([]string, len(tagSet))
+	for i, t := range tagSet {
+		tags[i] = fmt.Sprintf("%q", t)
+	}
+	fmt.Fprintf(&b, "    tags               = [%s]\n", strings.Join(tags, ", "))
+	// ssh_keys is a REQUIRED argument on digitalocean_droplet_autoscale's
+	// droplet_template; render the provided key IDs (empty list when none).
+	keys := make([]string, 0, len(p.SSHKeys))
+	for _, k := range p.SSHKeys {
+		if k = strings.TrimSpace(k); k != "" {
+			keys = append(keys, fmt.Sprintf("%q", k))
+		}
+	}
+	fmt.Fprintf(&b, "    ssh_keys           = [%s]\n", strings.Join(keys, ", "))
 	b.WriteString("    with_droplet_agent = true\n")
+	if p.UserData != "" {
+		fmt.Fprintf(&b, "    user_data          = %s\n", vmHeredoc(p.UserData))
+	}
 	b.WriteString("  }\n")
 	b.WriteString("}\n")
 	return b.String()
@@ -819,6 +832,9 @@ func RenderLoadBalancerHCL(plan LoadBalancerPlan) (string, error) {
 	case ProviderGCP:
 		return renderLBGCP(plan), nil
 	case ProviderDigitalOcean:
+		if plan.StableIP {
+			return renderLBDOReservedIP(plan), nil
+		}
 		return renderLBDO(plan), nil
 	case ProviderAzure:
 		return renderLBAzure(plan), nil
@@ -1209,6 +1225,24 @@ func lbDOProto(proto string) string {
 	}
 }
 
+// renderLBDOReservedIP is the cost-correct DO degeneration of a stable-ingress
+// load-balancer (LoadBalancerPlan.StableIP): a single-droplet pool that never
+// balances is fronted by a free digitalocean_reserved_ip bound to the target
+// droplet instead of a paid digitalocean_loadbalancer. The stable public IP is
+// what Cloudflare (or any DNS) points at; TLS terminates on the droplet's own
+// nginx :443, exactly as the estate already serves it. Mirrors renderReservedIPDO.
+func renderLBDOReservedIP(p LoadBalancerPlan) string {
+	label := tfName(p.LBName)
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"digitalocean_reserved_ip\" %q {\n", label)
+	fmt.Fprintf(&b, "  region     = %q\n", p.CSPRegion)
+	// stable_ip mandates a single VM target; a virtual-machine renders its droplet
+	// as "<name>-1" (renderVMDO over VMInstancePlan), so bind that instance.
+	fmt.Fprintf(&b, "  droplet_id = digitalocean_droplet.%s-1.id\n", tfName(p.TargetName))
+	b.WriteString("}\n")
+	return b.String()
+}
+
 func renderLBDO(p LoadBalancerPlan) string {
 	name := tfName(p.LBName)
 	var b strings.Builder
@@ -1227,12 +1261,16 @@ func renderLBDO(p LoadBalancerPlan) string {
 	// pass TLS through to the droplets (the service terminates TLS), which keeps
 	// the rule valid against the DO API without wiring a certificate resource.
 	for _, l := range p.Listeners {
+		proto := lbDOProto(l.Protocol)
 		b.WriteString("\n  forwarding_rule {\n")
-		fmt.Fprintf(&b, "    entry_protocol  = %q\n", lbDOProto(l.Protocol))
+		fmt.Fprintf(&b, "    entry_protocol  = %q\n", proto)
 		fmt.Fprintf(&b, "    entry_port      = %d\n", l.Port)
-		fmt.Fprintf(&b, "    target_protocol = %q\n", lbDOProto(l.Protocol))
+		fmt.Fprintf(&b, "    target_protocol = %q\n", proto)
 		fmt.Fprintf(&b, "    target_port     = %d\n", l.Port)
-		if lbDOProto(l.Protocol) == "https" {
+		// DO requires an https forwarding rule to either terminate with a managed
+		// cert or pass TLS through to the droplets. Without a cert configured we
+		// pass through (the origin terminates), matching the estate's edge pattern.
+		if proto == "https" {
 			b.WriteString("    tls_passthrough = true\n")
 		}
 		b.WriteString("  }\n")
@@ -1258,13 +1296,18 @@ func renderLBDO(p LoadBalancerPlan) string {
 		b.WriteString("  }\n")
 	}
 
-	// A scale-group target on DO is a digitalocean_droplet_autoscale pool whose
-	// droplets carry the per-service "pyx-<svc>" tag (doScaleGroupTag). The LB
-	// forwards to the pool by that tag — the tag is the wiring between the LB and
-	// the autoscaling pool (the DO analogue of an ASG target-group attachment).
-	// A vm target falls back to the same per-name tag.
+	// A scale-group/vm target on DO is fronted by a droplet tag. Default is the
+	// auto-derived per-target tag ("pyx-<name>", doScaleGroupTag) every
+	// droplet_autoscale pool carries automatically (see renderScaleGroupDO) — the
+	// tag is the wiring between the LB and the autoscaling pool (the DO analogue
+	// of an ASG target-group attachment). An explicit TargetTag overrides it (e.g.
+	// to front a differently-tagged fleet, or a plain vm target).
 	if p.TargetName != "" {
-		fmt.Fprintf(&b, "\n  droplet_tag = %q\n", doScaleGroupTag(p.TargetName))
+		dropletTag := p.TargetTag
+		if dropletTag == "" {
+			dropletTag = doScaleGroupTag(p.TargetName)
+		}
+		fmt.Fprintf(&b, "\n  droplet_tag = %q\n", dropletTag)
 	}
 
 	b.WriteString("}\n")

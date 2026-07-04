@@ -46,6 +46,12 @@ const doBaselineName = "passo-do-baseline"
 // artifact from (aws s3 cp --endpoint-url against fra1.digitaloceanspaces.com).
 const doBaselineSpacesBucket = "pyx-artifacts-fra1"
 
+// doBaselineEnv is the deploy-environment token the FullServiceBootstraps var-model
+// specs (mcp/sast/backend/vpn) and the sso literal spec use to derive their public
+// hostnames (<env>-auth/<env>-api/<env>-mcp.*). Must stay in lockstep with
+// doEdgeOrigins' staging-* hostnames (beta-* is retired; see doEdgeOrigins).
+const doBaselineEnv = "staging"
+
 // DOBaselineService is one droplet-autoscale group in the cutover baseline.
 type DOBaselineService struct {
 	// Name is the autoscale-group name and matches the deployed state.
@@ -89,10 +95,15 @@ type doEdgeOrigin struct {
 }
 
 func doEdgeOrigins() []doEdgeOrigin {
+	// staging estate canonical hostnames (beta-* is retired). Deleting the beta-*
+	// DNS while these still said beta- is what broke the running staging edge
+	// (auth/api origins + the frontend backend-proxy UPSTREAM_BASE) — keep these
+	// in lockstep with the staging DNS. Prod uses the un-prefixed names via the
+	// native pyxcloud_environment path (pyxcloud-production), not this harness.
 	return []doEdgeOrigin{
-		{Service: "sso", Hostname: "beta-auth.pyxcloud.io", UpstreamPort: 8080},
-		{Service: "backend", Hostname: "beta-api.pyxcloud.io", UpstreamPort: 8080},
-		{Service: "mcp", Hostname: "mcp.passo.build", UpstreamPort: 8787},
+		{Service: "sso", Hostname: "staging-auth.pyxcloud.io", UpstreamPort: 8080},
+		{Service: "backend", Hostname: "staging-api.pyxcloud.io", UpstreamPort: 8080},
+		{Service: "mcp", Hostname: "staging-mcp.passo.build", UpstreamPort: 8787},
 	}
 }
 
@@ -159,6 +170,12 @@ type DOBaselineSecrets struct {
 	// EmbedTokenSecret is beta/passobuild-mcp-embed-token — the MCP embed token,
 	// injected at render time (unchanged behaviour, kept durable).
 	EmbedTokenSecret string
+	// DigitalOceanToken (beta-DigitalOceanToken) + McpReservedIP let the mcp droplet
+	// CLAIM a stable DO reserved IP to itself on boot. With Cloudflare pointing at the
+	// reserved IP, an autoscale roll no longer needs a DNS repoint: the fresh droplet
+	// reassigns the reserved IP to itself. Both empty => claim step is skipped (no-op).
+	DigitalOceanToken string
+	McpReservedIP     string
 
 	// --- SSO (Keycloak) literal-injected secrets (pd-MIG-CUTOVER durable edge) ---
 	// The sso DO bootstrap (RenderSSODOBootstrapUserData) inlines its secret VALUES
@@ -339,8 +356,8 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 			userData = ud
 			heredocEscaped = true
 		case svc.Durable:
-			// Legacy mcp-only durable render (literal mesh_app URL). Kept for the base
-			// harness path (FullServiceBootstraps off).
+			// Legacy mcp-only durable render (literal mesh_app URL, reserved-IP claim,
+			// re-fetch-on-restart). Kept for the base harness path (FullServiceBootstraps off).
 			userData = renderMCPUserData(secrets, opts)
 			// pd-MIG-CUTOVER-F4-PREP: append the Cloudflare-Full :443 terminator.
 			if opts.EdgeTLSOrigins {
@@ -467,12 +484,32 @@ if ! command -v aws >/dev/null 2>&1; then
   (cd /tmp && unzip -q awscliv2.zip && ./aws/install --update)
 fi
 
+log "claim reserved IP to self (stable Cloudflare origin, survives autoscale roll)"
+RESERVED_IP='%[7]s'
+if [ -n "$RESERVED_IP" ]; then
+  DROPLET_ID="$(curl -fsS http://169.254.169.254/metadata/v1/id || true)"
+  if [ -n "$DROPLET_ID" ]; then
+    curl -fsS -X POST \
+      -H "Authorization: Bearer %[6]s" -H "Content-Type: application/json" \
+      "https://api.digitalocean.com/v2/reserved_ips/$RESERVED_IP/actions" \
+      -d "{\"type\":\"assign\",\"droplet_id\":$DROPLET_ID}" \
+      || log "reserved-ip assign failed (continuing; Cloudflare may need a manual repoint)"
+  fi
+fi
+
 log "create service user + dirs"
 id passobuild-mcp >/dev/null 2>&1 || useradd --system --home /opt/passobuild-mcp --shell /usr/sbin/nologin passobuild-mcp
 install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /opt/passobuild-mcp
 install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /var/log/passobuild-mcp
 
-log "fetch artifact from DO Spaces"
+log "write artifact fetch script (re-run on every service start for in-place deploys)"
+# The fetch is a root-owned script (0700) with the Spaces creds embedded, so systemd can re-pull the
+# latest artifact in ExecStartPre. That makes a plain reboot/restart a full deploy — the deploy-mcp-do
+# workflow publishes a new tar.gz then reboots the droplet, and self-heal always boots the current
+# binary — WITHOUT changing the droplet IP (no Cloudflare DNS repoint, no rebuild).
+cat > /usr/local/bin/passobuild-mcp-fetch <<'FETCHEOF'
+#!/usr/bin/env bash
+set -euo pipefail
 export AWS_ACCESS_KEY_ID='%[1]s'
 export AWS_SECRET_ACCESS_KEY='%[2]s'
 export AWS_DEFAULT_REGION='fra1'
@@ -482,15 +519,21 @@ unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 tar -xzf /tmp/mcp.tar.gz -C /opt/passobuild-mcp --strip-components=1
 chown -R passobuild-mcp:passobuild-mcp /opt/passobuild-mcp
 chmod +x /opt/passobuild-mcp/passobuild-mcp
+FETCHEOF
+chmod 0700 /usr/local/bin/passobuild-mcp-fetch
+chown root:root /usr/local/bin/passobuild-mcp-fetch
+
+log "initial artifact fetch"
+/usr/local/bin/passobuild-mcp-fetch
 
 log "write /etc/passobuild-mcp.env"
 umask 027
 cat > /etc/passobuild-mcp.env <<'ENVEOF'
 NODE_ENV=production
 PYXCLOUD_MCP_HTTP_PORT=8787
-PYXCLOUD_MCP_PUBLIC_URL=https://mcp.passo.build
-PYXCLOUD_MCP_AUTH_ISSUER_URL=https://beta-auth.pyxcloud.io/realms/passobuild
-PYXCLOUD_MCP_AUTH_AUDIENCE=https://mcp.passo.build/mcp,passobuild-mcp
+PYXCLOUD_MCP_PUBLIC_URL=https://staging-mcp.passo.build
+PYXCLOUD_MCP_AUTH_ISSUER_URL=https://staging-auth.pyxcloud.io/realms/passobuild
+PYXCLOUD_MCP_AUTH_AUDIENCE=https://staging-mcp.passo.build/mcp,passobuild-mcp
 PYXCLOUD_MCP_SERVICE_COMMAND_B64=Li9wYXNzb2J1aWxkLW1jcA==
 # DURABLE: mesh_app on pyx-main-db (beta-DO-pyx-main-db-url), NOT doadmin/defaultdb.
 BOARD_DATABASE_URL=%[4]s
@@ -529,6 +572,8 @@ User=passobuild-mcp
 Group=passobuild-mcp
 EnvironmentFile=/etc/passobuild-mcp.env
 WorkingDirectory=/opt/passobuild-mcp
+# Re-fetch the latest artifact before every start (runs as root via '+'), so reboot/self-heal = deploy.
+ExecStartPre=+/usr/local/bin/passobuild-mcp-fetch
 ExecStart=/usr/local/bin/passobuild-mcp-start
 Restart=always
 RestartSec=5
@@ -557,6 +602,8 @@ func renderMCPUserData(s DOBaselineSecrets, opts DOBaselineOptions) string {
 		doBaselineSpacesBucket,
 		s.privateURL(opts.PrivateDBHost),
 		s.EmbedTokenSecret,
+		s.DigitalOceanToken,
+		s.McpReservedIP,
 	)
 }
 
@@ -600,7 +647,7 @@ func edgeTerminatorFor(svcName string) (string, error) {
 // doBaselineBackendSpec is the deterministic backend bootstrap spec (all-default
 // variable names) so the DURABLE render is byte-stable and self-documenting.
 func doBaselineBackendSpec() BackendBootstrapSpec {
-	return (BackendBootstrapSpec{Environment: "beta"}).withDefaults()
+	return (BackendBootstrapSpec{Environment: doBaselineEnv}).withDefaults()
 }
 
 // renderFullServiceBootstrap renders the COMPLETE DigitalOcean bootstrap for one
@@ -613,10 +660,10 @@ func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts 
 	var err error
 	switch svcName {
 	case "mcp":
-		ud, err = RenderMcpDOUserData(McpDOBootstrapSpec{Environment: "beta"})
+		ud, err = RenderMcpDOUserData(McpDOBootstrapSpec{Environment: doBaselineEnv})
 	case "sso":
 		ud, err = RenderSSODOBootstrapUserData(SSODOBootstrapSpec{
-			Environment:           "beta",
+			Environment:           doBaselineEnv,
 			DomainName:            "pyxcloud.io",
 			KCDBURL:               secrets.SSOKCDBURL,
 			KCDBUsername:          secrets.SSOKCDBUsername,
@@ -633,11 +680,11 @@ func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts 
 	case "obs":
 		ud, err = RenderOBSDOBootstrapUserData(OBSDOBootstrapSpec{})
 	case "sast":
-		ud, err = RenderSastDOBootstrapUserData(SastDOBootstrapSpec{Environment: "beta"})
+		ud, err = RenderSastDOBootstrapUserData(SastDOBootstrapSpec{Environment: doBaselineEnv})
 	case "backend":
 		ud, err = RenderBackendDOUserData(doBaselineBackendSpec())
 	case "vpn":
-		ud, err = RenderVPNBootstrapUserData(VPNBootstrapSpec{Environment: "beta"})
+		ud, err = RenderVPNBootstrapUserData(VPNBootstrapSpec{Environment: doBaselineEnv})
 	default:
 		return "", fmt.Errorf("do-baseline: no full bootstrap for service %q", svcName)
 	}
@@ -676,11 +723,11 @@ func DOBaselineVariableNames() []string {
 			}
 		}
 	}
-	mp, ms := (McpDOBootstrapSpec{Environment: "beta"}).McpDOBootstrapVariableNames()
+	mp, ms := (McpDOBootstrapSpec{Environment: doBaselineEnv}).McpDOBootstrapVariableNames()
 	op, os_ := (OBSDOBootstrapSpec{}).OBSDOBootstrapVariableNames()
-	sp, ss := (SastDOBootstrapSpec{Environment: "beta"}).SastDOBootstrapVariableNames()
+	sp, ss := (SastDOBootstrapSpec{Environment: doBaselineEnv}).SastDOBootstrapVariableNames()
 	bp, bs := doBaselineBackendSpec().BackendBootstrapVariableNames()
-	vp, vs := (VPNBootstrapSpec{Environment: "beta"}).VPNBootstrapVariableNames()
+	vp, vs := (VPNBootstrapSpec{Environment: doBaselineEnv}).VPNBootstrapVariableNames()
 	add(mp, ms, op, os_, sp, ss, bp, bs, vp, vs)
 	return out
 }

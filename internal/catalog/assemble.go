@@ -38,16 +38,16 @@ type AssembleVM struct {
 // bootstrap (user_data) + instance-profile. Renders to a real ASG (launch template
 // + autoscaling group), not a single instance.
 type AssembleScaleGroup struct {
-	Architecture    string
-	CPU             string
-	RAM             string
-	OS              string
-	OSVersion       string
-	Min             int
-	Max             int
-	Desired         int
-	Health          string // ec2 | elb
-	UserData        string
+	Architecture string
+	CPU          string
+	RAM          string
+	OS           string
+	OSVersion    string
+	Min          int
+	Max          int
+	Desired      int
+	Health       string // ec2 | elb
+	UserData     string
 	// UserDataByProvider carries per-provider bootstrap overrides keyed by the
 	// provider-facing name (aws | gcp | digitalocean | …). A matching entry WINS
 	// over UserData when the environment renders for that provider; a missing entry
@@ -60,6 +60,15 @@ type AssembleScaleGroup struct {
 	// is placed on DigitalOcean (mapped to a digitalocean_kubernetes_cluster
 	// node_pool). Empty -> "latest". Other providers ignore it.
 	KubernetesVersion string
+	// Tag is an extra provider tag stamped on every instance in the group, used by
+	// sibling components to select the fleet (a DO firewall / load-balancer targets
+	// droplets by tag; an AWS ASG propagates it at launch). Empty -> only the
+	// default "pyxcloud" tag is applied.
+	Tag string
+	// SSHKeys are provider SSH-key IDs/fingerprints attached to every instance
+	// (DO's droplet_template.ssh_keys is a REQUIRED argument). Empty renders an
+	// empty list — the droplets are then reachable only via user_data/console/VPN.
+	SSHKeys []string
 }
 
 // AssembleAttachToExistingALB is the config for an `attach-to-existing-alb` component.
@@ -100,6 +109,7 @@ type AssembleComponent struct {
 	Queue                *AssembleQueue
 	Stream               *AssembleStream
 	Serverless           *AssembleServerless
+	WebService           *AssembleWebService
 	KMS                  *AssembleKMS
 	Cache                *AssembleCache
 	CDN                  *AssembleCDN
@@ -337,6 +347,12 @@ type AssembleLB struct {
 	Stickiness      bool
 	TargetKind      string // scale-group | vm (default vm)
 	TargetName      string // the VM/scale-group component to front
+	// TargetTag selects the fronted fleet by provider tag (a DO load-balancer's
+	// droplet_tag). Empty -> the default "pyxcloud" tag (fronts every instance).
+	TargetTag string
+	// StableIP degenerates a single-VM DO load-balancer to a digitalocean_reserved_ip
+	// (cost-correct stable-ingress descent). See LoadBalancerSpec.StableIP.
+	StableIP bool
 }
 
 // AssembleK8s is the config for a `managed-kubernetes` / `container-service` component (network-scoped).
@@ -439,6 +455,24 @@ type AssembleServerless struct {
 	MemoryMB       int
 	TimeoutSeconds int
 	SourceArtifact string
+	Env            map[string]string
+}
+
+// AssembleWebService is the catalog-native config for an always-on `web-service`
+// (DO App Platform service) — an HTTP/SSE server, distinct from a serverless
+// function. See WebServiceSpec.
+type AssembleWebService struct {
+	SourceKind        string
+	SourceDir         string
+	ImageRegistryType string
+	ImageRepository   string
+	ImageTag          string
+	HTTPPort          int
+	InstanceSize      string
+	InstanceCount     int
+	HealthCheckPath   string
+	Env               map[string]string
+	CustomDomain      string
 }
 
 // AssembleInput is the catalog-native environment description (no client import,
@@ -731,8 +765,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				Min: sg.Min, Max: sg.Max, Desired: sg.Desired, Health: sg.Health,
 				UserData: sg.UserData, UserDataByProvider: sg.UserDataByProvider,
 				InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
-				KubernetesVersion: sg.KubernetesVersion,
-				Network:           netName, SecurityGroup: vmSG, Subnets: subnetNames,
+				KubernetesVersion: sg.KubernetesVersion, Tag: sg.Tag, SSHKeys: sg.SSHKeys,
+				Network: netName, SecurityGroup: vmSG, Subnets: subnetNames,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
@@ -1084,6 +1118,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				slSpec.MemoryMB = c.Serverless.MemoryMB
 				slSpec.TimeoutSeconds = c.Serverless.TimeoutSeconds
 				slSpec.SourceArtifact = c.Serverless.SourceArtifact
+				slSpec.Env = c.Serverless.Env
 			}
 			slPlan, err := TranslateServerless(ctx, cat, slSpec)
 			if err != nil {
@@ -1094,6 +1129,30 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, slHCL)
+		case "web-service", "app-service", "app-platform-service":
+			wsSpec := WebServiceSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.WebService != nil {
+				wsSpec.SourceKind = c.WebService.SourceKind
+				wsSpec.SourceDir = c.WebService.SourceDir
+				wsSpec.ImageRegistryType = c.WebService.ImageRegistryType
+				wsSpec.ImageRepository = c.WebService.ImageRepository
+				wsSpec.ImageTag = c.WebService.ImageTag
+				wsSpec.HTTPPort = c.WebService.HTTPPort
+				wsSpec.InstanceSize = c.WebService.InstanceSize
+				wsSpec.InstanceCount = c.WebService.InstanceCount
+				wsSpec.HealthCheckPath = c.WebService.HealthCheckPath
+				wsSpec.Env = c.WebService.Env
+				wsSpec.CustomDomain = c.WebService.CustomDomain
+			}
+			wsPlan, err := TranslateWebService(ctx, cat, wsSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			wsHCL, err := RenderWebServiceHCL(wsPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, wsHCL)
 		case "kms", "encryption-key":
 			// B4 auto-alias (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): on DigitalOcean a raw
 			// kms/encryption-key component routes to the Vault-HA operator-pattern (Vault
@@ -1241,6 +1300,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 					lbSpec.TargetKind = c.LB.TargetKind
 				}
 				lbSpec.TargetName = c.LB.TargetName
+				lbSpec.TargetTag = c.LB.TargetTag
+				lbSpec.StableIP = c.LB.StableIP
 			}
 			if len(lbSpec.Listeners) == 0 {
 				lbSpec.Listeners = []LBListenerSpec{{Port: 80, Protocol: "http"}}

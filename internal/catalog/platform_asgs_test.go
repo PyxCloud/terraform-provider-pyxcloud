@@ -75,23 +75,27 @@ func TestPlatformASGsRoundTripDO(t *testing.T) {
 	if !strings.Contains(all, `source = "digitalocean/digitalocean"`) {
 		t.Errorf("missing digitalocean provider source pin:\n%s", all)
 	}
-	// Each of the 6 services -> a droplet_autoscale pool carrying its per-service tag.
+	// Each of the 6 services -> a native droplet-autoscale group (self-healing
+	// min_instances=1 floor), NOT a DOKS cluster — the droplet+systemd runtime the
+	// live estate uses, carrying its auto-derived per-service tag.
 	for _, svc := range []string{"sso", "vpn", "obs", "sast", "backend", "mcp"} {
 		if !strings.Contains(all, `resource "digitalocean_droplet_autoscale" "`+svc+`"`) {
-			t.Errorf("platform service %q did not emit a droplet_autoscale pool:\n%s", svc, all)
+			t.Errorf("platform service %q did not emit a droplet-autoscale group:\n%s", svc, all)
 		}
-		if !strings.Contains(all, `tags = ["pyx-`+svc+`"]`) {
+		if !strings.Contains(all, `tags               = ["pyxcloud", "pyx-`+svc+`"]`) {
 			t.Errorf("platform service %q pool missing per-service tag pyx-%s:\n%s", svc, svc, all)
 		}
 	}
 	for _, want := range []string{
-		`min_instances = 1`, // self-heal floor on every pool
-		`max_instances = 1`, // scale-group of 1 (fixed pool)
+		`min_instances          = 1`, // self-heal floor on every group
+		`max_instances          = 1`, // scale-group of 1 (fixed pool)
+		`target_cpu_utilization = 0.6`,
+		`droplet_template {`,
 		`with_droplet_agent = true`,
-		`ssh_keys = var.do_ssh_keys`,
+		`ssh_keys           = []`, // no ssh keys threaded here -> empty (required) list
 	} {
 		if !strings.Contains(all, want) {
-			t.Errorf("platform droplet_autoscale HCL missing %q\n%s", want, all)
+			t.Errorf("platform droplet-autoscale HCL missing %q\n%s", want, all)
 		}
 	}
 	// Every pool (fixed included) must carry target_cpu_utilization: DO's autoscale
@@ -99,13 +103,11 @@ func TestPlatformASGsRoundTripDO(t *testing.T) {
 	if n := strings.Count(all, "target_cpu_utilization = 0.6"); n != 6 {
 		t.Errorf("want 6 target_cpu_utilization (one per platform pool; DO API requires it even for fixed pools), got %d:\n%s", n, all)
 	}
-	// Scale-groups are droplet pools, not DOKS clusters.
-	if strings.Contains(all, "digitalocean_kubernetes_cluster") || strings.Contains(all, "node_pool") {
-		t.Errorf("DO platform scale-groups must not emit DOKS resources:\n%s", all)
-	}
-	// DO has no AWS ASG: no AWS launch-template / autoscaling-group must leak.
-	if strings.Contains(all, "aws_autoscaling_group") || strings.Contains(all, "aws_launch_template") {
-		t.Errorf("DO platform ASGs must not emit AWS ASG resources:\n%s", all)
+	// Must NOT leak DOKS or AWS ASG resources.
+	for _, bad := range []string{"digitalocean_kubernetes_cluster", "node_pool {", "aws_autoscaling_group", "aws_launch_template"} {
+		if strings.Contains(all, bad) {
+			t.Errorf("DO platform ASGs must not emit %q:\n%s", bad, all)
+		}
 	}
 }
 

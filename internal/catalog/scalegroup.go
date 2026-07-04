@@ -72,6 +72,14 @@ type ScaleGroupSpec struct {
 	Network       string   // canonical network/place name (the VPC)
 	Subnets       []string // canonical subnet names to spread across (multi-AZ)
 	SecurityGroup string   // canonical security-group name to attach
+
+	// Tag is an extra provider tag stamped on every instance in the group so a
+	// sibling firewall/load-balancer can select the fleet by tag (e.g. a DO
+	// load-balancer's droplet_tag). Empty -> only the default "pyxcloud" tag.
+	Tag string
+	// SSHKeys are provider SSH-key IDs/fingerprints for the instances (DO's
+	// droplet_template.ssh_keys is REQUIRED). Empty -> an empty list.
+	SSHKeys []string
 }
 
 // ScaleGroupPlan is the deterministic, catalog-resolved concrete translation of
@@ -99,16 +107,18 @@ type ScaleGroupPlan struct {
 	UserData               string `json:"user_data"`        // cloud-init/bootstrap (provider-neutral plaintext)
 	InstanceProfile        string `json:"instance_profile"` // IAM instance-profile/service-account name (optional)
 	InstanceProfileManaged bool   `json:"instance_profile_managed"`
-	RootDiskGB             int    `json:"root_disk_gb"`     // root volume size GiB (0 = provider default)
+	RootDiskGB             int    `json:"root_disk_gb"` // root volume size GiB (0 = provider default)
 
 	// Zones are the concrete AZs/zones the group spreads across (multi-AZ),
 	// derived from the region catalog. Empty for DigitalOcean.
 	Zones []string `json:"zones"`
 
-	NetworkName   string   `json:"network_name"`   // VPC/network it lives in
-	SubnetNames   []string `json:"subnet_names"`   // subnets the group spreads across
-	SecurityGroup string   `json:"security_group"` // SG/firewall to attach
-	ResourceType  string   `json:"resource_type"`  // top provider resource, e.g. aws_autoscaling_group
+	NetworkName   string   `json:"network_name"`       // VPC/network it lives in
+	SubnetNames   []string `json:"subnet_names"`       // subnets the group spreads across
+	SecurityGroup string   `json:"security_group"`     // SG/firewall to attach
+	Tag           string   `json:"tag,omitempty"`      // extra fleet-selection tag (DO droplet_tag / AWS propagated tag)
+	SSHKeys       []string `json:"ssh_keys,omitempty"` // provider SSH-key IDs/fingerprints (DO droplet_template.ssh_keys, required)
+	ResourceType  string   `json:"resource_type"`      // top provider resource, e.g. aws_autoscaling_group
 
 	// KubernetesVersion is a legacy, now-IGNORED field. DigitalOcean scale-groups
 	// render as digitalocean_droplet_autoscale (a VM pool), not a DOKS cluster, so
@@ -264,30 +274,32 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 	zones := deriveZones(provider, row.CSPRegion, nSubnets)
 
 	plan := ScaleGroupPlan{
-		Provider:      provider,
-		CSP:           row.CSP,
-		RegionName:    row.RegionName,
-		CSPRegion:     row.CSPRegion,
-		GroupName:     name,
-		InstanceType:  sku.Name,
-		Architecture:  arch,
-		CPU:           sku.CPU,
-		RAM:           sku.RAM,
-		OSName:        osName,
-		OSVersion:     osVersion,
-		Image:         img.Image,
-		Min:             min,
-		Max:             max,
-		Desired:         desired,
-		Health:          health,
-		UserData:        userData,
-		InstanceProfile: spec.InstanceProfile,
-		RootDiskGB:      spec.RootDiskGB,
-		Zones:           zones,
+		Provider:          provider,
+		CSP:               row.CSP,
+		RegionName:        row.RegionName,
+		CSPRegion:         row.CSPRegion,
+		GroupName:         name,
+		InstanceType:      sku.Name,
+		Architecture:      arch,
+		CPU:               sku.CPU,
+		RAM:               sku.RAM,
+		OSName:            osName,
+		OSVersion:         osVersion,
+		Image:             img.Image,
+		Min:               min,
+		Max:               max,
+		Desired:           desired,
+		Health:            health,
+		UserData:          userData,
+		InstanceProfile:   spec.InstanceProfile,
+		RootDiskGB:        spec.RootDiskGB,
+		Zones:             zones,
 		NetworkName:       spec.Network,
 		SubnetNames:       subnets,
 		SecurityGroup:     spec.SecurityGroup,
 		KubernetesVersion: strings.TrimSpace(spec.KubernetesVersion),
+		Tag:               strings.TrimSpace(spec.Tag),
+		SSHKeys:           spec.SSHKeys,
 	}
 
 	switch provider {
@@ -295,7 +307,9 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		plan.ResourceType = "aws_autoscaling_group"
 	case ProviderDigitalOcean:
 		// DO's native VM-autoscaling primitive: a droplet_autoscale pool (an
-		// ASG-of-droplets lift-and-shift of the AWS ASG, NOT a DOKS cluster).
+		// ASG-of-droplets lift-and-shift of the AWS ASG, NOT a DOKS cluster). It
+		// carries per-instance user_data (unlike a DOKS node pool), which the
+		// durable-bootstrap services depend on. See renderScaleGroupDO.
 		plan.ResourceType = "digitalocean_droplet_autoscale"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_region_instance_group_manager"

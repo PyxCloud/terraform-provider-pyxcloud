@@ -99,9 +99,9 @@ func TestDOBaselineEdgeTLSOrigins(t *testing.T) {
 		t.Errorf("expected 3 :443 terminators (sso/backend/mcp), got %d", n)
 	}
 	wantPairs := []struct{ host, port string }{
-		{"beta-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		{"beta-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		{"mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
+		{"staging-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
+		{"staging-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
+		{"staging-mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
 	}
 	for _, p := range wantPairs {
 		if !strings.Contains(on, "server_name "+p.host+";") {
@@ -129,11 +129,11 @@ func TestEdgeTLSTerminatorValidation(t *testing.T) {
 	if _, err := RenderEdgeTLSTerminatorSnippet(EdgeTLSTerminator{Hostname: "x", UpstreamPort: 0}); err == nil {
 		t.Errorf("expected error for invalid port")
 	}
-	s, err := RenderEdgeTLSTerminatorSnippet(EdgeTLSTerminator{Hostname: "beta-auth.pyxcloud.io", UpstreamPort: 8080})
+	s, err := RenderEdgeTLSTerminatorSnippet(EdgeTLSTerminator{Hostname: "staging-auth.pyxcloud.io", UpstreamPort: 8080})
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	for _, want := range []string{"listen 443 ssl", "server_name beta-auth.pyxcloud.io;", "proxy_pass http://127.0.0.1:8080", "nginx -t"} {
+	for _, want := range []string{"listen 443 ssl", "server_name staging-auth.pyxcloud.io;", "proxy_pass http://127.0.0.1:8080", "nginx -t"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("snippet missing %q", want)
 		}
@@ -201,7 +201,7 @@ func TestDOBaselineFullServiceBootstraps(t *testing.T) {
 
 	// 1. Every service carries a non-empty full bootstrap with its service marker.
 	markers := map[string][]string{
-		"sso":     {"keycloak", "KC_HOSTNAME=beta-auth.pyxcloud.io", "KC_PROXY_HEADERS=xforwarded"},
+		"sso":     {"keycloak", "KC_HOSTNAME=staging-auth.pyxcloud.io", "KC_PROXY_HEADERS=xforwarded"},
 		"backend": {"quarkus", "pyxcloud -Xmx1g"},
 		"mcp":     {"passobuild-mcp", "PYXCLOUD_MCP_HTTP_PORT=8787"},
 		"obs":     {"observability"},
@@ -224,9 +224,9 @@ func TestDOBaselineFullServiceBootstraps(t *testing.T) {
 	//    the correct upstream port. sast/vpn must NOT. obs has its own :443 (checked
 	//    separately) but must NOT carry an sso/backend/mcp public server_name.
 	edge := map[string]struct{ host, upstream string }{
-		"sso":     {"beta-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		"backend": {"beta-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		"mcp":     {"mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
+		"sso":     {"staging-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
+		"backend": {"staging-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
+		"mcp":     {"staging-mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
 	}
 	for name, e := range edge {
 		ud := svc[name]

@@ -204,10 +204,18 @@ on the previous (`pd-TF-*` deps).
   proven MCP/SSO ASG.)
 
 ### 5.5 `pd-TF-LB` — load‑balancer
-- **Abstract:** `load-balancer { listeners, target = <place/asg>, stickiness }`.
+- **Abstract:** `load-balancer { listeners, target = <place/asg>, stickiness, stable_ip }`.
 - **AWS:** `aws_lb` (ALB) + `aws_lb_target_group` + listener. **GCP:** forwarding rule + backend
   service + health check. **DO:** `digitalocean_loadbalancer`.
 - **Catalog:** `load_balancer(_price)`.
+- **Stable‑ingress degeneration (`stable_ip`, DigitalOcean).** When the intent is a fixed public
+  address for a *single* instance rather than balancing a fleet, `stable_ip = true` descends the DO
+  load‑balancer to a **free `digitalocean_reserved_ip`** bound to the target droplet instead of a
+  paid `digitalocean_loadbalancer` (~$12/mo each). Requires `target_kind = vm` + `target_name`
+  (a reserved IP binds one droplet and cannot front a tagged fleet); DigitalOcean‑only — a non‑DO
+  `stable_ip` is a hard plan‑time error (aws/gcp use a `reserved-ip` attached to the instance). This
+  is the cost‑correct descent for the estate's single‑droplet pools fronted only for a stable
+  Cloudflare origin (and, with reserved IPs, re‑roll / self‑heal no longer breaks public DNS).
 
 ### 5.6 `pd-TF-MDB` — managed‑database
 - **Abstract:** `managed-database { engine, version, size, storage, ha }`.
@@ -228,6 +236,26 @@ Same pattern for: `cache` (ElastiCache / Memorystore / DO managed Redis), `manag
 (Route53 / Cloud DNS / DO domains), `cdn-service` (CloudFront / Cloud CDN), `waf-service`,
 `managed-kubernetes` (EKS / GKE / DOKS), `secrets-manager` (Secrets Manager / Secret Manager),
 and finally `serverless-function` (Lambda / Cloud Functions / DO Functions). No exotic products.
+`serverless-function` also carries a plain (non‑secret) `env` map, rendered on DO App Platform
+Functions (so a request‑scoped function — e.g. a board CRUD endpoint — carries its `DATABASE_URL` /
+issuer on‑contract, instead of a hand‑authored `project.yml`).
+
+### 5.9a `pd-TF-WEB-SERVICE` — always‑on web service (PaaS)
+- **Abstract:** `web-service { source (git|image), http_port, instance_size, instance_count>=1,
+  health_check_path, env, custom_domain }` — a **persistent, always‑on** HTTP/SSE server, distinct
+  from the request‑scoped, cold‑starting `serverless-function`. This is the correct home for a
+  session‑holding server: the MCP streamable‑HTTP/SSE server and an OpenAI‑compatible completions
+  proxy CANNOT run as Functions (DO Functions are request‑scoped and time‑bounded — the live
+  board/mcp functions carry a 3s timeout, fatal to an SSE session).
+- **DigitalOcean:** `digitalocean_app` with a `service {}` component (App Platform) + optional
+  `domain {}`. **AWS:** `aws_apprunner_service` / **GCP:** `google_cloud_run_v2_service` are the clean
+  equivalents but are **not wired in this wave** — a non‑DO `web-service` surfaces a clean
+  `ErrComponentUnsupported` (never an invented/partial resource, §1/§4).
+- **Deliberately NOT `container-service`** — that token stays an alias for `managed-kubernetes`
+  (DOKS), which is load‑bearing for the operator pattern (§4.1). `web-service` is a fresh canonical
+  type (aliases `app-service`, `app-platform-service`).
+- **Catalog:** `region` only (App Platform sizes are flat named slugs, no SKU/price table); pure
+  provider‑side render, no BE/`/api/translate` dependency.
 
 ### 5.9 `pd-DEP-PYXLAMBDA-CONTROLPLANE` — pyx-lambda DevOps control-plane (dogfood)
 - **Abstract:** `pipeline-control-plane { pipeline_name, runner_*, fargate_*, codebuild_*, github_oidc, github_owner_repo }` — the runtime that EXECUTES a [DevOps Pipeline IR](https://github.com/PyxCloud/pyx-pipeline-ir) pipeline on the "super-custom AWS Lambda" backend (the fully-custom executor). The pyx-pipeline-ir compiler emits the Step Functions ASL for a pipeline (e.g. `aws/ci.json`); **this component provisions the AWS control-plane that ASL runs on** — exactly the split that ASL's header comment calls out ("TF provisioning of the Step Functions state machine, Lambda, Fargate, and CodeBuild resources is handled by terraform-provider-pyxcloud, not by this compiler").

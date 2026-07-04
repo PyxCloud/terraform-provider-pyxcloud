@@ -52,6 +52,12 @@ type ServerlessSpec struct {
 	// SourceArtifact is the deployment package reference (a zip path for AWS, a
 	// bucket object for GCP, a source dir/repo for DO). Provider-neutral string.
 	SourceArtifact string
+
+	// Env is the function's plain (non-secret) environment. Deterministic order at
+	// render. Rendered on DO App Platform Functions (the migration target); the
+	// aws/gcp env passthrough is a follow-up (parity with MemoryMB/TimeoutSeconds,
+	// which DO likewise does not yet emit).
+	Env map[string]string
 }
 
 // ServerlessPlan is the deterministic, catalog-resolved concrete translation.
@@ -68,6 +74,8 @@ type ServerlessPlan struct {
 	MemoryMB        int    `json:"memory_mb"`
 	TimeoutSeconds  int    `json:"timeout_seconds"`
 	SourceArtifact  string `json:"source_artifact"`
+
+	Env map[string]string `json:"env,omitempty"`
 
 	ResourceType string `json:"resource_type"`
 }
@@ -143,6 +151,7 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 		MemoryMB:        mem,
 		TimeoutSeconds:  timeout,
 		SourceArtifact:  strings.TrimSpace(spec.SourceArtifact),
+		Env:             spec.Env,
 	}
 	switch provider {
 	case ProviderAWS:

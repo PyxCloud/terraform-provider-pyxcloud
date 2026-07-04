@@ -61,6 +61,7 @@ type compareModel struct {
 	PyxQueue                        []componentModel `tfsdk:"pyx_queue"`
 	PyxStream                       []componentModel `tfsdk:"pyx_stream"`
 	PyxServerlessFunction           []componentModel `tfsdk:"pyx_serverless_function"`
+	PyxWebService                   []componentModel `tfsdk:"pyx_web_service"`
 	PyxKMS                          []componentModel `tfsdk:"pyx_kms"`
 	PyxCDN                          []componentModel `tfsdk:"pyx_cdn"`
 	PyxWAF                          []componentModel `tfsdk:"pyx_waf"`
@@ -106,6 +107,7 @@ func (d *compareDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 			"pyx_queue":                           pyxCompareComponentBlock("PyxCloud queue component."),
 			"pyx_stream":                          pyxCompareComponentBlock("PyxCloud stream component."),
 			"pyx_serverless_function":             pyxCompareComponentBlock("PyxCloud serverless function component."),
+			"pyx_web_service":                     pyxCompareComponentBlock("PyxCloud always-on web service (DO App Platform service)."),
 			"pyx_kms":                             pyxCompareComponentBlock("PyxCloud KMS/encryption-key component."),
 			"pyx_cdn":                             pyxCompareComponentBlock("PyxCloud CDN component."),
 			"pyx_waf":                             pyxCompareComponentBlock("PyxCloud WAF component."),
@@ -264,6 +266,7 @@ func compareComponentsFromModel(m compareModel) []client.Component {
 	appendComponents("managed-queue", m.PyxQueue)
 	appendComponents("event-streaming", m.PyxStream)
 	appendComponents("serverless-function", m.PyxServerlessFunction)
+	appendComponents("web-service", m.PyxWebService)
 	appendComponents("kms", m.PyxKMS)
 	appendComponents("cdn", m.PyxCDN)
 	appendComponents("waf", m.PyxWAF)
