@@ -122,6 +122,38 @@ func TestAssembleHCLMessagingAndServerless(t *testing.T) {
 	}
 }
 
+// TestAssembleHCLTwoServerlessDODistinctGitVars guards against a silent variable
+// collision: two DO Functions in one environment must each reference their own
+// git-source variables (var.<name>_repo_url / var.<name>_branch), never a shared
+// generic var.function_repo_url — terraform validate would not catch the overlap.
+func TestAssembleHCLTwoServerlessDODistinctGitVars(t *testing.T) {
+	cat, _ := NewEmbedded()
+	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+		Name: "demo", Provider: "digitalocean", Region: "Frankfurt",
+		Components: []AssembleComponent{
+			{Name: "board-api", Type: "serverless-function", Serverless: &AssembleServerless{Runtime: "go"}},
+			{Name: "webhook-fn", Type: "serverless-function", Serverless: &AssembleServerless{Runtime: "nodejs"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL two DO serverless: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	for _, want := range []string{
+		"var.board-api_repo_url", "var.board-api_branch",
+		"var.webhook-fn_repo_url", "var.webhook-fn_branch",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing per-component git var %q\n---\n%s", want, all)
+		}
+	}
+	for _, collide := range []string{"var.function_repo_url", "var.function_branch"} {
+		if strings.Contains(all, collide) {
+			t.Errorf("generic git var %q would silently collide across functions\n---\n%s", collide, all)
+		}
+	}
+}
+
 func TestAssembleHCLKMS(t *testing.T) {
 	cat, _ := NewEmbedded()
 	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
@@ -182,30 +214,22 @@ func TestAssembleHCLEmailSES(t *testing.T) {
 	}
 }
 
-func TestAssembleHCLMitigationSelfHostsOnVM(t *testing.T) {
+// TestAssembleHCLQueueDORequiresClusterName pins the B1 operator-pattern
+// contract (pd-MIG-B1-QUEUE-STREAM-OPERATORS): managed-queue on DigitalOcean is
+// the RabbitMQ Cluster Operator on an existing DOKS cluster, so assembling
+// without cluster_name must be a hard plan-time error — never a silent fallback
+// (the old droplet self-host mitigation this test used to assert is gone). The
+// happy path with a cluster is covered in messaging_operators_test.go.
+func TestAssembleHCLQueueDORequiresClusterName(t *testing.T) {
 	cat, _ := NewEmbedded()
-	// managed-queue is NOT native on DigitalOcean -> mitigate (self-host RabbitMQ on a droplet).
-	// NOTE: secrets-manager and kms on DO no longer use the VM mitigation — they are
-	// auto-aliased to the Vault-HA operator-pattern (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS).
-	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+	_, err := AssembleHCL(context.Background(), cat, AssembleInput{
 		Name: "demo", Provider: "digitalocean", Region: "Frankfurt",
 		Components: []AssembleComponent{
 			{Name: "jobs", Type: "managed-queue", Queue: &AssembleQueue{}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("AssembleHCL mitigation: %v", err)
-	}
-	all := strings.Join(docs, "\n")
-	if !strings.Contains(all, "digitalocean_droplet") {
-		t.Errorf("mitigation should self-host on a droplet:\n%s", all)
-	}
-	if !strings.Contains(all, "rabbitmq") {
-		t.Errorf("mitigation should run the RabbitMQ container:\n%s", all)
-	}
-	if strings.Contains(all, "aws_sqs_queue") || !strings.Contains(all, "digitalocean_vpc") {
-		// must NOT use the managed service; must have a VPC for the droplet
-		t.Errorf("mitigation env shape wrong:\n%s", all)
+	if err == nil || !strings.Contains(err.Error(), "cluster_name is required") {
+		t.Fatalf("DO queue without a cluster must be a hard error, got %v", err)
 	}
 }
 
