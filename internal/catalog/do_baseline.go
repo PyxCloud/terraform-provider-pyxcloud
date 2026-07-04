@@ -89,10 +89,15 @@ type doEdgeOrigin struct {
 }
 
 func doEdgeOrigins() []doEdgeOrigin {
+	// staging estate canonical hostnames (beta-* is retired). Deleting the beta-*
+	// DNS while these still said beta- is what broke the running staging edge
+	// (auth/api origins + the frontend backend-proxy UPSTREAM_BASE) — keep these
+	// in lockstep with the staging DNS. Prod uses the un-prefixed names via the
+	// native pyxcloud_environment path (pyxcloud-production), not this harness.
 	return []doEdgeOrigin{
-		{Service: "sso", Hostname: "beta-auth.pyxcloud.io", UpstreamPort: 8080},
-		{Service: "backend", Hostname: "beta-api.pyxcloud.io", UpstreamPort: 8080},
-		{Service: "mcp", Hostname: "mcp.passo.build", UpstreamPort: 8787},
+		{Service: "sso", Hostname: "staging-auth.pyxcloud.io", UpstreamPort: 8080},
+		{Service: "backend", Hostname: "staging-api.pyxcloud.io", UpstreamPort: 8080},
+		{Service: "mcp", Hostname: "staging-mcp.passo.build", UpstreamPort: 8787},
 	}
 }
 
@@ -471,9 +476,9 @@ umask 027
 cat > /etc/passobuild-mcp.env <<'ENVEOF'
 NODE_ENV=production
 PYXCLOUD_MCP_HTTP_PORT=8787
-PYXCLOUD_MCP_PUBLIC_URL=https://mcp.passo.build
-PYXCLOUD_MCP_AUTH_ISSUER_URL=https://beta-auth.pyxcloud.io/realms/passobuild
-PYXCLOUD_MCP_AUTH_AUDIENCE=https://mcp.passo.build/mcp,passobuild-mcp
+PYXCLOUD_MCP_PUBLIC_URL=https://staging-mcp.passo.build
+PYXCLOUD_MCP_AUTH_ISSUER_URL=https://staging-auth.pyxcloud.io/realms/passobuild
+PYXCLOUD_MCP_AUTH_AUDIENCE=https://staging-mcp.passo.build/mcp,passobuild-mcp
 PYXCLOUD_MCP_SERVICE_COMMAND_B64=Li9wYXNzb2J1aWxkLW1jcA==
 # DURABLE: mesh_app on pyx-main-db (beta-DO-pyx-main-db-url), NOT doadmin/defaultdb.
 BOARD_DATABASE_URL=%[4]s

@@ -99,9 +99,9 @@ func TestDOBaselineEdgeTLSOrigins(t *testing.T) {
 		t.Errorf("expected 3 :443 terminators (sso/backend/mcp), got %d", n)
 	}
 	wantPairs := []struct{ host, port string }{
-		{"beta-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		{"beta-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		{"mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
+		{"staging-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
+		{"staging-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
+		{"staging-mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
 	}
 	for _, p := range wantPairs {
 		if !strings.Contains(on, "server_name "+p.host+";") {
