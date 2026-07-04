@@ -448,6 +448,95 @@ func TestRenderLoadBalancerDO(t *testing.T) {
 	}
 }
 
+// TestTranslateLoadBalancerDOStableIP asserts the cost-correct DO degeneration:
+// a stable-ingress LB over a single VM resolves to a digitalocean_reserved_ip.
+func TestTranslateLoadBalancerDOStableIP(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateLoadBalancer(context.Background(), MustEmbedded(), LoadBalancerSpec{
+		Name: "sso-lb", Region: "Frankfurt", Provider: "digitalocean",
+		Listeners:  []LBListenerSpec{{Port: 443, Protocol: "https"}},
+		TargetKind: "vm", TargetName: "sso",
+		Network: "production", Subnets: []string{"production-subnet-1"},
+		StableIP: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ResourceType != "digitalocean_reserved_ip" {
+		t.Errorf("resource_type = %q, want digitalocean_reserved_ip", plan.ResourceType)
+	}
+	if !plan.StableIP {
+		t.Error("plan.StableIP = false, want true")
+	}
+}
+
+// TestLoadBalancerStableIPValidation asserts stable_ip is rejected where a reserved
+// IP cannot express the intent: a fleet/scale-group target, or a non-DO provider.
+func TestLoadBalancerStableIPValidation(t *testing.T) {
+	t.Parallel()
+	cat := MustEmbedded()
+	cases := []struct {
+		name string
+		spec LoadBalancerSpec
+	}{
+		{"scale-group target", LoadBalancerSpec{
+			Region: "Frankfurt", Provider: "digitalocean",
+			Listeners:  []LBListenerSpec{{Port: 443, Protocol: "https"}},
+			TargetKind: "scale-group", TargetName: "web", StableIP: true,
+		}},
+		{"missing target name", LoadBalancerSpec{
+			Region: "Frankfurt", Provider: "digitalocean",
+			Listeners:  []LBListenerSpec{{Port: 443, Protocol: "https"}},
+			TargetKind: "vm", StableIP: true,
+		}},
+		{"non-DO provider", LoadBalancerSpec{
+			Region: "Dublin", Provider: "aws",
+			Listeners:  []LBListenerSpec{{Port: 443, Protocol: "https"}},
+			TargetKind: "vm", TargetName: "web", StableIP: true,
+		}},
+	}
+	for _, c := range cases {
+		if _, err := TranslateLoadBalancer(context.Background(), cat, c.spec); err == nil {
+			t.Errorf("%s: expected a hard error, got nil", c.name)
+		}
+	}
+}
+
+// TestRenderLoadBalancerDOStableIP asserts the degenerated render emits a reserved
+// IP bound to the target droplet and NOT a paid load-balancer.
+func TestRenderLoadBalancerDOStableIP(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateLoadBalancer(context.Background(), MustEmbedded(), LoadBalancerSpec{
+		Name: "sso-lb", Region: "Frankfurt", Provider: "digitalocean",
+		Listeners:  []LBListenerSpec{{Port: 443, Protocol: "https"}},
+		TargetKind: "vm", TargetName: "sso",
+		Network: "production", Subnets: []string{"production-subnet-1"},
+		StableIP: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hcl, err := RenderLoadBalancerHCL(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`resource "digitalocean_reserved_ip" "sso-lb"`,
+		`region     = "fra1"`,
+		`droplet_id = digitalocean_droplet.sso-1.id`,
+	} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("stable-ip HCL missing %q:\n%s", want, hcl)
+		}
+	}
+	if strings.Contains(hcl, "digitalocean_loadbalancer") {
+		t.Errorf("stable-ip HCL must not emit a paid load-balancer:\n%s", hcl)
+	}
+	if !IsASCII(hcl) {
+		t.Errorf("stable-ip HCL not ASCII:\n%s", hcl)
+	}
+}
+
 // TestRenderLoadBalancerUnsupportedProvider asserts the renderer rejects an
 // unknown provider (defence in depth for a hand-built plan).
 func TestRenderLoadBalancerUnsupportedProvider(t *testing.T) {

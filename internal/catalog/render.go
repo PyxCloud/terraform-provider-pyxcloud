@@ -764,6 +764,9 @@ func RenderLoadBalancerHCL(plan LoadBalancerPlan) (string, error) {
 	case ProviderGCP:
 		return renderLBGCP(plan), nil
 	case ProviderDigitalOcean:
+		if plan.StableIP {
+			return renderLBDOReservedIP(plan), nil
+		}
 		return renderLBDO(plan), nil
 	case ProviderAzure:
 		return renderLBAzure(plan), nil
@@ -1082,6 +1085,24 @@ func lbDOProto(proto string) string {
 	default:
 		return "http"
 	}
+}
+
+// renderLBDOReservedIP is the cost-correct DO degeneration of a stable-ingress
+// load-balancer (LoadBalancerPlan.StableIP): a single-droplet pool that never
+// balances is fronted by a free digitalocean_reserved_ip bound to the target
+// droplet instead of a paid digitalocean_loadbalancer. The stable public IP is
+// what Cloudflare (or any DNS) points at; TLS terminates on the droplet's own
+// nginx :443, exactly as the estate already serves it. Mirrors renderReservedIPDO.
+func renderLBDOReservedIP(p LoadBalancerPlan) string {
+	label := tfName(p.LBName)
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"digitalocean_reserved_ip\" %q {\n", label)
+	fmt.Fprintf(&b, "  region     = %q\n", p.CSPRegion)
+	// stable_ip mandates a single VM target; a virtual-machine renders its droplet
+	// as "<name>-1" (renderVMDO over VMInstancePlan), so bind that instance.
+	fmt.Fprintf(&b, "  droplet_id = digitalocean_droplet.%s-1.id\n", tfName(p.TargetName))
+	b.WriteString("}\n")
+	return b.String()
 }
 
 func renderLBDO(p LoadBalancerPlan) string {

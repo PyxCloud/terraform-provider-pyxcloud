@@ -886,6 +886,83 @@ func renderServerlessGCP(p ServerlessPlan) string {
 	return b.String()
 }
 
+// RenderWebServiceHCL renders a resolved WebServicePlan into concrete HCL. Only
+// DigitalOcean is wired in this wave (App Platform service); other providers are
+// rejected at translate time (ErrComponentUnsupported), so a plan reaching here
+// with a non-DO provider is a hard render error (defence in depth, no fallback).
+func RenderWebServiceHCL(plan WebServicePlan) (string, error) {
+	switch plan.Provider {
+	case ProviderDigitalOcean:
+		return renderWebServiceDO(plan), nil
+	default:
+		return "", fmt.Errorf(
+			"render: web-service is wired for DigitalOcean App Platform only in this wave "+
+				"(got %q); this is a hard plan-time error, never a silent fallback", plan.Provider)
+	}
+}
+
+// renderWebServiceDO emits a DO App Platform `digitalocean_app` with an always-on
+// `service {}` component (N>=1 instances holding HTTP/SSE sessions) — the correct
+// home for the MCP session server and the inaudito completions proxy, which cannot
+// run as request-scoped Functions. Envs are emitted in sorted order for a stable
+// plan; a custom domain and health check are emitted when set.
+func renderWebServiceDO(p WebServicePlan) string {
+	name := tfName(p.Name)
+	var b strings.Builder
+	fmt.Fprintf(&b, "resource \"digitalocean_app\" %q {\n", name)
+	b.WriteString("  spec {\n")
+	fmt.Fprintf(&b, "    name   = %q\n", name)
+	fmt.Fprintf(&b, "    region = %q\n", p.CSPRegion)
+	b.WriteString("    service {\n")
+	fmt.Fprintf(&b, "      name               = %q\n", name)
+	fmt.Fprintf(&b, "      instance_size_slug = %q\n", p.InstanceSize)
+	fmt.Fprintf(&b, "      instance_count     = %d\n", p.InstanceCount)
+	fmt.Fprintf(&b, "      http_port          = %d\n", p.HTTPPort)
+	if p.SourceKind == webServiceSourceImage {
+		b.WriteString("      image {\n")
+		regType := p.ImageRegistryType
+		if regType == "" {
+			regType = "DOCR"
+		}
+		fmt.Fprintf(&b, "        registry_type = %q\n", regType)
+		fmt.Fprintf(&b, "        repository    = %q\n", p.ImageRepository)
+		if p.ImageTag != "" {
+			fmt.Fprintf(&b, "        tag           = %q\n", p.ImageTag)
+		}
+		b.WriteString("      }\n")
+	} else {
+		src := p.SourceDir
+		if src == "" {
+			src = "/"
+		}
+		fmt.Fprintf(&b, "      source_dir = %q\n", src)
+		b.WriteString("      git {\n")
+		fmt.Fprintf(&b, "        repo_clone_url = var.%s_repo_url\n", name)
+		fmt.Fprintf(&b, "        branch         = var.%s_branch\n", name)
+		b.WriteString("      }\n")
+	}
+	if p.HealthCheckPath != "" {
+		b.WriteString("      health_check {\n")
+		fmt.Fprintf(&b, "        http_path = %q\n", p.HealthCheckPath)
+		b.WriteString("      }\n")
+	}
+	for _, k := range sortedEnvKeys(p.Env) {
+		b.WriteString("      env {\n")
+		fmt.Fprintf(&b, "        key   = %q\n", k)
+		fmt.Fprintf(&b, "        value = %q\n", p.Env[k])
+		b.WriteString("      }\n")
+	}
+	b.WriteString("    }\n")
+	if p.CustomDomain != "" {
+		b.WriteString("    domain {\n")
+		fmt.Fprintf(&b, "      name = %q\n", p.CustomDomain)
+		b.WriteString("    }\n")
+	}
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
 func renderServerlessDO(p ServerlessPlan) string {
 	name := tfName(p.Name)
 	src := p.SourceArtifact
@@ -903,9 +980,15 @@ func renderServerlessDO(p ServerlessPlan) string {
 	fmt.Fprintf(&b, "      name       = %q\n", name)
 	fmt.Fprintf(&b, "      source_dir = %q\n", src)
 	b.WriteString("      git {\n")
-	b.WriteString("        repo_clone_url = var.function_repo_url\n")
-	b.WriteString("        branch         = var.function_branch\n")
+	fmt.Fprintf(&b, "        repo_clone_url = var.%s_repo_url\n", name)
+	fmt.Fprintf(&b, "        branch         = var.%s_branch\n", name)
 	b.WriteString("      }\n")
+	for _, k := range sortedEnvKeys(p.Env) {
+		b.WriteString("      env {\n")
+		fmt.Fprintf(&b, "        key   = %q\n", k)
+		fmt.Fprintf(&b, "        value = %q\n", p.Env[k])
+		b.WriteString("      }\n")
+	}
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
 	b.WriteString("}\n")

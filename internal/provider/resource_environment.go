@@ -63,6 +63,7 @@ type environmentModel struct {
 	PyxQueue                        []envComponentModel    `tfsdk:"pyx_queue"`
 	PyxStream                       []envComponentModel    `tfsdk:"pyx_stream"`
 	PyxServerlessFunction           []envComponentModel    `tfsdk:"pyx_serverless_function"`
+	PyxWebService                   []envComponentModel    `tfsdk:"pyx_web_service"`
 	PyxKMS                          []envComponentModel    `tfsdk:"pyx_kms"`
 	PyxCDN                          []envComponentModel    `tfsdk:"pyx_cdn"`
 	PyxWAF                          []envComponentModel    `tfsdk:"pyx_waf"`
@@ -174,6 +175,7 @@ type envComponentModel struct {
 	TargetKind               types.String          `tfsdk:"target_kind"`
 	TargetName               types.String          `tfsdk:"target_name"`
 	TargetTag                types.String          `tfsdk:"target_tag"`
+	StableIP                 types.Bool            `tfsdk:"stable_ip"`
 	Domain                   types.String          `tfsdk:"domain"`
 	SizeGB                   types.Int64           `tfsdk:"size_gb"`
 	VolumeType               types.String          `tfsdk:"volume_type"`
@@ -190,6 +192,15 @@ type envComponentModel struct {
 	BreakGlassCIDRs          []types.String        `tfsdk:"break_glass_cidrs"`
 	AllowlistTable           types.String          `tfsdk:"allowlist_table"`
 	PITR                     types.Bool            `tfsdk:"point_in_time_recovery"`
+	SourceKind               types.String          `tfsdk:"source_kind"`
+	SourceDir                types.String          `tfsdk:"source_dir"`
+	ImageRegistryType        types.String          `tfsdk:"image_registry_type"`
+	ImageRepository          types.String          `tfsdk:"image_repository"`
+	ImageTag                 types.String          `tfsdk:"image_tag"`
+	HTTPPort                 types.Int64           `tfsdk:"http_port"`
+	InstanceSize             types.String          `tfsdk:"instance_size"`
+	InstanceCount            types.Int64           `tfsdk:"instance_count"`
+	Env                      types.Map             `tfsdk:"env"`
 }
 
 type envScaleGroupModel struct {
@@ -492,6 +503,7 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"pyx_queue":                           pyxEnvironmentComponentBlock("PyxCloud queue component."),
 			"pyx_stream":                          pyxEnvironmentComponentBlock("PyxCloud stream component."),
 			"pyx_serverless_function":             pyxEnvironmentComponentBlock("PyxCloud serverless function component."),
+			"pyx_web_service":                     pyxEnvironmentComponentBlock("PyxCloud always-on web service (DO App Platform service)."),
 			"pyx_kms":                             pyxEnvironmentComponentBlock("PyxCloud KMS/encryption-key component."),
 			"pyx_cdn":                             pyxEnvironmentComponentBlock("PyxCloud CDN component."),
 			"pyx_waf":                             pyxEnvironmentComponentBlock("PyxCloud WAF component."),
@@ -599,6 +611,7 @@ func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 		"target_kind":                schema.StringAttribute{Optional: true, MarkdownDescription: "vm | scale-group."},
 		"target_name":                schema.StringAttribute{Optional: true},
 		"target_tag":                 schema.StringAttribute{Optional: true, MarkdownDescription: "Fleet-selection tag the load-balancer fronts (DO droplet_tag, e.g. `pyx-backend`). Empty -> `pyxcloud`."},
+		"stable_ip":                  schema.BoolAttribute{Optional: true, MarkdownDescription: "load-balancer: degenerate to a stable public IP (DO `digitalocean_reserved_ip` on the single VM target) instead of a paid balancer. Requires target_kind=vm + target_name; DigitalOcean-only."},
 		"domain":                     schema.StringAttribute{Optional: true, MarkdownDescription: "Sending domain to verify."},
 		"size_gb":                    schema.Int64Attribute{Optional: true},
 		"volume_type":                schema.StringAttribute{Optional: true},
@@ -615,6 +628,15 @@ func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 		"break_glass_cidrs":          schema.ListAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "vpn-access: optional CIDRs allowed to reach the WireGuard port regardless of JIT (admin lockout safety). Empty = pure JIT (dark at rest)."},
 		"allowlist_table":            schema.StringAttribute{Optional: true, MarkdownDescription: "vpn-access: DynamoDB allowlist table name the SPI uses (defaults to jit-allowlist)."},
 		"point_in_time_recovery":     schema.BoolAttribute{Optional: true, MarkdownDescription: "vpn-access: enable DynamoDB point-in-time recovery on the allowlist table (defaults to true)."},
+		"source_kind":                schema.StringAttribute{Optional: true, MarkdownDescription: "web-service: `git` (default) or `image`."},
+		"source_dir":                 schema.StringAttribute{Optional: true, MarkdownDescription: "web-service (git source): build source dir (defaults to `/`)."},
+		"image_registry_type":        schema.StringAttribute{Optional: true, MarkdownDescription: "web-service (image source): `DOCR` (default) or `DOCKER_HUB`."},
+		"image_repository":           schema.StringAttribute{Optional: true, MarkdownDescription: "web-service (image source): container repository."},
+		"image_tag":                  schema.StringAttribute{Optional: true, MarkdownDescription: "web-service (image source): image tag."},
+		"http_port":                  schema.Int64Attribute{Optional: true, MarkdownDescription: "web-service: container listen port (defaults to 8080)."},
+		"instance_size":              schema.StringAttribute{Optional: true, MarkdownDescription: "web-service: App Platform instance size slug (defaults to basic-xxs)."},
+		"instance_count":             schema.Int64Attribute{Optional: true, MarkdownDescription: "web-service: always-on replica count (defaults to 1, >=1)."},
+		"env":                        schema.MapAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "web-service: plain (non-secret) environment variables."},
 	}
 }
 
@@ -833,7 +855,23 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			comp.Stream = &catalog.AssembleStream{Shards: int(cm.Shards.ValueInt64()), RetentionHours: int(cm.RetentionHours.ValueInt64())}
 		}
 		if typed.canonicalType == "serverless-function" || nonEmptyString(cm.Runtime) || nonEmptyString(cm.Handler) || nonEmptyString(cm.SourceArtifact) {
-			comp.Serverless = &catalog.AssembleServerless{Runtime: cm.Runtime.ValueString(), RuntimeVersion: cm.RuntimeVersion.ValueString(), Handler: cm.Handler.ValueString(), MemoryMB: int(cm.MemoryMB.ValueInt64()), TimeoutSeconds: int(cm.TimeoutSeconds.ValueInt64()), SourceArtifact: cm.SourceArtifact.ValueString()}
+			comp.Serverless = &catalog.AssembleServerless{Runtime: cm.Runtime.ValueString(), RuntimeVersion: cm.RuntimeVersion.ValueString(), Handler: cm.Handler.ValueString(), MemoryMB: int(cm.MemoryMB.ValueInt64()), TimeoutSeconds: int(cm.TimeoutSeconds.ValueInt64()), SourceArtifact: cm.SourceArtifact.ValueString(), Env: envMapFromModel(cm.Env)}
+		}
+		if typed.canonicalType == "web-service" || nonEmptyString(cm.SourceKind) || nonEmptyString(cm.ImageRepository) || nonEmptyString(cm.InstanceSize) || intSet(cm.HTTPPort) || intSet(cm.InstanceCount) {
+			ws := &catalog.AssembleWebService{
+				SourceKind:        cm.SourceKind.ValueString(),
+				SourceDir:         cm.SourceDir.ValueString(),
+				ImageRegistryType: cm.ImageRegistryType.ValueString(),
+				ImageRepository:   cm.ImageRepository.ValueString(),
+				ImageTag:          cm.ImageTag.ValueString(),
+				HTTPPort:          int(cm.HTTPPort.ValueInt64()),
+				InstanceSize:      cm.InstanceSize.ValueString(),
+				InstanceCount:     int(cm.InstanceCount.ValueInt64()),
+				HealthCheckPath:   cm.HealthCheckPath.ValueString(),
+				CustomDomain:      cm.Domain.ValueString(),
+			}
+			ws.Env = envMapFromModel(cm.Env)
+			comp.WebService = ws
 		}
 		if typed.canonicalType == "kms" || intSet(cm.DeletionWindowDays) {
 			comp.KMS = &catalog.AssembleKMS{Description: cm.Description.ValueString(), RotationDays: int(cm.RotationDays.ValueInt64()), DeletionWindowDays: int(cm.DeletionWindowDays.ValueInt64())}
@@ -851,7 +889,7 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 			comp.K8s = &catalog.AssembleK8s{Version: cm.Version.ValueString(), Architecture: cm.Architecture.ValueString(), NodeCPU: int(cm.NodeCPU.ValueInt64()), NodeRAM: int(cm.NodeRAM.ValueInt64()), MinNodes: int(cm.MinNodes.ValueInt64()), MaxNodes: int(cm.MaxNodes.ValueInt64()), DesiredNodes: int(cm.DesiredNodes.ValueInt64())}
 		}
 		if typed.canonicalType == "load-balancer" || len(cm.Listeners) > 0 || nonEmptyString(cm.TargetKind) || nonEmptyString(cm.TargetName) {
-			lb := &catalog.AssembleLB{HealthCheckPath: cm.HealthCheckPath.ValueString(), HealthCheckPort: intFromString(cm.HealthCheckPortString), HealthProtocol: cm.HealthProtocol.ValueString(), Stickiness: cm.Stickiness.ValueBool(), TargetKind: cm.TargetKind.ValueString(), TargetName: cm.TargetName.ValueString(), TargetTag: cm.TargetTag.ValueString()}
+			lb := &catalog.AssembleLB{HealthCheckPath: cm.HealthCheckPath.ValueString(), HealthCheckPort: intFromString(cm.HealthCheckPortString), HealthProtocol: cm.HealthProtocol.ValueString(), Stickiness: cm.Stickiness.ValueBool(), TargetKind: cm.TargetKind.ValueString(), TargetName: cm.TargetName.ValueString(), TargetTag: cm.TargetTag.ValueString(), StableIP: cm.StableIP.ValueBool()}
 			for _, l := range cm.Listeners {
 				lb.Listeners = append(lb.Listeners, catalog.AssembleLBListener{Port: int(l.Port.ValueInt64()), Protocol: l.Protocol.ValueString()})
 			}
@@ -925,6 +963,7 @@ func environmentComponentsFromModel(m environmentModel) []typedEnvComponentModel
 	appendComponents("managed-queue", m.PyxQueue)
 	appendComponents("event-streaming", m.PyxStream)
 	appendComponents("serverless-function", m.PyxServerlessFunction)
+	appendComponents("web-service", m.PyxWebService)
 	appendComponents("kms", m.PyxKMS)
 	appendComponents("cdn", m.PyxCDN)
 	appendComponents("waf", m.PyxWAF)
@@ -965,6 +1004,7 @@ func normalizeEnvironmentComputedValues(m *environmentModel) {
 	normalizeComponentCounts(m.PyxQueue)
 	normalizeComponentCounts(m.PyxStream)
 	normalizeComponentCounts(m.PyxServerlessFunction)
+	normalizeComponentCounts(m.PyxWebService)
 	normalizeComponentCounts(m.PyxKMS)
 	normalizeComponentCounts(m.PyxCDN)
 	normalizeComponentCounts(m.PyxWAF)
@@ -983,6 +1023,22 @@ func intSet(v types.Int64) bool {
 
 func boolSet(v types.Bool) bool {
 	return !v.IsNull() && !v.IsUnknown() && v.ValueBool()
+}
+
+// envMapFromModel converts a tfsdk string map (e.g. a web-service / serverless
+// `env` block) into a plain map[string]string, dropping null/unknown. Returns nil
+// when unset so downstream renders emit nothing.
+func envMapFromModel(m types.Map) map[string]string {
+	if m.IsNull() || m.IsUnknown() || len(m.Elements()) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m.Elements()))
+	for k, v := range m.Elements() {
+		if s, ok := v.(types.String); ok {
+			out[k] = s.ValueString()
+		}
+	}
+	return out
 }
 
 func intFromString(v types.String) int {

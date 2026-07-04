@@ -103,6 +103,7 @@ type AssembleComponent struct {
 	Queue                *AssembleQueue
 	Stream               *AssembleStream
 	Serverless           *AssembleServerless
+	WebService           *AssembleWebService
 	KMS                  *AssembleKMS
 	Cache                *AssembleCache
 	CDN                  *AssembleCDN
@@ -326,6 +327,9 @@ type AssembleLB struct {
 	// TargetTag selects the fronted fleet by provider tag (a DO load-balancer's
 	// droplet_tag). Empty -> the default "pyxcloud" tag (fronts every instance).
 	TargetTag string
+	// StableIP degenerates a single-VM DO load-balancer to a digitalocean_reserved_ip
+	// (cost-correct stable-ingress descent). See LoadBalancerSpec.StableIP.
+	StableIP bool
 }
 
 // AssembleK8s is the config for a `managed-kubernetes` / `container-service` component (network-scoped).
@@ -408,6 +412,24 @@ type AssembleServerless struct {
 	MemoryMB       int
 	TimeoutSeconds int
 	SourceArtifact string
+	Env            map[string]string
+}
+
+// AssembleWebService is the catalog-native config for an always-on `web-service`
+// (DO App Platform service) — an HTTP/SSE server, distinct from a serverless
+// function. See WebServiceSpec.
+type AssembleWebService struct {
+	SourceKind        string
+	SourceDir         string
+	ImageRegistryType string
+	ImageRepository   string
+	ImageTag          string
+	HTTPPort          int
+	InstanceSize      string
+	InstanceCount     int
+	HealthCheckPath   string
+	Env               map[string]string
+	CustomDomain      string
 }
 
 // AssembleInput is the catalog-native environment description (no client import,
@@ -914,6 +936,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				slSpec.MemoryMB = c.Serverless.MemoryMB
 				slSpec.TimeoutSeconds = c.Serverless.TimeoutSeconds
 				slSpec.SourceArtifact = c.Serverless.SourceArtifact
+				slSpec.Env = c.Serverless.Env
 			}
 			slPlan, err := TranslateServerless(ctx, cat, slSpec)
 			if err != nil {
@@ -924,6 +947,30 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, slHCL)
+		case "web-service", "app-service", "app-platform-service":
+			wsSpec := WebServiceSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.WebService != nil {
+				wsSpec.SourceKind = c.WebService.SourceKind
+				wsSpec.SourceDir = c.WebService.SourceDir
+				wsSpec.ImageRegistryType = c.WebService.ImageRegistryType
+				wsSpec.ImageRepository = c.WebService.ImageRepository
+				wsSpec.ImageTag = c.WebService.ImageTag
+				wsSpec.HTTPPort = c.WebService.HTTPPort
+				wsSpec.InstanceSize = c.WebService.InstanceSize
+				wsSpec.InstanceCount = c.WebService.InstanceCount
+				wsSpec.HealthCheckPath = c.WebService.HealthCheckPath
+				wsSpec.Env = c.WebService.Env
+				wsSpec.CustomDomain = c.WebService.CustomDomain
+			}
+			wsPlan, err := TranslateWebService(ctx, cat, wsSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			wsHCL, err := RenderWebServiceHCL(wsPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			docs = append(docs, wsHCL)
 		case "kms", "encryption-key":
 			kmsSpec := KMSSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.KMS != nil {
@@ -1037,6 +1084,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				}
 				lbSpec.TargetName = c.LB.TargetName
 				lbSpec.TargetTag = c.LB.TargetTag
+				lbSpec.StableIP = c.LB.StableIP
 			}
 			if len(lbSpec.Listeners) == 0 {
 				lbSpec.Listeners = []LBListenerSpec{{Port: 80, Protocol: "http"}}

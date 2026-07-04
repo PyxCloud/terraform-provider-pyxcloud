@@ -496,6 +496,28 @@ func TestRenderServerlessPrivateByDefault(t *testing.T) {
 	}
 }
 
+// TestRenderServerlessDOEnv asserts a DO Function renders its env in sorted order
+// (so a board/api function can carry BOARD_DATABASE_URL etc. on-contract).
+func TestRenderServerlessDOEnv(t *testing.T) {
+	t.Parallel()
+	do, err := TranslateServerless(ctx(), MustEmbedded(), ServerlessSpec{
+		Name: "board-api", Region: "Frankfurt", Provider: "digitalocean", Runtime: "go",
+		Env: map[string]string{"BOARD_DATABASE_URL_POOL": "x", "AUTH_ISSUER": "y"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hcl, _ := RenderServerlessHCL(do)
+	for _, want := range []string{`key   = "AUTH_ISSUER"`, `key   = "BOARD_DATABASE_URL_POOL"`} {
+		if !strings.Contains(hcl, want) {
+			t.Errorf("DO function env missing %q:\n%s", want, hcl)
+		}
+	}
+	if strings.Index(hcl, `"AUTH_ISSUER"`) > strings.Index(hcl, `"BOARD_DATABASE_URL_POOL"`) {
+		t.Errorf("env not sorted:\n%s", hcl)
+	}
+}
+
 // ── canonical type aliasing ──────────────────────────────────────────────────
 
 func TestCanonicalMacroTypes(t *testing.T) {
