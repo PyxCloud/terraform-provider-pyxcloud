@@ -38,18 +38,24 @@ type AssembleVM struct {
 // bootstrap (user_data) + instance-profile. Renders to a real ASG (launch template
 // + autoscaling group), not a single instance.
 type AssembleScaleGroup struct {
-	Architecture    string
-	CPU             string
-	RAM             string
-	OS              string
-	OSVersion       string
-	Min             int
-	Max             int
-	Desired         int
-	Health          string // ec2 | elb
-	UserData        string
-	InstanceProfile string
-	RootDiskGB      int
+	Architecture string
+	CPU          string
+	RAM          string
+	OS           string
+	OSVersion    string
+	Min          int
+	Max          int
+	Desired      int
+	Health       string // ec2 | elb
+	UserData     string
+	// UserDataByProvider carries per-provider bootstrap overrides keyed by the
+	// provider-facing name (aws | gcp | digitalocean | …). A matching entry WINS
+	// over UserData when the environment renders for that provider; a missing entry
+	// falls back to UserData. This lets one canonical scale-group carry a
+	// provider-specific bootstrap without forking the topology.
+	UserDataByProvider map[string]string
+	InstanceProfile    string
+	RootDiskGB         int
 	// KubernetesVersion pins the DOKS control-plane version when the scale-group
 	// is placed on DigitalOcean (mapped to a digitalocean_kubernetes_cluster
 	// node_pool). Empty -> "latest". Other providers ignore it.
@@ -124,6 +130,17 @@ type AssembleComponent struct {
 	VaultHA              *AssembleVaultHA
 	VPNAccess            *AssembleVPNAccess
 	PipelineControlPlane *AssemblePipelineControlPlane
+	StaticSite           *AssembleStaticSite
+}
+
+// AssembleStaticSite is the config for a `static-site` component (AWS Amplify ->
+// DO Spaces static website + Cloudflare CDN). pd-MIG-CUTOVER-F1-01 (GAP-1).
+type AssembleStaticSite struct {
+	CustomDomain     string
+	BuildOutputDir   string
+	IndexDocument    string
+	ErrorDocument    string
+	CloudflareZoneID string
 }
 
 // AssemblePipelineControlPlane is the config for a `pipeline-control-plane`
@@ -267,6 +284,12 @@ type AssemblePrefixList struct {
 // AssembleEmail is the config for an `email` / `email-service` component.
 type AssembleEmail struct {
 	Domain string
+	// SMTP-relay overrides (only used on a non-AWS placement — the DO email path).
+	// All optional; when empty the relay defaults to the AWS SES SMTP endpoint
+	// (cross-cloud). See docs/cutover/EMAIL-PATH.md.
+	RelayHost      string // opt-in 3rd-party relay (SendGrid/Postmark/Mailgun); default = AWS SES SMTP
+	RelayPort      int    // SMTP submission port (default 587 / STARTTLS)
+	CredentialsRef string // reference to the SMTP credentials secret — NEVER an inline secret
 }
 
 // AssembleKMS is the config for a `kms` / `encryption-key` component.
@@ -396,12 +419,32 @@ type AssembleQueue struct {
 	FIFO                     bool
 	VisibilityTimeoutSeconds int
 	MaxReceiveCount          int
+
+	// ── DigitalOcean operator-pattern fields (B1: pd-MIG-B1-QUEUE-STREAM-OPERATORS) ──
+	// ClusterName is the existing DOKS cluster the RabbitMQ Cluster Operator runs on.
+	// Required for DO; ignored on other providers.
+	ClusterName string
+	// Namespace is the Kubernetes namespace for the operator + cluster.
+	// Empty -> "rabbitmq-system".
+	Namespace string
+	// Replicas is the number of RabbitmqCluster replicas (HA). 0 -> 3.
+	Replicas int
 }
 
 // AssembleStream is the config for an `event-streaming` / `event-bus` component.
 type AssembleStream struct {
 	Shards         int
 	RetentionHours int
+
+	// ── DigitalOcean operator-pattern fields (B1: pd-MIG-B1-QUEUE-STREAM-OPERATORS) ──
+	// ClusterName is the existing DOKS cluster the Strimzi operator runs on.
+	// Required for DO; ignored on other providers.
+	ClusterName string
+	// Namespace is the Kubernetes namespace for the operator + Kafka cluster.
+	// Empty -> "kafka".
+	Namespace string
+	// Replicas is the number of Kafka broker replicas. 0 -> 3.
+	Replicas int
 }
 
 // AssembleServerless is the config for a `serverless-function` component.
@@ -453,6 +496,60 @@ type AssembleInput struct {
 	// topology by DeriveSecurityBaseline; additive and never widens access. Off by
 	// default so existing callers are unchanged; the deploy path turns it on.
 	ApplySecurityBaseline bool
+}
+
+// inferDOKSClusterName scans components for the first managed-kubernetes component
+// and returns its name as the implicit DOKS cluster name. Used by the B4 auto-alias
+// to derive the cluster the Vault-HA operator will run on when a raw
+// secrets-manager/kms component is promoted to vault-ha on DigitalOcean.
+// Returns "" when no managed-kubernetes component is present.
+func inferDOKSClusterName(components []AssembleComponent) string {
+	for _, c := range components {
+		if c.Type == "managed-kubernetes" || c.Type == "container-service" {
+			return c.Name
+		}
+	}
+	return ""
+}
+
+// assembleVaultHAAlias renders a raw secrets-manager or kms component as a
+// vault-ha operator-pattern component on DigitalOcean (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS).
+// clusterName must be non-empty (either inferred from the topology or supplied via VaultHA config).
+func assembleVaultHAAlias(ctx context.Context, cat Catalog, c AssembleComponent, in AssembleInput, clusterName string) ([]string, bool /*needsHelm*/, bool /*needsKubernetes*/, error) {
+	spec := VaultHASpec{
+		Name:          c.Name,
+		Region:        in.Region,
+		Provider:      in.Provider,
+		ClusterName:   clusterName,
+		TransitUnseal: true, // always enable Transit auto-unseal for the aliased path
+	}
+	// Allow the caller to override via VaultHA config (e.g. namespace, replicas).
+	if c.VaultHA != nil {
+		if c.VaultHA.Namespace != "" {
+			spec.Namespace = c.VaultHA.Namespace
+		}
+		if c.VaultHA.Replicas != 0 {
+			spec.Replicas = c.VaultHA.Replicas
+		}
+		if c.VaultHA.ChartVersion != "" {
+			spec.ChartVersion = c.VaultHA.ChartVersion
+		}
+		if c.VaultHA.TransitKeyName != "" {
+			spec.TransitKeyName = c.VaultHA.TransitKeyName
+		}
+		if len(c.VaultHA.AuthMethods) > 0 {
+			spec.AuthMethods = c.VaultHA.AuthMethods
+		}
+	}
+	vhPlan, err := TranslateVaultHA(ctx, cat, spec)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("component %q (auto-alias → vault-ha): %w", c.Name, err)
+	}
+	vhHCL, err := RenderVaultHAHCL(vhPlan)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("component %q render (auto-alias → vault-ha): %w", c.Name, err)
+	}
+	return []string{vhHCL}, vhPlan.RendersHelm, vhPlan.ResourceType == "kubernetes_manifest", nil
 }
 
 // AssembleHCL translates the environment to concrete terraform documents.
@@ -597,9 +694,21 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		}
 		// Layer explicit ingress rules (e.g. ALB-scoped service doors) on top of expose.
 		rules = append(rules, in.IngressRules...)
+		// On DigitalOcean a firewall attaches to droplets by TAG. Collect the
+		// per-service scale-group tags ("pyx-<svc>") so the estate firewall applies
+		// to every droplet_autoscale pool droplet (the DO analogue of SG membership).
+		var dropletTags []string
+		if strings.ToLower(in.Provider) == ProviderDigitalOcean {
+			for _, c := range in.Components {
+				if c.Type == "virtual-machine-scale-group" {
+					dropletTags = append(dropletTags, doScaleGroupTag(c.Name))
+				}
+			}
+		}
 		sgPlan, err := TranslateSecurityGroup(ctx, cat, SecurityGroupSpec{
 			Name: sgName, Network: netName, Region: in.Region, Provider: in.Provider,
 			Description: in.Name + " environment", Expose: in.Expose, Rules: rules,
+			DropletTags: dropletTags,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("security-group: %w", err)
@@ -654,7 +763,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				Architecture: sg.Architecture, CPU: atoiOrZero(sg.CPU), RAM: atoiOrZero(sg.RAM),
 				OS: sg.OS, OSVersion: sg.OSVersion,
 				Min: sg.Min, Max: sg.Max, Desired: sg.Desired, Health: sg.Health,
-				UserData: sg.UserData, InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
+				UserData: sg.UserData, UserDataByProvider: sg.UserDataByProvider,
+				InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
 				KubernetesVersion: sg.KubernetesVersion, Tag: sg.Tag, SSHKeys: sg.SSHKeys,
 				Network: netName, SecurityGroup: vmSG, Subnets: subnetNames,
 			})
@@ -809,6 +919,28 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, osHCL)
+		case "static-site", "static-website", "static-hosting", "frontend-app", "spa":
+			ssSpec := StaticSiteSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
+			if c.StaticSite != nil {
+				ssSpec.CustomDomain = c.StaticSite.CustomDomain
+				ssSpec.BuildOutputDir = c.StaticSite.BuildOutputDir
+				ssSpec.IndexDocument = c.StaticSite.IndexDocument
+				ssSpec.ErrorDocument = c.StaticSite.ErrorDocument
+				ssSpec.CloudflareZoneID = c.StaticSite.CloudflareZoneID
+			}
+			ssPlan, err := TranslateStaticSite(ctx, cat, ssSpec)
+			if err != nil {
+				return nil, fmt.Errorf("component %q: %w", c.Name, err)
+			}
+			ssHCL, err := RenderStaticSiteHCL(ssPlan)
+			if err != nil {
+				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			// On DO the static-site descends to a Cloudflare CDN front — pin the provider.
+			if ssPlan.UsesCloudflare {
+				needsCloudflare = true
+			}
+			docs = append(docs, ssHCL)
 		case "container-registry", "image-registry":
 			crSpec := ContainerRegistrySpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.ContainerRegistry != nil {
@@ -859,6 +991,34 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			docs = append(docs, vpnHCL)
 		case "secrets-manager":
+			// B4 auto-alias (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): on DigitalOcean a raw
+			// secrets-manager component routes to the Vault-HA operator-pattern (HA Raft
+			// cluster on DOKS) instead of the native managed path (DO has none) or the
+			// single-VM mitigation. The cluster name is inferred from any managed-kubernetes
+			// component in the same env, or must be supplied via VaultHA config.
+			if lc(in.Provider) == ProviderDigitalOcean {
+				cluster := inferDOKSClusterName(in.Components)
+				if c.VaultHA != nil && strings.TrimSpace(c.VaultHA.ClusterName) != "" {
+					cluster = c.VaultHA.ClusterName
+				}
+				if cluster == "" {
+					return nil, fmt.Errorf("component %q (secrets-manager → vault-ha auto-alias on DO): "+
+						"no managed-kubernetes component found in this environment and no cluster_name "+
+						"supplied via vault_ha config — add a managed-kubernetes component or set vault_ha.cluster_name", c.Name)
+				}
+				aliasHCL, rHelm, rK8s, err := assembleVaultHAAlias(ctx, cat, c, in, cluster)
+				if err != nil {
+					return nil, err
+				}
+				if rHelm {
+					needsHelm = true
+				}
+				if rK8s {
+					needsKubernetes = true
+				}
+				docs = append(docs, aliasHCL...)
+				break
+			}
 			secSpec := SecretsSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.Secrets != nil {
 				secSpec.Description = c.Secrets.Description
@@ -902,6 +1062,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				qSpec.FIFO = c.Queue.FIFO
 				qSpec.VisibilityTimeoutSeconds = c.Queue.VisibilityTimeoutSeconds
 				qSpec.MaxReceiveCount = c.Queue.MaxReceiveCount
+				// B1: DO operator-pattern cluster wiring (pd-MIG-B1-QUEUE-STREAM-OPERATORS).
+				qSpec.ClusterName = c.Queue.ClusterName
+				qSpec.Namespace = c.Queue.Namespace
+				qSpec.Replicas = c.Queue.Replicas
 			}
 			qPlan, err := TranslateQueue(ctx, cat, qSpec)
 			if err != nil {
@@ -911,12 +1075,23 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
+			// B1: DO queue operator emits helm_release (CORE) + kubernetes_manifest (EXTRA).
+			if qPlan.RendersHelm {
+				needsHelm = true
+			}
+			if qPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
+			}
 			docs = append(docs, qHCL)
 		case "event-streaming", "event-bus":
 			sSpec := StreamSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.Stream != nil {
 				sSpec.Shards = c.Stream.Shards
 				sSpec.RetentionHours = c.Stream.RetentionHours
+				// B1: DO operator-pattern cluster wiring (pd-MIG-B1-QUEUE-STREAM-OPERATORS).
+				sSpec.ClusterName = c.Stream.ClusterName
+				sSpec.Namespace = c.Stream.Namespace
+				sSpec.Replicas = c.Stream.Replicas
 			}
 			sPlan, err := TranslateStream(ctx, cat, sSpec)
 			if err != nil {
@@ -925,6 +1100,13 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			sHCL, err := RenderMessagingHCL(sPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			// B1: DO stream operator emits helm_release (CORE) + kubernetes_manifest (EXTRA).
+			if sPlan.RendersHelm {
+				needsHelm = true
+			}
+			if sPlan.ResourceType == "kubernetes_manifest" {
+				needsKubernetes = true
 			}
 			docs = append(docs, sHCL)
 		case "serverless-function":
@@ -972,6 +1154,32 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			docs = append(docs, wsHCL)
 		case "kms", "encryption-key":
+			// B4 auto-alias (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): on DigitalOcean a raw
+			// kms/encryption-key component routes to the Vault-HA operator-pattern (Vault
+			// Transit replaces KMS) instead of the hard error or single-VM mitigation.
+			if lc(in.Provider) == ProviderDigitalOcean {
+				cluster := inferDOKSClusterName(in.Components)
+				if c.VaultHA != nil && strings.TrimSpace(c.VaultHA.ClusterName) != "" {
+					cluster = c.VaultHA.ClusterName
+				}
+				if cluster == "" {
+					return nil, fmt.Errorf("component %q (%s → vault-ha auto-alias on DO): "+
+						"no managed-kubernetes component found in this environment and no cluster_name "+
+						"supplied via vault_ha config — add a managed-kubernetes component or set vault_ha.cluster_name", c.Name, c.Type)
+				}
+				aliasHCL, rHelm, rK8s, err := assembleVaultHAAlias(ctx, cat, c, in, cluster)
+				if err != nil {
+					return nil, err
+				}
+				if rHelm {
+					needsHelm = true
+				}
+				if rK8s {
+					needsKubernetes = true
+				}
+				docs = append(docs, aliasHCL...)
+				break
+			}
 			kmsSpec := KMSSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.KMS != nil {
 				kmsSpec.Description = c.KMS.Description
@@ -1020,6 +1228,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
+			// B5: DO + non-Spaces origin renders through Cloudflare CDN — pin the provider.
+			if cdnPlan.UsesCloudflare {
+				needsCloudflare = true
+			}
 			docs = append(docs, cdnHCL)
 		case "waf-service", "waf":
 			wafSpec := WAFSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
@@ -1034,6 +1246,11 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			wafHCL, err := RenderWAFHCL(wafPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
+			}
+			if wafPlan.ViaCloudflare {
+				// WAF resolved via Cloudflare WAF (pd-MIG-B2-WAF-CLOUDFLARE):
+				// pin the cloudflare/cloudflare provider source.
+				needsCloudflare = true
 			}
 			docs = append(docs, wafHCL)
 		case "managed-kubernetes", "container-service":
@@ -1097,17 +1314,18 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
-			// A DigitalOcean LB with layer-7 routing rules emits a DOKS Ingress
-			// (kubernetes_manifest) — pin hashicorp/kubernetes so terraform can plan it.
-			if lbPlan.Provider == ProviderDigitalOcean && hasLBRoutingRules(lbPlan.Listeners) {
-				needsKubernetes = true
-			}
+			// A DigitalOcean LB now forwards to a digitalocean_droplet_autoscale pool
+			// by droplet tag (no DOKS Ingress) — it emits pure DO resources, so no
+			// hashicorp/kubernetes pin is needed for the load-balancer itself.
 			docs = append(docs, lbHCL)
 		case "email", "email-service":
 			if c.Email == nil {
 				return nil, fmt.Errorf("component %q (email): config is required", c.Name)
 			}
-			emPlan, err := TranslateEmail(ctx, cat, EmailSpec{Name: c.Name, Region: in.Region, Provider: in.Provider, Domain: c.Email.Domain})
+			emPlan, err := TranslateEmail(ctx, cat, EmailSpec{
+				Name: c.Name, Region: in.Region, Provider: in.Provider, Domain: c.Email.Domain,
+				RelayHost: c.Email.RelayHost, RelayPort: c.Email.RelayPort, CredentialsRef: c.Email.CredentialsRef,
+			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
 			}
@@ -1343,6 +1561,13 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
 		}
 	}
+	// Cloudflare components each declare `variable "cloudflare_zone_id"` inline when
+	// no explicit zone id is set (so every renderer is usable standalone). When an
+	// environment has MORE THAN ONE such component (e.g. the 3 static-site CDN
+	// fronts), that yields a duplicate-variable declaration terraform rejects. Dedupe
+	// to a single declaration hoisted to the top, keeping each renderer self-contained.
+	docs = dedupeCloudflareZoneIDVar(docs)
+
 	// Declare the out-of-band db_password variable once when any managed-database is
 	// present — the managed_database render references var.db_password (the password
 	// is supplied out of band, never in the topology/state).
@@ -1350,6 +1575,110 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		if c.Type == "managed-database" {
 			docs = append([]string{"variable \"db_password\" {\n  type      = string\n  sensitive = true\n}\n"}, docs...)
 			break
+		}
+	}
+	// Declare the out-of-band do_ssh_keys variable once when a DigitalOcean
+	// scale-group is present — the droplet_autoscale droplet_template references
+	// var.do_ssh_keys (SSH key fingerprints/ids supplied out of band, never in the
+	// topology/state; account-specific, so never hardcoded in the catalog).
+	//
+	// IMPORTANT: DO droplet_autoscale pools require a NON-EMPTY ssh_keys list — a
+	// pool created with no keys is rejected. The default is [] only so a bare
+	// `terraform plan` stays runnable; a non-empty value (e.g.
+	// -var 'do_ssh_keys=["<key-id-or-fingerprint>"]') MUST be supplied at apply.
+	// A validation enforces that whatever is passed is non-empty.
+	if strings.ToLower(in.Provider) == ProviderDigitalOcean {
+		for _, c := range in.Components {
+			if c.Type == "virtual-machine-scale-group" {
+				docs = append([]string{"variable \"do_ssh_keys\" {\n" +
+					"  description = \"DigitalOcean SSH key ids or fingerprints for droplet_autoscale pools. Supplied out of band (account-specific, never in topology/state). MUST be non-empty at apply: DO rejects a pool with no ssh_keys.\"\n" +
+					"  type        = list(string)\n" +
+					"  default     = []\n" +
+					"  validation {\n" +
+					"    condition     = length(var.do_ssh_keys) > 0\n" +
+					"    error_message = \"do_ssh_keys must be non-empty: DigitalOcean droplet_autoscale pools require at least one SSH key.\"\n" +
+					"  }\n" +
+					"}\n"}, docs...)
+				break
+			}
+		}
+	}
+	// Declare the platform-service DigitalOcean bootstraps' out-of-band variables
+	// when a DO scale-group's bootstrap references them. Each of the SIX canonical
+	// services (mcp, sso, obs, sast, backend, vpn) reaches for its secrets — Spaces
+	// keys, the board/main DB URL, registry/API tokens, OIDC/Vault/embed secrets,
+	// WireGuard keys, … — by ${var.<x>}; the operator wires those to Vault / the
+	// secret source, never the topology. We emit the UNION of every referenced
+	// variable across all six, each `variable {}` block at most once and only when
+	// the rendered user_data actually references it, so an estate with no DO platform
+	// bootstrap stays clean. Deterministic order (fixed service slice, then the
+	// per-service deterministic var order). No duplicate declarations: a var already
+	// declared inline by a component (or by an earlier service) is skipped.
+	if strings.ToLower(in.Provider) == ProviderDigitalOcean {
+		var userDataBlob strings.Builder
+		for _, c := range in.Components {
+			if c.Type == "virtual-machine-scale-group" && c.ScaleGroup != nil {
+				userDataBlob.WriteString(c.ScaleGroup.UserData)
+				for _, ud := range c.ScaleGroup.UserDataByProvider {
+					userDataBlob.WriteString(ud)
+				}
+			}
+		}
+		blob := userDataBlob.String()
+
+		// Collect, in deterministic order, every (name, sensitive) the six DO
+		// bootstraps can reference. A name seen twice keeps its first classification
+		// (sensitive wins if any producer marks it sensitive — handled below).
+		type varDecl struct {
+			name      string
+			sensitive bool
+		}
+		mcpPlain, mcpSens := McpDOBootstrapSpec{Environment: "x"}.McpDOBootstrapVariableNames()
+		obsPlain, obsSens := OBSDOBootstrapSpec{}.OBSDOBootstrapVariableNames()
+		sastPlain, sastSens := SastDOBootstrapSpec{Environment: "x"}.SastDOBootstrapVariableNames()
+		backPlain, backSens := BackendBootstrapSpec{Environment: "x"}.BackendBootstrapVariableNames()
+		vpnPlain, vpnSens := VPNBootstrapSpec{Environment: "x"}.VPNBootstrapVariableNames()
+
+		var ordered []varDecl
+		add := func(names []string, sensitive bool) {
+			for _, n := range names {
+				ordered = append(ordered, varDecl{name: n, sensitive: sensitive})
+			}
+		}
+		// Sensitive first so a name shared plain+sensitive is classified sensitive.
+		add(mcpSens, true)
+		add(obsSens, true)
+		add(sastSens, true)
+		add(backSens, true)
+		add(vpnSens, true)
+		add(mcpPlain, false)
+		add(obsPlain, false)
+		add(sastPlain, false)
+		add(backPlain, false)
+		add(vpnPlain, false)
+
+		seen := map[string]bool{}
+		for _, d := range ordered {
+			if seen[d.name] {
+				continue
+			}
+			seen[d.name] = true
+			ref := "${var." + d.name + "}"
+			// Prefix-match the declaration name so we never double-declare a var already
+			// emitted inline (e.g. db_password, do_ssh_keys) or by another service.
+			declPrefix := "variable \"" + d.name + "\" {"
+			if !strings.Contains(blob, ref) {
+				continue
+			}
+			if strings.Contains(strings.Join(docs, "\n"), declPrefix) {
+				continue
+			}
+			decl := "variable \"" + d.name + "\" {\n  type = string\n"
+			if d.sensitive {
+				decl += "  sensitive = true\n"
+			}
+			decl += "}\n"
+			docs = append([]string{decl}, docs...)
 		}
 	}
 	// Emit a required_providers block when one is needed: a non-default-namespace
@@ -1378,6 +1707,31 @@ var cloudProviderSource = map[string][2]string{
 	ProviderAlibaba:      {"alicloud", "aliyun/alicloud"},
 	ProviderOVH:          {"ovh", "ovh/ovh"},
 	ProviderStackIt:      {"stackit", "stackitcloud/stackit"},
+}
+
+// cloudflareZoneIDVarDecl is the inline variable declaration the Cloudflare
+// renderers emit when no explicit zone id is set. It must appear at most once per
+// terraform module.
+const cloudflareZoneIDVarDecl = "variable \"cloudflare_zone_id\" {\n  type = string\n}\n\n"
+
+// dedupeCloudflareZoneIDVar strips the inline `variable "cloudflare_zone_id"`
+// declaration from every doc that carries it and, if any did, prepends a single
+// declaration. Renderers stay self-contained (each declares the var so it works
+// standalone); the assembler guarantees module-level uniqueness.
+func dedupeCloudflareZoneIDVar(docs []string) []string {
+	found := false
+	out := make([]string, 0, len(docs))
+	for _, d := range docs {
+		if strings.Contains(d, cloudflareZoneIDVarDecl) {
+			found = true
+			d = strings.Replace(d, cloudflareZoneIDVarDecl, "", 1)
+		}
+		out = append(out, d)
+	}
+	if found {
+		out = append([]string{cloudflareZoneIDVarDecl}, out...)
+	}
+	return out
 }
 
 // requiredProvidersBlock returns the terraform{required_providers{...}} HCL when

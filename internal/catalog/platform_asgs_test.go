@@ -12,7 +12,7 @@ import (
 func TestPlatformServicesCanonicalShape(t *testing.T) {
 	t.Parallel()
 	svcs := PlatformServices()
-	wantNames := []string{"sso", "vpn", "obs", "sast", "backend"}
+	wantNames := []string{"sso", "vpn", "obs", "sast", "backend", "mcp"}
 	if len(svcs) != len(wantNames) {
 		t.Fatalf("want %d platform services, got %d", len(wantNames), len(svcs))
 	}
@@ -34,8 +34,8 @@ func TestPlatformServicesCanonicalShape(t *testing.T) {
 func TestPlatformScaleGroupComponentsAreScaleGroupsOfOne(t *testing.T) {
 	t.Parallel()
 	comps := PlatformScaleGroupComponents("", "", "")
-	if len(comps) != 5 {
-		t.Fatalf("want 5 components, got %d", len(comps))
+	if len(comps) != 6 {
+		t.Fatalf("want 6 components, got %d", len(comps))
 	}
 	for _, c := range comps {
 		if c.Type != "virtual-machine-scale-group" {
@@ -51,11 +51,12 @@ func TestPlatformScaleGroupComponentsAreScaleGroupsOfOne(t *testing.T) {
 	}
 }
 
-// TestPlatformASGsRoundTripDO is the plan-only round-trip proof: the 5 platform
+// TestPlatformASGsRoundTripDO is the plan-only round-trip proof: the 6 platform
 // services, expressed as canonical scale-groups, descend to VALID DigitalOcean
-// resources — each becomes a DOKS node-pool with auto_scale and the self-heal
-// min_nodes=1 floor. This is the canonical scale-group -> DOKS mapping the task
-// asks for, exercised through the real assembler (no backend, plan-only).
+// resources — each becomes a digitalocean_droplet_autoscale pool (a lift-and-shift
+// of the AWS ASG: VM+systemd, NOT DOKS) with the self-heal min_instances=1 floor.
+// A scale-group of 1 (min==max==1) is a FIXED pool: no target-based scaling.
+// Exercised through the real assembler (no backend, plan-only).
 func TestPlatformASGsRoundTripDO(t *testing.T) {
 	t.Parallel()
 	cat := MustEmbedded()
@@ -74,23 +75,33 @@ func TestPlatformASGsRoundTripDO(t *testing.T) {
 	if !strings.Contains(all, `source = "digitalocean/digitalocean"`) {
 		t.Errorf("missing digitalocean provider source pin:\n%s", all)
 	}
-	// Each of the 5 services -> a native droplet-autoscale group (self-healing
+	// Each of the 6 services -> a native droplet-autoscale group (self-healing
 	// min_instances=1 floor), NOT a DOKS cluster — the droplet+systemd runtime the
-	// live estate uses.
-	for _, svc := range []string{"sso", "vpn", "obs", "sast", "backend"} {
+	// live estate uses, carrying its auto-derived per-service tag.
+	for _, svc := range []string{"sso", "vpn", "obs", "sast", "backend", "mcp"} {
 		if !strings.Contains(all, `resource "digitalocean_droplet_autoscale" "`+svc+`"`) {
 			t.Errorf("platform service %q did not emit a droplet-autoscale group:\n%s", svc, all)
+		}
+		if !strings.Contains(all, `tags               = ["pyxcloud", "pyx-`+svc+`"]`) {
+			t.Errorf("platform service %q pool missing per-service tag pyx-%s:\n%s", svc, svc, all)
 		}
 	}
 	for _, want := range []string{
 		`min_instances          = 1`, // self-heal floor on every group
+		`max_instances          = 1`, // scale-group of 1 (fixed pool)
 		`target_cpu_utilization = 0.6`,
 		`droplet_template {`,
 		`with_droplet_agent = true`,
+		`ssh_keys           = []`, // no ssh keys threaded here -> empty (required) list
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("platform droplet-autoscale HCL missing %q\n%s", want, all)
 		}
+	}
+	// Every pool (fixed included) must carry target_cpu_utilization: DO's autoscale
+	// API rejects a pool with no utilization target. 6 platform pools -> 6 targets.
+	if n := strings.Count(all, "target_cpu_utilization = 0.6"); n != 6 {
+		t.Errorf("want 6 target_cpu_utilization (one per platform pool; DO API requires it even for fixed pools), got %d:\n%s", n, all)
 	}
 	// Must NOT leak DOKS or AWS ASG resources.
 	for _, bad := range []string{"digitalocean_kubernetes_cluster", "node_pool {", "aws_autoscaling_group", "aws_launch_template"} {
@@ -118,8 +129,8 @@ func TestPlatformASGsRoundTripAWS(t *testing.T) {
 	all := strings.Join(docs, "\n")
 	// Each service renders an AWS autoscaling group of 1.
 	n := strings.Count(all, `resource "aws_autoscaling_group"`)
-	if n != 5 {
-		t.Errorf("want 5 aws_autoscaling_group resources, got %d\n%s", n, all)
+	if n != 6 {
+		t.Errorf("want 6 aws_autoscaling_group resources, got %d\n%s", n, all)
 	}
 	for _, want := range []string{
 		`min_size            = 1`,

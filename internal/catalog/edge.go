@@ -180,6 +180,12 @@ type CDNPlan struct {
 	OriginKind   string `json:"origin_kind"`
 	OriginName   string `json:"origin_name"`
 	ResourceType string `json:"resource_type"`
+	// UsesCloudflare is true when the CDN layer is provided by Cloudflare rather
+	// than a cloud-native resource — specifically when a DigitalOcean environment
+	// declares a CDN with a non-Spaces (load-balancer) origin (B5 gap). The
+	// assembler uses this flag to set needsCloudflare = true so the
+	// cloudflare/cloudflare provider is declared in required_providers.
+	UsesCloudflare bool `json:"uses_cloudflare,omitempty"`
 }
 
 // TranslateCDN resolves a CDNSpec. AWS/GCP support any origin; DO supports only a
@@ -225,12 +231,17 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 		}
 	}
 	if provider == ProviderDigitalOcean && originKind != CDNOriginObjectStorage {
-		return CDNPlan{}, ErrComponentUnsupported{
-			Component: TypeCDNService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: "DigitalOcean CDN (digitalocean_cdn) can only front a Spaces (object-storage) " +
-				"origin, not an arbitrary load-balancer origin; use AWS CloudFront or GCP Cloud CDN " +
-				"for a dynamic/LB origin, or put a Spaces bucket in front",
-		}
+		// B5 gap: digitalocean_cdn can only front a Spaces origin. For an arbitrary
+		// (load-balancer / custom) origin on DO we route through Cloudflare's proxy
+		// CDN instead of failing with a hard error — Cloudflare is already wired as
+		// a first-class provider here (cloudflare.go / dns component). The assembler
+		// sets needsCloudflare = true when it sees UsesCloudflare on the plan.
+		return CDNPlan{
+			Provider: provider, CSP: row.CSP, RegionName: row.RegionName, CSPRegion: row.CSPRegion,
+			Name: canonicalName(spec.Name, "pyxcloud-cdn"), OriginKind: originKind,
+			OriginName: canonicalName(spec.OriginName, ""), ResourceType: "cloudflare_dns_record",
+			UsesCloudflare: true,
+		}, nil
 	}
 	if provider == ProviderIBM {
 		// IBM Cloud has no origin-scoped CDN distribution resource (CloudFront/Cloud
@@ -325,6 +336,11 @@ type WAFPlan struct {
 	Scope         string `json:"scope"`
 	AssociateName string `json:"associate_name"`
 	ResourceType  string `json:"resource_type"`
+	// ViaCloudflare is true when the WAF is routed through Cloudflare WAF
+	// (cloudflare_ruleset) rather than a cloud-native WAF primitive. This is the
+	// preferred path for DigitalOcean and Linode, which have no managed WAF service
+	// of their own (pd-MIG-B2-WAF-CLOUDFLARE).
+	ViaCloudflare bool `json:"via_cloudflare,omitempty"`
 }
 
 // TranslateWAF resolves a WAFSpec. DO is a clean unsupported error.
@@ -348,15 +364,23 @@ func TranslateWAF(ctx context.Context, cat RegionCatalog, spec WAFSpec) (WAFPlan
 	}
 	provider := lc(spec.Provider)
 	if provider == ProviderDigitalOcean || provider == ProviderLinode {
-		provName := "DigitalOcean"
-		if provider == ProviderLinode {
-			provName = "Linode"
-		}
-		return WAFPlan{}, ErrComponentUnsupported{
-			Component: TypeWAFService, Provider: provider, CSP: row.CSP, CSPRegion: row.CSPRegion,
-			Alternative: provName + " has no managed WAF primitive; use AWS WAFv2 or GCP Cloud Armor, " +
-				"or front the app with a self-managed WAF (ModSecurity/Coraza) on a virtual-machine",
-		}
+		// DigitalOcean and Linode have no managed WAF primitive. Per the
+		// AWS→DO migration gap analysis (pd-MIG-B2-WAF-CLOUDFLARE), the preferred
+		// path is to front the load-balancer/ingress with Cloudflare WAF
+		// (cloudflare_ruleset with the OWASP managed ruleset) — the platform already
+		// terminates at Cloudflare, so this is zero additional infrastructure. The
+		// degraded single-VM ModSecurity mitigation is superseded by this path.
+		return WAFPlan{
+			Provider:      provider,
+			CSP:           row.CSP,
+			RegionName:    row.RegionName,
+			CSPRegion:     row.CSPRegion,
+			Name:          canonicalName(spec.Name, "pyxcloud-waf"),
+			Scope:         scope,
+			AssociateName: canonicalName(spec.AssociateName, ""),
+			ResourceType:  "cloudflare_ruleset",
+			ViaCloudflare: true,
+		}, nil
 	}
 	if provider == ProviderGCP && scope == WAFScopeCloudFront {
 		return WAFPlan{}, ErrComponentUnsupported{

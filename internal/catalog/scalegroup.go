@@ -40,17 +40,29 @@ type ScaleGroupSpec struct {
 
 	// UserData is the cloud-init/bootstrap script baked into the launch template
 	// (e.g. the native-binary pull + systemd unit). Provider-neutral plaintext.
+	// It is the DEFAULT used for any provider without a UserDataByProvider entry.
 	UserData string
+	// UserDataByProvider carries per-provider bootstrap overrides keyed by the
+	// provider-facing name (aws | gcp | digitalocean | …). When TranslateScaleGroup
+	// resolves for a provider, a matching entry here WINS over the generic UserData
+	// field; a missing entry falls back to UserData. This lets one canonical
+	// scale-group carry a provider-specific bootstrap (e.g. the AWS ASG pulls the
+	// artifact + fetches secrets via the instance role, while the DigitalOcean
+	// droplet_autoscale pull fetches from Spaces with injected keys) without forking
+	// the topology or inventing a second component. Keys are matched
+	// case-insensitively.
+	UserDataByProvider map[string]string
 	// InstanceProfile is the IAM instance-profile/service-account name to attach
 	// (wired from a sibling iam component).
 	InstanceProfile string
 	// RootDiskGB overrides the root volume size in GiB (0 = provider default).
 	RootDiskGB int
 
-	// KubernetesVersion pins the DOKS control-plane version when this scale-group
-	// is placed on DigitalOcean (mapped to a digitalocean_kubernetes_cluster
-	// node_pool — DO's autoscaling answer). Empty -> "latest". Other providers
-	// ignore it (they use a native VM autoscaling primitive).
+	// KubernetesVersion is a legacy field carried for source-compatibility with
+	// callers that still pass it. DigitalOcean scale-groups now render as
+	// digitalocean_droplet_autoscale (a VM pool, not a DOKS cluster), so this is
+	// IGNORED on every provider. It is retained only to avoid churning the
+	// AssembleScaleGroup plumbing; a future cleanup can drop it entirely.
 	KubernetesVersion string
 
 	// Placement wiring (from the other components). Names are canonical and
@@ -95,23 +107,22 @@ type ScaleGroupPlan struct {
 	UserData               string `json:"user_data"`        // cloud-init/bootstrap (provider-neutral plaintext)
 	InstanceProfile        string `json:"instance_profile"` // IAM instance-profile/service-account name (optional)
 	InstanceProfileManaged bool   `json:"instance_profile_managed"`
-	RootDiskGB             int    `json:"root_disk_gb"`     // root volume size GiB (0 = provider default)
+	RootDiskGB             int    `json:"root_disk_gb"` // root volume size GiB (0 = provider default)
 
 	// Zones are the concrete AZs/zones the group spreads across (multi-AZ),
 	// derived from the region catalog. Empty for DigitalOcean.
 	Zones []string `json:"zones"`
 
-	NetworkName   string   `json:"network_name"`   // VPC/network it lives in
-	SubnetNames   []string `json:"subnet_names"`   // subnets the group spreads across
-	SecurityGroup string   `json:"security_group"` // SG/firewall to attach
+	NetworkName   string   `json:"network_name"`       // VPC/network it lives in
+	SubnetNames   []string `json:"subnet_names"`       // subnets the group spreads across
+	SecurityGroup string   `json:"security_group"`     // SG/firewall to attach
 	Tag           string   `json:"tag,omitempty"`      // extra fleet-selection tag (DO droplet_tag / AWS propagated tag)
 	SSHKeys       []string `json:"ssh_keys,omitempty"` // provider SSH-key IDs/fingerprints (DO droplet_template.ssh_keys, required)
 	ResourceType  string   `json:"resource_type"`      // top provider resource, e.g. aws_autoscaling_group
 
-	// KubernetesVersion is the DOKS control-plane version for the node-pool
-	// mapping (DigitalOcean has no native VM autoscaling primitive, so a
-	// scale-group renders to a digitalocean_kubernetes_cluster with an
-	// auto-scaling node_pool). Empty -> "latest". Ignored by other providers.
+	// KubernetesVersion is a legacy, now-IGNORED field. DigitalOcean scale-groups
+	// render as digitalocean_droplet_autoscale (a VM pool), not a DOKS cluster, so
+	// no Kubernetes version is used. Retained for source-compatibility only.
 	KubernetesVersion string `json:"kubernetes_version,omitempty"`
 }
 
@@ -129,7 +140,7 @@ func (e ErrAutoscaleUnsupported) Error() string {
 	// Name the provider's managed-kubernetes alternative (LKE / SKE node-pool
 	// autoscaling) so the error directs the user to the supported mapping. Note
 	// DigitalOcean is NOT reached here any more: a DO scale-group maps directly to
-	// a DOKS node pool in TranslateScaleGroup.
+	// a digitalocean_droplet_autoscale pool in TranslateScaleGroup.
 	alt := "a `managed-kubernetes` component (node-pool autoscaling)"
 	if strings.EqualFold(e.Provider, ProviderLinode) {
 		alt = "a `managed-kubernetes` component (LKE node-pool autoscaling)"
@@ -167,18 +178,27 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 
 	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
 
+	// Resolve the effective bootstrap: a per-provider override (case-insensitive
+	// key) WINS over the generic UserData, so one canonical scale-group can carry a
+	// provider-specific bootstrap (e.g. the DO droplet_autoscale fetches the
+	// artifact from Spaces with injected keys, while AWS pulls it via the instance
+	// role). A missing entry falls back to the generic UserData. Deterministic: no
+	// map iteration, a single keyed lookup.
+	userData := resolveUserDataForProvider(spec.UserData, spec.UserDataByProvider, provider)
+
 	// Linode and StackIt have no native VM autoscaling primitive and (unlike DO)
 	// no node-pool mapping wired here — clean plan-time error rather than an
 	// invented resource. This mirrors the catalog, whose Linode/StackIt
 	// virtual_machine rows are marked supports_autoscale=false; the user is
 	// directed to managed-kubernetes.
 	//
-	// DigitalOcean has no native VM autoscaling primitive either, BUT the
-	// canonical DO autoscaling answer — the one this error always pointed users
-	// to — is a DOKS node pool. So instead of hard-failing, a DO scale-group is
-	// mapped to a digitalocean_kubernetes_cluster with an auto-scaling node_pool
-	// (handled below; the renderer emits the concrete resources). The droplet
-	// SIZE reuses the SAME virtual_machine SKU resolution as the VM component.
+	// DigitalOcean's native VM-autoscaling primitive is digitalocean_droplet_autoscale
+	// (a pool of droplets with min/max and optional target-based scaling) — a
+	// direct lift-and-shift of the AWS aws_autoscaling_group (VM+systemd, no
+	// Kubernetes). So instead of hard-failing, a DO scale-group is mapped to a
+	// droplet_autoscale pool (handled below; the renderer emits the concrete
+	// resources). The droplet SIZE reuses the SAME virtual_machine SKU resolution
+	// as the VM component.
 	if provider == ProviderLinode || provider == ProviderStackIt {
 		return ScaleGroupPlan{}, ErrAutoscaleUnsupported{
 			Provider:  provider,
@@ -213,12 +233,13 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 
 	min, max, desired := normalizeBounds(spec.Min, spec.Max, spec.Desired)
 
-	// DOKS self-heal floor: a DigitalOcean Kubernetes node pool with auto_scale
-	// requires min_nodes >= 1 (DOKS does not allow scale-to-zero on the cluster's
-	// node pool). This is exactly the canonical self-healing ASG-of-1 pattern —
-	// keep at least one healthy node and let DOKS replace failed ones. Lift a
-	// zero min (and any dependent max/desired) to 1 for DO without weakening the
-	// user's intent for other providers.
+	// DO droplet_autoscale self-heal floor: a droplet_autoscale pool needs
+	// min_instances >= 1 to hold a capacity floor (a zero-min pool can scale to
+	// nothing, defeating self-healing). This is exactly the canonical
+	// self-healing ASG-of-1 pattern — keep at least one healthy droplet and let
+	// the pool replace failed ones. Lift a zero min (and any dependent
+	// max/desired) to 1 for DO without weakening the user's intent for other
+	// providers.
 	if provider == ProviderDigitalOcean {
 		if min < 1 {
 			min = 1
@@ -253,26 +274,26 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 	zones := deriveZones(provider, row.CSPRegion, nSubnets)
 
 	plan := ScaleGroupPlan{
-		Provider:      provider,
-		CSP:           row.CSP,
-		RegionName:    row.RegionName,
-		CSPRegion:     row.CSPRegion,
-		GroupName:     name,
-		InstanceType:  sku.Name,
-		Architecture:  arch,
-		CPU:           sku.CPU,
-		RAM:           sku.RAM,
-		OSName:        osName,
-		OSVersion:     osVersion,
-		Image:         img.Image,
-		Min:             min,
-		Max:             max,
-		Desired:         desired,
-		Health:          health,
-		UserData:        spec.UserData,
-		InstanceProfile: spec.InstanceProfile,
-		RootDiskGB:      spec.RootDiskGB,
-		Zones:           zones,
+		Provider:          provider,
+		CSP:               row.CSP,
+		RegionName:        row.RegionName,
+		CSPRegion:         row.CSPRegion,
+		GroupName:         name,
+		InstanceType:      sku.Name,
+		Architecture:      arch,
+		CPU:               sku.CPU,
+		RAM:               sku.RAM,
+		OSName:            osName,
+		OSVersion:         osVersion,
+		Image:             img.Image,
+		Min:               min,
+		Max:               max,
+		Desired:           desired,
+		Health:            health,
+		UserData:          userData,
+		InstanceProfile:   spec.InstanceProfile,
+		RootDiskGB:        spec.RootDiskGB,
+		Zones:             zones,
 		NetworkName:       spec.Network,
 		SubnetNames:       subnets,
 		SecurityGroup:     spec.SecurityGroup,
@@ -285,10 +306,10 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 	case ProviderAWS:
 		plan.ResourceType = "aws_autoscaling_group"
 	case ProviderDigitalOcean:
-		// DO has a native droplet-autoscale primitive (digitalocean_droplet_autoscale):
-		// a CPU-driven autoscale group over a droplet_template, min_instances the
-		// self-healing floor. It carries per-instance user_data (unlike a DOKS node
-		// pool), which the durable-bootstrap services depend on. See renderScaleGroupDO.
+		// DO's native VM-autoscaling primitive: a droplet_autoscale pool (an
+		// ASG-of-droplets lift-and-shift of the AWS ASG, NOT a DOKS cluster). It
+		// carries per-instance user_data (unlike a DOKS node pool), which the
+		// durable-bootstrap services depend on. See renderScaleGroupDO.
 		plan.ResourceType = "digitalocean_droplet_autoscale"
 	case ProviderGCP:
 		plan.ResourceType = "google_compute_region_instance_group_manager"
@@ -302,6 +323,27 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 		plan.ResourceType = "alicloud_ess_scaling_group"
 	}
 	return plan, nil
+}
+
+// resolveUserDataForProvider picks the effective scale-group bootstrap for a
+// provider: a per-provider override (matched case-insensitively against the
+// already-lowercased provider name) wins over the generic default; an absent or
+// empty override falls back to the default. Keeping the default when the override
+// is empty means "no per-provider entry" and "explicit empty override" both fall
+// through to the shared bootstrap, which is the least-surprising behaviour.
+func resolveUserDataForProvider(defaultUD string, byProvider map[string]string, provider string) string {
+	if len(byProvider) == 0 {
+		return defaultUD
+	}
+	for k, v := range byProvider {
+		if strings.EqualFold(strings.TrimSpace(k), provider) {
+			if strings.TrimSpace(v) != "" {
+				return v
+			}
+			break
+		}
+	}
+	return defaultUD
 }
 
 // normalizeBounds applies the canonical defaulting: a zero max becomes max(min,

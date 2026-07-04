@@ -214,28 +214,22 @@ func TestAssembleHCLEmailSES(t *testing.T) {
 	}
 }
 
-func TestAssembleHCLMitigationSelfHostsOnVM(t *testing.T) {
+// TestAssembleHCLQueueDORequiresClusterName pins the B1 operator-pattern
+// contract (pd-MIG-B1-QUEUE-STREAM-OPERATORS): managed-queue on DigitalOcean is
+// the RabbitMQ Cluster Operator on an existing DOKS cluster, so assembling
+// without cluster_name must be a hard plan-time error — never a silent fallback
+// (the old droplet self-host mitigation this test used to assert is gone). The
+// happy path with a cluster is covered in messaging_operators_test.go.
+func TestAssembleHCLQueueDORequiresClusterName(t *testing.T) {
 	cat, _ := NewEmbedded()
-	// secrets-manager is NOT native on DigitalOcean -> mitigate (self-host Vault on a droplet).
-	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+	_, err := AssembleHCL(context.Background(), cat, AssembleInput{
 		Name: "demo", Provider: "digitalocean", Region: "Frankfurt",
 		Components: []AssembleComponent{
-			{Name: "vault", Type: "secrets-manager", Secrets: &AssembleSecrets{}},
+			{Name: "jobs", Type: "managed-queue", Queue: &AssembleQueue{}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("AssembleHCL mitigation: %v", err)
-	}
-	all := strings.Join(docs, "\n")
-	if !strings.Contains(all, "digitalocean_droplet") {
-		t.Errorf("mitigation should self-host on a droplet:\n%s", all)
-	}
-	if !strings.Contains(all, "hashicorp/vault") {
-		t.Errorf("mitigation should run the Vault container:\n%s", all)
-	}
-	if strings.Contains(all, "aws_secretsmanager_secret") || strings.Contains(all, "digitalocean_vpc") == false {
-		// must NOT use the managed service; must have a VPC for the droplet
-		t.Errorf("mitigation env shape wrong:\n%s", all)
+	if err == nil || !strings.Contains(err.Error(), "cluster_name is required") {
+		t.Fatalf("DO queue without a cluster must be a hard error, got %v", err)
 	}
 }
 
@@ -666,9 +660,9 @@ func TestAssembleHCLScaleGroupDODropletAutoscale(t *testing.T) {
 	}
 	all := strings.Join(docs, "\n")
 	for _, want := range []string{
-		`source = "digitalocean/digitalocean"`,               // provider source pinned
-		`resource "digitalocean_vpc" "sg-mig-net"`,           // place VPC synthesised
-		`resource "digitalocean_droplet_autoscale" "web"`,    // scale-group -> native droplet-autoscale (NOT DOKS)
+		`source = "digitalocean/digitalocean"`,                // provider source pinned
+		`resource "digitalocean_vpc" "sg-mig-net"`,            // place VPC synthesised
+		`resource "digitalocean_droplet_autoscale" "web"`,     // scale-group -> native droplet-autoscale (NOT DOKS)
 		`vpc_uuid           = digitalocean_vpc.sg-mig-net.id`, // template joins the VPC
 		`config {`,
 		`min_instances          = 1`, // self-heal floor
@@ -742,9 +736,11 @@ func TestAssembleHCLTracingDOPinsKubernetes(t *testing.T) {
 	}
 }
 
-// TestAssembleHCLLoadBalancerL7DOPinsKubernetes asserts a DO load-balancer with
-// L7 routing rules emits a DOKS Ingress and pins hashicorp/kubernetes.
-func TestAssembleHCLLoadBalancerL7DOPinsKubernetes(t *testing.T) {
+// TestAssembleHCLLoadBalancerL7DONoKubernetes asserts a DO load-balancer with L7
+// routing rules NO LONGER emits a DOKS Ingress and does NOT pin
+// hashicorp/kubernetes: with the scale-group rendered as a droplet_autoscale pool
+// (plain droplets + LB), the LB forwards by droplet tag and the render is pure DO.
+func TestAssembleHCLLoadBalancerL7DONoKubernetes(t *testing.T) {
 	cat, _ := NewEmbedded()
 	docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
 		Name: "demo", Provider: "digitalocean", Region: "Frankfurt",
@@ -761,13 +757,19 @@ func TestAssembleHCLLoadBalancerL7DOPinsKubernetes(t *testing.T) {
 		t.Fatalf("AssembleHCL lb l7 do: %v", err)
 	}
 	all := strings.Join(docs, "\n")
+	// The LB is a pure DO load-balancer forwarding by droplet tag.
 	for _, want := range []string{
-		`kind       = "Ingress"`,
-		`whitelist-source-range`,
-		`source = "hashicorp/kubernetes"`,
+		`resource "digitalocean_loadbalancer" "web-lb"`,
+		`droplet_tag = "pyx-web"`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("DO L7 lb env missing %q:\n%s", want, all)
+		}
+	}
+	// No DOKS Ingress / kubernetes provider pin any more.
+	for _, bad := range []string{`kind       = "Ingress"`, "whitelist-source-range", `source = "hashicorp/kubernetes"`} {
+		if strings.Contains(all, bad) {
+			t.Errorf("DO L7 lb env must not emit %q (droplet_autoscale pivot):\n%s", bad, all)
 		}
 	}
 }
@@ -1109,4 +1111,152 @@ func TestHasOperatorAlternative(t *testing.T) {
 			t.Errorf("HasOperatorAlternative(%q) = true, want false", v)
 		}
 	}
+}
+
+// TestAssembleHCLB4SecretsVaultAutoAlias is the plan-only round-trip for
+// pd-MIG-B4-SECRETS-VAULT-AUTOALIAS: raw secrets-manager and kms/encryption-key
+// components on DigitalOcean MUST route to the Vault-HA operator-pattern (HA Raft
+// on DOKS) instead of the single-VM mitigation (a single droplet running Vault).
+//
+// Asserts:
+//   - secrets-manager on DO with a managed-kubernetes component → Vault-HA Helm chart
+//   - CRs (helm_release + kubernetes_manifest); NOT a digitalocean_droplet.
+//   - kms on DO same topology → same Vault-HA output.
+//   - encryption-key (alias of kms) same result.
+//   - Both pin the helm + kubernetes providers.
+//   - Without any managed-kubernetes and no explicit cluster_name, a clear error is returned.
+func TestAssembleHCLB4SecretsVaultAutoAlias(t *testing.T) {
+	t.Parallel()
+	cat, _ := NewEmbedded()
+
+	// ── secrets-manager on DO → Vault-HA operator (NOT single-VM mitigation) ──────
+	t.Run("secrets-manager auto-aliases to vault-ha on DO", func(t *testing.T) {
+		t.Parallel()
+		docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+			Name: "b4-test", Provider: "digitalocean", Region: "Frankfurt",
+			Components: []AssembleComponent{
+				{Name: "app-doks", Type: "managed-kubernetes",
+					K8s: &AssembleK8s{NodeCPU: 2, NodeRAM: 4, MinNodes: 1, MaxNodes: 3}},
+				{Name: "app-secrets", Type: "secrets-manager",
+					Secrets: &AssembleSecrets{Description: "app secrets"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("secrets-manager auto-alias: %v", err)
+		}
+		all := strings.Join(docs, "\n")
+		// must use the Vault-HA Helm chart (CORE operator)
+		if !strings.Contains(all, `resource "helm_release"`) {
+			t.Errorf("expected helm_release for Vault-HA CORE, got:\n%s", all)
+		}
+		// must emit VaultConnection / VaultAuthGlobal CRs (EXTRA)
+		if !strings.Contains(all, `resource "kubernetes_manifest"`) {
+			t.Errorf("expected kubernetes_manifest for Vault-HA EXTRA CRs, got:\n%s", all)
+		}
+		// must NOT fall to the single-VM mitigation (a plain droplet)
+		if strings.Contains(all, "digitalocean_droplet") {
+			t.Errorf("secrets-manager on DO must NOT fall to single-VM mitigation:\n%s", all)
+		}
+		// must NOT use the AWS managed path
+		if strings.Contains(all, "aws_secretsmanager_secret") {
+			t.Errorf("secrets-manager on DO must not emit aws_secretsmanager_secret:\n%s", all)
+		}
+		// providers helm + kubernetes must be pinned
+		if !strings.Contains(all, `"hashicorp/helm"`) {
+			t.Errorf("helm provider must be pinned:\n%s", all)
+		}
+		if !strings.Contains(all, `"hashicorp/kubernetes"`) {
+			t.Errorf("kubernetes provider must be pinned:\n%s", all)
+		}
+	})
+
+	// ── kms on DO → Vault-HA operator (Transit replaces KMS) ─────────────────────
+	t.Run("kms auto-aliases to vault-ha on DO", func(t *testing.T) {
+		t.Parallel()
+		docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+			Name: "b4-kms", Provider: "digitalocean", Region: "Frankfurt",
+			Components: []AssembleComponent{
+				{Name: "prod-doks", Type: "managed-kubernetes",
+					K8s: &AssembleK8s{NodeCPU: 2, NodeRAM: 4, MinNodes: 1, MaxNodes: 3}},
+				{Name: "data-key", Type: "kms",
+					KMS: &AssembleKMS{Description: "data encryption key"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("kms auto-alias: %v", err)
+		}
+		all := strings.Join(docs, "\n")
+		if !strings.Contains(all, `resource "helm_release"`) {
+			t.Errorf("expected helm_release for Vault Transit CORE, got:\n%s", all)
+		}
+		if strings.Contains(all, "digitalocean_droplet") {
+			t.Errorf("kms on DO must NOT fall to single-VM mitigation:\n%s", all)
+		}
+		// Vault chart name must be vault
+		if !strings.Contains(all, `chart      = "vault"`) {
+			t.Errorf("expected vault helm chart:\n%s", all)
+		}
+	})
+
+	// ── encryption-key (alias of kms) → same result ───────────────────────────────
+	t.Run("encryption-key auto-aliases to vault-ha on DO", func(t *testing.T) {
+		t.Parallel()
+		docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+			Name: "b4-enckey", Provider: "digitalocean", Region: "Frankfurt",
+			Components: []AssembleComponent{
+				{Name: "prod-doks", Type: "managed-kubernetes",
+					K8s: &AssembleK8s{NodeCPU: 2, NodeRAM: 4, MinNodes: 1, MaxNodes: 3}},
+				{Name: "enc-key", Type: "encryption-key"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("encryption-key auto-alias: %v", err)
+		}
+		all := strings.Join(docs, "\n")
+		if !strings.Contains(all, `resource "helm_release"`) {
+			t.Errorf("expected helm_release for Vault-HA (encryption-key alias):\n%s", all)
+		}
+		if strings.Contains(all, "digitalocean_droplet") {
+			t.Errorf("encryption-key on DO must NOT fall to single-VM mitigation:\n%s", all)
+		}
+	})
+
+	// ── no DOKS cluster → clear error (not a silent degraded fallback) ────────────
+	t.Run("secrets-manager on DO without DOKS cluster errors clearly", func(t *testing.T) {
+		t.Parallel()
+		_, err := AssembleHCL(context.Background(), cat, AssembleInput{
+			Name: "b4-no-cluster", Provider: "digitalocean", Region: "Frankfurt",
+			Components: []AssembleComponent{
+				{Name: "app-secrets", Type: "secrets-manager",
+					Secrets: &AssembleSecrets{}},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error when no managed-kubernetes + no cluster_name, got nil")
+		}
+		if !strings.Contains(err.Error(), "managed-kubernetes") {
+			t.Errorf("error should mention managed-kubernetes: %v", err)
+		}
+	})
+
+	// ── explicit cluster_name via VaultHA config overrides inference ──────────────
+	t.Run("explicit vault_ha cluster_name used when no managed-kubernetes component", func(t *testing.T) {
+		t.Parallel()
+		docs, err := AssembleHCL(context.Background(), cat, AssembleInput{
+			Name: "b4-explicit", Provider: "digitalocean", Region: "Frankfurt",
+			Components: []AssembleComponent{
+				{Name: "app-secrets", Type: "secrets-manager",
+					Secrets: &AssembleSecrets{},
+					VaultHA: &AssembleVaultHA{ClusterName: "my-existing-doks"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("explicit cluster_name: %v", err)
+		}
+		all := strings.Join(docs, "\n")
+		if !strings.Contains(all, `resource "helm_release"`) {
+			t.Errorf("expected helm_release with explicit cluster_name:\n%s", all)
+		}
+	})
 }

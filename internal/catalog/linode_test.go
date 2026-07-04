@@ -525,8 +525,15 @@ func TestLinodeUnsupportedComponents(t *testing.T) {
 	_, err = TranslateCDN(ctx, cat, CDNSpec{Name: "cdn", Region: linodeRegion, Provider: ProviderLinode, OriginKind: CDNOriginObjectStorage, OriginName: "app-assets"})
 	assertUnsupported("cdn-service", err)
 
-	_, err = TranslateWAF(ctx, cat, WAFSpec{Name: "waf", Region: linodeRegion, Provider: ProviderLinode, Scope: "regional"})
-	assertUnsupported("waf-service", err)
+	// waf-service on Linode now resolves to Cloudflare WAF (pd-MIG-B2-WAF-CLOUDFLARE),
+	// not an unsupported error. Verify the Cloudflare path is taken.
+	wafPlan, err := TranslateWAF(ctx, cat, WAFSpec{Name: "waf", Region: linodeRegion, Provider: ProviderLinode, Scope: "regional"})
+	if err != nil {
+		t.Errorf("waf-service on linode: expected Cloudflare WAF plan, got error: %v", err)
+	} else if wafPlan.ResourceType != "cloudflare_ruleset" || !wafPlan.ViaCloudflare {
+		t.Errorf("waf-service on linode: want cloudflare_ruleset via Cloudflare, got resource_type=%q ViaCloudflare=%v",
+			wafPlan.ResourceType, wafPlan.ViaCloudflare)
+	}
 
 	_, err = TranslateSecrets(ctx, cat, SecretsSpec{Name: "sec", Region: linodeRegion, Provider: ProviderLinode})
 	assertUnsupported("secrets-manager", err)

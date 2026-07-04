@@ -271,43 +271,79 @@ func renderSGGCP(p SecurityGroupPlan) string {
 }
 
 func renderSGDO(p SecurityGroupPlan) string {
-	name := tfName(p.SGName)
-	var b strings.Builder
-	fmt.Fprintf(&b, "resource \"digitalocean_firewall\" %q {\n", name)
-	fmt.Fprintf(&b, "  name = %q\n", p.SGName)
-	// DO firewalls attach to droplets/tags, not VPCs; the network association is
-	// carried via the droplets that join later. We expose it as a tag for intent.
-	for _, r := range p.Rules {
-		blockName := "inbound_rule"
-		cidrKey := "source_addresses"
-		tagKey := "source_tags"
-		if r.Direction == DirEgress {
-			blockName = "outbound_rule"
-			cidrKey = "destination_addresses"
-			tagKey = "destination_tags"
+	baseName := tfName(p.SGName)
+
+	// DO firewalls attach to droplets by TAG (there is no VPC-scoped firewall), and
+	// a single digitalocean_firewall may reference AT MOST 5 tags (DO API: 422 "must
+	// have no more than 5 tags"). The estate has one "pyx-<svc>" tag per service, and
+	// there are more than 5 services — so a single firewall carrying every tag is
+	// rejected. Split into ONE firewall PER TAG (per-service), each with an identical
+	// rule set. This keeps every firewall at exactly 1 tag (well under the 5-tag cap)
+	// and mirrors the tag model cleanly: each pool's droplets get their own firewall.
+	//
+	// When there are no droplet tags (no DO scale-group), fall back to a single
+	// tagless firewall so the rules are still rendered.
+	tags := make([]string, len(p.DropletTags))
+	copy(tags, p.DropletTags)
+	sort.Strings(tags)
+
+	renderRules := func(b *strings.Builder) {
+		for _, r := range p.Rules {
+			blockName := "inbound_rule"
+			cidrKey := "source_addresses"
+			tagKey := "source_tags"
+			if r.Direction == DirEgress {
+				blockName = "outbound_rule"
+				cidrKey = "destination_addresses"
+				tagKey = "destination_tags"
+			}
+			fmt.Fprintf(b, "\n  %s {\n", blockName)
+			fmt.Fprintf(b, "    protocol   = %q\n", doProto(r.Protocol))
+			if r.Protocol == ProtoTCP || r.Protocol == ProtoUDP {
+				fmt.Fprintf(b, "    port_range = %q\n", portRangeString(r.FromPort, r.ToPort))
+			}
+			switch {
+			case r.SourceSG != "":
+				// DigitalOcean firewalls have no SG-references-SG primitive: a peer
+				// security-group is migrated to a DO TAG. The referenced SG's droplets
+				// carry that tag, so source_tags/destination_tags reproduce the AWS
+				// "allow from this security group" semantics.
+				fmt.Fprintf(b, "    %s = [%q]\n", tagKey, tfName(r.SourceSG))
+			case r.SourcePrefixList != "":
+				// DO has no managed-prefix-list primitive: inline the resolved CIDRs the
+				// prefix-list expands to (translate populated ResolvedPrefixCIDRs).
+				fmt.Fprintf(b, "    %s = %s\n", cidrKey, hclCIDRList(r.ResolvedPrefixCIDRs))
+			case r.CIDRs != nil:
+				fmt.Fprintf(b, "    %s = %s\n", cidrKey, hclCIDRList(r.CIDRs))
+			}
+			b.WriteString("  }\n")
 		}
-		fmt.Fprintf(&b, "\n  %s {\n", blockName)
-		fmt.Fprintf(&b, "    protocol   = %q\n", doProto(r.Protocol))
-		if r.Protocol == ProtoTCP || r.Protocol == ProtoUDP {
-			fmt.Fprintf(&b, "    port_range = %q\n", portRangeString(r.FromPort, r.ToPort))
-		}
-		switch {
-		case r.SourceSG != "":
-			// DigitalOcean firewalls have no SG-references-SG primitive: a peer
-			// security-group is migrated to a DO TAG. The referenced SG's droplets
-			// carry that tag, so source_tags/destination_tags reproduce the AWS
-			// "allow from this security group" semantics.
-			fmt.Fprintf(&b, "    %s = [%q]\n", tagKey, tfName(r.SourceSG))
-		case r.SourcePrefixList != "":
-			// DO has no managed-prefix-list primitive: inline the resolved CIDRs the
-			// prefix-list expands to (translate populated ResolvedPrefixCIDRs).
-			fmt.Fprintf(&b, "    %s = %s\n", cidrKey, hclCIDRList(r.ResolvedPrefixCIDRs))
-		case r.CIDRs != nil:
-			fmt.Fprintf(&b, "    %s = %s\n", cidrKey, hclCIDRList(r.CIDRs))
-		}
-		b.WriteString("  }\n")
 	}
-	b.WriteString("}\n")
+
+	var b strings.Builder
+
+	if len(tags) == 0 {
+		fmt.Fprintf(&b, "resource \"digitalocean_firewall\" %q {\n", baseName)
+		fmt.Fprintf(&b, "  name = %q\n", p.SGName)
+		renderRules(&b)
+		b.WriteString("}\n")
+		return b.String()
+	}
+
+	for i, tag := range tags {
+		// Per-service resource label/name derived from the tag so each firewall is
+		// stable and unique. Strip the "pyx-" prefix for a compact suffix.
+		svc := tfName(strings.TrimPrefix(tag, "pyx-"))
+		resName := baseName + "_" + svc
+		fmt.Fprintf(&b, "resource \"digitalocean_firewall\" %q {\n", resName)
+		fmt.Fprintf(&b, "  name = \"%s-%s\"\n", p.SGName, svc)
+		fmt.Fprintf(&b, "  tags = %s\n", hclStringList([]string{tag}))
+		renderRules(&b)
+		b.WriteString("}\n")
+		if i < len(tags)-1 {
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 
@@ -474,9 +510,10 @@ func renderVMDO(p VMPlan) string {
 //   - GCP: google_compute_instance_template +
 //     google_compute_region_instance_group_manager +
 //     google_compute_region_autoscaler (min/max replicas, health check).
-//   - DigitalOcean: digitalocean_kubernetes_cluster + an auto-scaling node_pool
-//     (DO has no native VM ASG primitive, so the scale-group maps to a DOKS node
-//     pool — the canonical DO autoscaling answer; min_nodes>=1 self-heal).
+//   - DigitalOcean: digitalocean_droplet_autoscale (a pool of droplets — DO's
+//     native VM autoscaling primitive; a lift-and-shift of the AWS ASG, VM+systemd
+//     not DOKS; config min/max mirroring the ASG, droplet_template with the same
+//     user_data/VPC/size; min_instances>=1 self-heal).
 //
 // Linode and StackIt still never reach here for a scale-group: TranslateScaleGroup
 // rejects them with ErrAutoscaleUnsupported (no native VM ASG primitive and no
@@ -502,9 +539,11 @@ func RenderScaleGroupHCL(plan ScaleGroupPlan) (string, error) {
 	case ProviderAlibaba:
 		return renderASGAlibaba(plan), nil
 	case ProviderDigitalOcean:
-		// DO's native droplet-autoscale (digitalocean_droplet_autoscale) over a
-		// droplet_template — carries per-instance user_data (unlike DOKS), matching
-		// the live estate. Self-heal: min_instances >= 1 replaces failed droplets.
+		// DO's native VM autoscaling primitive: a digitalocean_droplet_autoscale
+		// pool over a droplet_template (a lift-and-shift of the AWS ASG — droplets +
+		// systemd via user_data, NOT DOKS), matching the live estate. Self-heal:
+		// min_instances >= 1 keeps >=1 healthy droplet and replaces failed ones —
+		// the ASG-of-1 pattern.
 		return renderScaleGroupDO(plan), nil
 	case ProviderLinode:
 		return "", fmt.Errorf(
@@ -602,19 +641,40 @@ func renderASGAWS(p ScaleGroupPlan) string {
 	return b.String()
 }
 
+// doScaleGroupTag returns the per-service droplet tag a DO scale-group pool
+// carries ("pyx-<svc>") when no explicit ScaleGroupPlan.Tag is set. The
+// load-balancer forwards to the pool by this tag and the firewall applies to it
+// by this tag — the tag IS the wiring between the pool, the LB and the firewall
+// (the DO analogue of the AWS ASG target-group / SG membership). Used by the
+// estate-level firewall DropletTags derivation (see AssembleHCL).
+func doScaleGroupTag(groupName string) string {
+	return "pyx-" + tfName(groupName)
+}
+
 // renderScaleGroupDO maps an abstract scale-group onto DigitalOcean's native
-// droplet-autoscale primitive: a digitalocean_droplet_autoscale group over a
+// VM-autoscaling primitive: a digitalocean_droplet_autoscale pool over a
 // droplet_template. This is the shape the live estate already runs (mirrors
 // catalog.AssembleDOBaseline) — chosen over a DOKS node pool because it carries
 // per-instance user_data (the durable-bootstrap services rely on it) and keeps
-// the runtime droplet+systemd, not containers.
+// the runtime droplet+systemd, not containers. It is a direct lift-and-shift of
+// the AWS aws_autoscaling_group: the same catalog-resolved droplet SKU (size)
+// and image, the same user_data the ASG bakes into its launch template, placed
+// in the estate VPC, tagged so the LB and firewall target it.
 //
-// Self-heal: min_instances>=1 is the floor; the group replaces failed droplets
-// and, with target_cpu_utilization, scales within [min, max]. Fixed N+1 is
-// expressed as min==max==N. The droplet SIZE is the catalog-resolved SKU (the
-// same virtual_machine SKU resolution the VM/ASG components use), the image is
-// the catalog OS slug, and the template joins the place's VPC (vpc_uuid). DO is
-// region-scoped (no sub-zones), so ScaleGroupPlan.Zones is empty for DO.
+// Scaling semantics mirror the ASG bounds:
+//   - fixed pool (min == max): a static-count pool, the self-healing ASG-of-N
+//     pattern (a failed droplet is replaced, the count held). This is what the
+//     platform scale-groups-of-1 use.
+//   - elastic pool (min < max): a target-based pool (target_cpu_utilization =
+//     0.6) that scales between min and max.
+//
+// The config block always carries target_cpu_utilization = 0.6: DO's autoscale
+// API requires a utilization target on every pool, fixed pools included (a pool
+// with no target is rejected 400). For fixed pools the target is inert.
+//
+// Self-heal floor: min_instances >= 1 (enforced in TranslateScaleGroup for DO)
+// keeps at least one healthy droplet. DO pools are region-scoped (no
+// sub-zones), so ScaleGroupPlan.Zones is empty for DO.
 func renderScaleGroupDO(p ScaleGroupPlan) string {
 	name := tfName(p.GroupName)
 	var b strings.Builder
@@ -639,11 +699,19 @@ func renderScaleGroupDO(p ScaleGroupPlan) string {
 	if p.NetworkName != "" {
 		fmt.Fprintf(&b, "    vpc_uuid           = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
 	}
-	// Tags: the default "pyxcloud" plus the optional fleet-selection tag a sibling
-	// firewall/load-balancer targets by (droplet_tag).
-	tags := []string{"\"pyxcloud\""}
-	if p.Tag != "" {
-		tags = append(tags, fmt.Sprintf("%q", p.Tag))
+	// Tags: the default "pyxcloud", the per-service fleet-selection tag every
+	// scale-group gets automatically (doScaleGroupTag, "pyx-<name>" — the DO
+	// analogue of an AWS ASG's propagated tag, which a sibling firewall/
+	// load-balancer targets by droplet_tag), plus an optional explicit p.Tag
+	// override/addition (e.g. do_baseline.go's per-service tag). Deduplicated so
+	// an explicit Tag matching the auto-derived convention doesn't repeat.
+	tagSet := []string{"pyxcloud", doScaleGroupTag(p.GroupName)}
+	if p.Tag != "" && p.Tag != tagSet[1] {
+		tagSet = append(tagSet, p.Tag)
+	}
+	tags := make([]string, len(tagSet))
+	for i, t := range tagSet {
+		tags[i] = fmt.Sprintf("%q", t)
 	}
 	fmt.Fprintf(&b, "    tags               = [%s]\n", strings.Join(tags, ", "))
 	// ssh_keys is a REQUIRED argument on digitalocean_droplet_autoscale's
@@ -911,6 +979,54 @@ func renderLBAWS(p LoadBalancerPlan) string {
 	fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", p.LBName)
 	b.WriteString("}\n\n")
 
+	// Per-host DISTINCT-service target groups (pd-MIG-LB-L7-ROUTING / GAP-4). A
+	// layer-7 rule may forward to its OWN service (rule.TargetName) — the AWS
+	// analogue of the DOKS Ingress backending a distinct service per host. For each
+	// distinct TargetName referenced by the rules we synthesise a dedicated
+	// aws_lb_target_group ("<TargetName>_tg") plus its ASG attachment, so the AWS
+	// source render is fully plannable with per-host distinct targets (was: rules
+	// referenced an undeclared target group). Rules without a TargetName keep
+	// forwarding to the LB's default target group. Health-check shape mirrors the
+	// default TG (same instance-served protocol/port).
+	for _, tn := range distinctRuleTargetNames(p.Listeners) {
+		perTG := tfName(tn) + "_tg"
+		fmt.Fprintf(&b, "resource \"aws_lb_target_group\" %q {\n", perTG)
+		fmt.Fprintf(&b, "  name        = \"%s-tg\"\n", tfName(tn))
+		fmt.Fprintf(&b, "  port        = %d\n", hc.Port)
+		fmt.Fprintf(&b, "  protocol    = %q\n", lbAWSTargetGroupProto(hc.Protocol))
+		b.WriteString("  target_type = \"instance\"\n")
+		if p.NetworkName != "" {
+			fmt.Fprintf(&b, "  vpc_id      = data.aws_vpc.default.id\n")
+		}
+		b.WriteString("  health_check {\n")
+		fmt.Fprintf(&b, "    protocol            = %q\n", lbAWSProto(hc.Protocol))
+		if hc.Protocol == LBProtoHTTP || hc.Protocol == LBProtoHTTPS {
+			fmt.Fprintf(&b, "    path                = %q\n", hc.Path)
+		}
+		fmt.Fprintf(&b, "    interval            = %d\n", hc.IntervalSeconds)
+		fmt.Fprintf(&b, "    healthy_threshold   = %d\n", hc.HealthyThreshold)
+		fmt.Fprintf(&b, "    unhealthy_threshold = %d\n", hc.UnhealthyThreshold)
+		b.WriteString("  }\n")
+		if p.Stickiness {
+			b.WriteString("  stickiness {\n")
+			b.WriteString("    type            = \"lb_cookie\"\n")
+			b.WriteString("    cookie_duration = 86400\n")
+			b.WriteString("    enabled         = true\n")
+			b.WriteString("  }\n")
+		}
+		fmt.Fprintf(&b, "  tags = { Name = %q, pyxcloud = \"true\" }\n", tn)
+		b.WriteString("}\n\n")
+
+		// Wire the distinct service's scale-group onto its own target group, the same
+		// way the LB's default target is attached to its ASG. The sibling scale-group
+		// component renders the ASG ("<TargetName>_asg"); here we emit only the wiring.
+		attachName := fmt.Sprintf("%s_attach", tfName(tn))
+		fmt.Fprintf(&b, "resource \"aws_autoscaling_attachment\" %q {\n", attachName)
+		fmt.Fprintf(&b, "  autoscaling_group_name = aws_autoscaling_group.%s.name\n", asgResourceLabel(tn))
+		fmt.Fprintf(&b, "  lb_target_group_arn    = aws_lb_target_group.%s.arn\n", perTG)
+		b.WriteString("}\n\n")
+	}
+
 	// One listener per declared listener port. The default action forwards to the
 	// target group; explicit layer-7 routing rules (path/host/priority/admin-VPN
 	// gate) render as aws_lb_listener_rule resources attached to the listener.
@@ -958,6 +1074,28 @@ func renderLBAWS(p LoadBalancerPlan) string {
 	}
 
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// distinctRuleTargetNames returns the DISTINCT, deterministically-ordered set of
+// rule TargetName overrides across all listeners (empty names skipped). Each names
+// a sibling scale-group the AWS renderer synthesises a dedicated
+// aws_lb_target_group for, giving per-host distinct-service routing parity with the
+// DOKS Ingress (pd-MIG-LB-L7-ROUTING / GAP-4).
+func distinctRuleTargetNames(listeners []LBListenerPlan) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range listeners {
+		for _, r := range l.Rules {
+			tn := strings.TrimSpace(r.TargetName)
+			if tn == "" || seen[tn] {
+				continue
+			}
+			seen[tn] = true
+			out = append(out, tn)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // renderLBAWSListenerRules emits one aws_lb_listener_rule per resolved layer-7
@@ -1119,6 +1257,9 @@ func renderLBDO(p LoadBalancerPlan) string {
 
 	// One forwarding rule per listener. The LB terminates entry_protocol on
 	// entry_port and forwards to the same target_protocol/port on the droplets.
+	// An HTTPS entry needs either a managed certificate or tls_passthrough; we
+	// pass TLS through to the droplets (the service terminates TLS), which keeps
+	// the rule valid against the DO API without wiring a certificate resource.
 	for _, l := range p.Listeners {
 		proto := lbDOProto(l.Protocol)
 		b.WriteString("\n  forwarding_rule {\n")
@@ -1156,142 +1297,30 @@ func renderLBDO(p LoadBalancerPlan) string {
 	}
 
 	// A scale-group/vm target on DO is fronted by a droplet tag. Default is the
-	// generic "pyxcloud" tag (every instance); a specific TargetTag (e.g.
-	// "pyx-backend") fronts only that fleet — matching the per-service tag the
-	// droplet-autoscale template stamps.
+	// auto-derived per-target tag ("pyx-<name>", doScaleGroupTag) every
+	// droplet_autoscale pool carries automatically (see renderScaleGroupDO) — the
+	// tag is the wiring between the LB and the autoscaling pool (the DO analogue
+	// of an ASG target-group attachment). An explicit TargetTag overrides it (e.g.
+	// to front a differently-tagged fleet, or a plain vm target).
 	if p.TargetName != "" {
 		dropletTag := p.TargetTag
 		if dropletTag == "" {
-			dropletTag = "pyxcloud"
+			dropletTag = doScaleGroupTag(p.TargetName)
 		}
 		fmt.Fprintf(&b, "\n  droplet_tag = %q\n", dropletTag)
 	}
 
 	b.WriteString("}\n")
 
-	// Layer-7 routing rules (pd-MIG-LB-L7-ROUTING). A digitalocean_loadbalancer
-	// forwarding_rule is pure port-to-port mapping: it has NO host/path matching
-	// and NO per-rule source-IP gate, so it cannot express ALB listener-rule
-	// parity. The canonical, plan-time-expressible DO equivalent is a DOKS Ingress
-	// (the same kubernetes_manifest convention the cert-manager / scheduled-trigger
-	// paths use): host + path rules map to ingress rules, and the admin-VPN gate is
-	// preserved as a documented constraint via the ingress-nginx whitelist-source-range
-	// annotation (an in-cluster source-IP allow-list, the DO analogue of the ALB
-	// source_ip condition). This is appended only when L7 rules are declared.
-	if hasLBRoutingRules(p.Listeners) {
-		b.WriteString("\n")
-		b.WriteString(renderLBDOIngress(p))
-	}
+	// NOTE (pd-MIG-CUTOVER-F2-01 pivot): with the scale-group now rendered as a
+	// digitalocean_droplet_autoscale pool (plain droplets + LB), the DOKS Ingress
+	// (kubernetes_manifest) that used to carry the layer-7 host/path routing is no
+	// longer applicable — there is no cluster in front of the pool. Per-host
+	// DISTINCT-service routing is therefore not expressed on DO here (a plain DO
+	// LB forwarding_rule is port-to-port only). The LB forwards all traffic to the
+	// primary target pool by droplet tag; host-based fan-out is a follow-up
+	// (either per-host LBs or an in-pool reverse proxy) — see BESPOKE-GAPS.md.
 	return b.String()
-}
-
-// hasLBRoutingRules reports whether any listener carries layer-7 routing rules.
-func hasLBRoutingRules(listeners []LBListenerPlan) bool {
-	for _, l := range listeners {
-		if len(l.Rules) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// renderLBDOIngress renders the DOKS Ingress that carries the layer-7 routing
-// rules a DO load-balancer forwarding_rule cannot express (host/path match +
-// admin-VPN source-IP gate). Host/path rules become ingress rules; the union of
-// all admin-VPN CIDRs across the rules becomes the ingress-nginx
-// whitelist-source-range annotation (a DOCUMENTED constraint: DO enforces the
-// admin/VPN gate at the in-cluster ingress, not on the managed LB).
-func renderLBDOIngress(p LoadBalancerPlan) string {
-	name := tfName(p.LBName) + "_ingress"
-	var b strings.Builder
-
-	// Collect the deduplicated, deterministic admin-VPN CIDR union for the gate.
-	seen := map[string]bool{}
-	var vpnCIDRs []string
-	for _, l := range p.Listeners {
-		for _, r := range l.Rules {
-			for _, c := range r.AdminVPNCIDRs {
-				if c != "" && !seen[c] {
-					seen[c] = true
-					vpnCIDRs = append(vpnCIDRs, c)
-				}
-			}
-		}
-	}
-	sort.Strings(vpnCIDRs)
-
-	fmt.Fprintf(&b, "resource \"kubernetes_manifest\" %q {\n", name)
-	b.WriteString("  manifest = {\n")
-	b.WriteString("    apiVersion = \"networking.k8s.io/v1\"\n")
-	b.WriteString("    kind       = \"Ingress\"\n")
-	b.WriteString("    metadata = {\n")
-	fmt.Fprintf(&b, "      name      = %q\n", tfName(p.LBName))
-	b.WriteString("      namespace = \"default\"\n")
-	b.WriteString("      annotations = {\n")
-	b.WriteString("        \"kubernetes.io/ingress.class\" = \"nginx\"\n")
-	if len(vpnCIDRs) > 0 {
-		// Admin-VPN gate: the ingress-nginx source-range whitelist preserves the ALB
-		// source_ip admin/VPN allow-list semantics in-cluster (documented constraint).
-		fmt.Fprintf(&b, "        \"nginx.ingress.kubernetes.io/whitelist-source-range\" = %q\n", strings.Join(vpnCIDRs, ","))
-	}
-	b.WriteString("      }\n")
-	b.WriteString("    }\n")
-	b.WriteString("    spec = {\n")
-	b.WriteString("      rules = [\n")
-	for _, l := range p.Listeners {
-		for _, r := range l.Rules {
-			// One ingress rule per host (or a host-less rule). Each path pattern
-			// becomes an HTTP path on that host, backed by the rule's service.
-			svc := tfName(p.LBName) + "-svc"
-			if r.TargetName != "" {
-				svc = tfName(r.TargetName) + "-svc"
-			}
-			paths := r.PathPatterns
-			if len(paths) == 0 {
-				paths = []string{"/"}
-			}
-			hosts := r.HostHeaders
-			if len(hosts) == 0 {
-				hosts = []string{""}
-			}
-			for _, h := range hosts {
-				b.WriteString("        {\n")
-				if h != "" {
-					fmt.Fprintf(&b, "          host = %q\n", h)
-				}
-				b.WriteString("          http = {\n            paths = [\n")
-				for _, pat := range paths {
-					b.WriteString("              {\n")
-					fmt.Fprintf(&b, "                path     = %q\n", ingressPath(pat))
-					b.WriteString("                pathType = \"Prefix\"\n")
-					b.WriteString("                backend = {\n                  service = {\n")
-					fmt.Fprintf(&b, "                    name = %q\n", svc)
-					fmt.Fprintf(&b, "                    port = { number = %d }\n", l.Port)
-					b.WriteString("                  }\n                }\n")
-					b.WriteString("              },\n")
-				}
-				b.WriteString("            ]\n          }\n")
-				b.WriteString("        },\n")
-			}
-		}
-	}
-	b.WriteString("      ]\n")
-	b.WriteString("    }\n")
-	b.WriteString("  }\n")
-	b.WriteString("}\n")
-	return b.String()
-}
-
-// ingressPath maps an ALB-style path pattern ("/admin/*") to a Kubernetes Ingress
-// Prefix path ("/admin"), trimming the trailing glob the ingress matches by prefix.
-func ingressPath(pattern string) string {
-	pattern = strings.TrimSpace(pattern)
-	pattern = strings.TrimSuffix(pattern, "*")
-	pattern = strings.TrimSuffix(pattern, "/")
-	if pattern == "" {
-		return "/"
-	}
-	return pattern
 }
 
 // RenderManagedDatabaseHCL renders a resolved ManagedDatabasePlan into concrete
@@ -1644,6 +1673,18 @@ func renderObjectStorageAWS(p ObjectStoragePlan) string {
 		fmt.Fprintf(&b, "  target_prefix = %q\n", p.AccessLogs.TargetPrefix)
 		b.WriteString("}\n")
 	}
+	// Static-website hosting (static-site component): the AWS v4+ website sub-resource.
+	if p.Website != nil {
+		fmt.Fprintf(&b, "\nresource \"aws_s3_bucket_website_configuration\" %q {\n", label)
+		fmt.Fprintf(&b, "  bucket = aws_s3_bucket.%s.id\n", label)
+		b.WriteString("  index_document {\n")
+		fmt.Fprintf(&b, "    suffix = %q\n", p.Website.IndexDocument)
+		b.WriteString("  }\n")
+		b.WriteString("  error_document {\n")
+		fmt.Fprintf(&b, "    key = %q\n", p.Website.ErrorDocument)
+		b.WriteString("  }\n")
+		b.WriteString("}\n")
+	}
 	return b.String()
 }
 
@@ -1739,6 +1780,17 @@ func renderObjectStorageDO(p ObjectStoragePlan) string {
 	if p.AccessLogs != nil {
 		fmt.Fprintf(&b, "\n# NOTE: server access logging (target %q) has no DO Spaces equivalent; "+
 			"front the bucket with a CDN/edge log pipeline if access logs are required.\n", p.AccessLogs.TargetBucket)
+	}
+	// Static-website hosting (static-site component, pd-MIG-CUTOVER-F1-01): the DO
+	// Terraform provider's digitalocean_spaces_bucket resource exposes no
+	// index_document/error_document arguments (unlike S3). The website index/error
+	// docs are served by the Cloudflare CDN front (the static-site component pairs
+	// this bucket with a Cloudflare proxy), which owns SPA routing/fallback. Record
+	// the intent as a comment rather than emitting an unsupported argument.
+	if p.Website != nil {
+		fmt.Fprintf(&b, "\n# static-website origin: index=%q error=%q — served via the paired Cloudflare CDN "+
+			"front (DO Spaces has no native index/error-document argument).\n",
+			p.Website.IndexDocument, p.Website.ErrorDocument)
 	}
 	return b.String()
 }

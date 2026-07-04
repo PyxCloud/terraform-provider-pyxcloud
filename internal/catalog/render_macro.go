@@ -134,8 +134,10 @@ func renderCacheDO(p CachePlan) string {
 
 // ── managed-queue / event-streaming ──────────────────────────────────────────
 
-// RenderMessagingHCL renders a MessagingPlan (queue or stream) into HCL. DO never
-// reaches here (TranslateQueue/TranslateStream reject it with a clean error).
+// RenderMessagingHCL renders a MessagingPlan (queue or stream) into HCL.
+// DigitalOcean routes through the operator-pattern renderers (B1:
+// pd-MIG-B1-QUEUE-STREAM-OPERATORS): RabbitMQ Cluster Operator for queues and
+// Strimzi Kafka Operator for streams, both installed on DOKS via Helm + CRs.
 func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 	switch plan.Kind {
 	case KindQueue:
@@ -144,6 +146,9 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 			return renderQueueAWS(plan), nil
 		case ProviderGCP:
 			return renderQueueGCP(plan), nil
+		case ProviderDigitalOcean:
+			// B1: SQS → RabbitMQ Cluster Operator on DOKS.
+			return renderQueueDO(plan), nil
 		case ProviderAzure:
 			return renderMessagingAzure(plan), nil
 		case ProviderUbicloud:
@@ -162,6 +167,9 @@ func RenderMessagingHCL(plan MessagingPlan) (string, error) {
 			return renderStreamAWS(plan), nil
 		case ProviderGCP:
 			return renderStreamGCP(plan), nil
+		case ProviderDigitalOcean:
+			// B1: Kinesis → Strimzi Kafka Operator on DOKS.
+			return renderStreamDO(plan), nil
 		case ProviderAzure:
 			return renderMessagingAzure(plan), nil
 		case ProviderUbicloud:
@@ -378,6 +386,13 @@ func renderDNSDO(p DNSZonePlan) string {
 
 // RenderCDNHCL renders a CDNPlan into HCL.
 func RenderCDNHCL(plan CDNPlan) (string, error) {
+	// B5 gap: DO + non-Spaces origin routes through Cloudflare CDN (arbitrary origin).
+	if plan.UsesCloudflare {
+		return RenderCloudfareCDNHCL(CloudflareCDNPlan{
+			Name: plan.Name, OriginHost: plan.OriginName, Host: plan.Name,
+			ResourceType: "cloudflare_dns_record",
+		})
+	}
 	switch plan.Provider {
 	case ProviderAWS:
 		return renderCDNAWS(plan), nil
@@ -480,6 +495,11 @@ func renderCDNDO(p CDNPlan) string {
 
 // RenderWAFHCL renders a WAFPlan into HCL. DO never reaches here.
 func RenderWAFHCL(plan WAFPlan) (string, error) {
+	// DigitalOcean and Linode route through Cloudflare WAF regardless of the
+	// declared cloud provider (pd-MIG-B2-WAF-CLOUDFLARE).
+	if plan.ViaCloudflare {
+		return renderWAFCloudflare(plan), nil
+	}
 	switch plan.Provider {
 	case ProviderAWS:
 		return renderWAFAWS(plan), nil
@@ -501,6 +521,36 @@ func RenderWAFHCL(plan WAFPlan) (string, error) {
 	default:
 		return "", fmt.Errorf("render: unsupported provider %q for waf-service", plan.Provider)
 	}
+}
+
+// renderWAFCloudflare renders a Cloudflare WAF (cloudflare_ruleset) that enables
+// the Cloudflare OWASP managed ruleset for the zone. This is the preferred WAF
+// path for providers with no managed WAF primitive (DigitalOcean, Linode); the
+// platform already terminates at Cloudflare, so no new infrastructure is added.
+//
+// The zone_id is supplied out of band via var.cloudflare_zone_id (the same
+// convention used by the Cloudflare DNS component).
+func renderWAFCloudflare(p WAFPlan) string {
+	name := tfName(p.Name)
+	var b strings.Builder
+	b.WriteString("variable \"cloudflare_zone_id\" {\n  type = string\n}\n\n")
+	fmt.Fprintf(&b, "resource \"cloudflare_ruleset\" %q {\n", name)
+	b.WriteString("  # Cloudflare WAF — OWASP managed ruleset (pd-MIG-B2-WAF-CLOUDFLARE)\n")
+	b.WriteString("  kind    = \"zone\"\n")
+	b.WriteString("  name    = \"default\"\n")
+	b.WriteString("  phase   = \"http_request_firewall_managed\"\n")
+	b.WriteString("  zone_id = var.cloudflare_zone_id\n")
+	b.WriteString("  rules {\n")
+	b.WriteString("    action = \"execute\"\n")
+	b.WriteString("    action_parameters {\n")
+	b.WriteString("      id = \"4814384a9e5d4991b9815dcfc25d2f1f\" # Cloudflare OWASP Core Ruleset\n")
+	b.WriteString("    }\n")
+	b.WriteString("    expression  = \"true\"\n")
+	b.WriteString("    description = \"Execute OWASP Core Ruleset\"\n")
+	b.WriteString("    enabled     = true\n")
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
 }
 
 func renderWAFAWS(p WAFPlan) string {

@@ -80,6 +80,43 @@ func run() error {
 		}
 	}
 
+	// DURABLE render (pd-MIG-CUTOVER-F5): render the FULL per-service bootstrap for
+	// every droplet so a self-heal/roll boots the real service + edge, not a bare
+	// box. Opt-in via DO_FULL_SERVICE_BOOTSTRAPS=1. When set, the sso box inlines
+	// its secret VALUES (Keycloak is fully configured on boot), so its extra secrets
+	// must be injected from Secrets Manager; the other services keep ${var.<x>} refs
+	// resolved at apply from -var (see variables.tf + cutover/README.md).
+	full := strings.TrimSpace(os.Getenv("DO_FULL_SERVICE_BOOTSTRAPS")) == "1"
+	if full {
+		// The sso render (RenderSSODOBootstrapUserData) emits KC_DB_URL verbatim and
+		// requires the jdbc form (jdbc:postgresql://host:port/db?params). The
+		// beta-DO-keycloak-db-url secret is stored as a libpq URI
+		// (postgres://user:pass@host:port/db?sslmode=require) — pgjdbc rejects that
+		// scheme ("Driver does not support the provided URL") and Keycloak crash-loops.
+		// Normalize to jdbc here (creds are injected separately via KC_DB_USERNAME/
+		// KC_DB_PASSWORD), mirroring the backend #127/#128 jdbc-normalize fix.
+		secrets.SSOKCDBURL = normalizeJDBC(os.Getenv("DO_SSO_KCDB_URL"))
+		secrets.SSOKCDBUsername = os.Getenv("DO_SSO_KCDB_USERNAME")
+		secrets.SSOKCDBPassword = os.Getenv("DO_SSO_KCDB_PASSWORD")
+		secrets.SSOAdminPassword = os.Getenv("DO_SSO_ADMIN_PASSWORD")
+		secrets.SSOVaultOIDCSecret = os.Getenv("DO_SSO_VAULT_OIDC_SECRET")
+		secrets.SSORunnerPublicKey = os.Getenv("DO_SSO_RUNNER_PUBLIC_KEY")
+		secrets.SSOSMTPUser = os.Getenv("DO_SSO_SMTP_USER")
+		secrets.SSOSMTPPassword = os.Getenv("DO_SSO_SMTP_PASSWORD")
+		secrets.SSOSenderEmail = os.Getenv("DO_SSO_SENDER_EMAIL")
+		for name, v := range map[string]string{
+			"DO_SSO_KCDB_URL":          secrets.SSOKCDBURL,
+			"DO_SSO_KCDB_USERNAME":     secrets.SSOKCDBUsername,
+			"DO_SSO_KCDB_PASSWORD":     secrets.SSOKCDBPassword,
+			"DO_SSO_ADMIN_PASSWORD":    secrets.SSOAdminPassword,
+			"DO_SSO_VAULT_OIDC_SECRET": secrets.SSOVaultOIDCSecret,
+		} {
+			if strings.TrimSpace(v) == "" {
+				return fmt.Errorf("missing env %s — required for DO_FULL_SERVICE_BOOTSTRAPS (sso inlines its secrets; see cutover/README.md)", name)
+			}
+		}
+	}
+
 	ctx := context.Background()
 	// Same descriptor as the requested AssembleHCL(... DOBaselineInput ...) call.
 	in := catalog.DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
@@ -90,7 +127,7 @@ func run() error {
 	edgeTLS := strings.TrimSpace(os.Getenv("DO_EDGE_TLS_ORIGINS")) == "1"
 	// PrivateDBHost: reach pyx-main-db over the shared VPC private endpoint (the
 	// mesh_app secret stores the public host).
-	docs, err := catalog.AssembleDOBaseline(ctx, catalog.MustEmbedded(), in, secrets, catalog.DOBaselineOptions{PrivateDBHost: true, EdgeTLSOrigins: edgeTLS})
+	docs, err := catalog.AssembleDOBaseline(ctx, catalog.MustEmbedded(), in, secrets, catalog.DOBaselineOptions{PrivateDBHost: true, EdgeTLSOrigins: edgeTLS, FullServiceBootstraps: full})
 	if err != nil {
 		return fmt.Errorf("assemble DO baseline: %w", err)
 	}
@@ -128,11 +165,23 @@ provider "digitalocean" {
 	}
 
 	// variables.tf — do_ssh_keys is passed at apply time (-var 'do_ssh_keys=["57496891"]').
+	// When the DURABLE render is on, the var-model services (mcp/obs/sast/backend/vpn)
+	// reference secrets as ${var.<x>}; declare one sensitive variable per name so the
+	// estate `terraform validate`s. Values are supplied at apply time via -var from
+	// Secrets Manager (see cutover/README.md). sso is NOT here — it inlines its values.
 	vars := `variable "do_ssh_keys" {
   description = "DigitalOcean SSH key IDs injected into every droplet template."
   type        = list(string)
 }
 `
+	if full {
+		var vb strings.Builder
+		vb.WriteString(vars)
+		for _, name := range catalog.DOBaselineVariableNames() {
+			fmt.Fprintf(&vb, "\nvariable %q {\n  type      = string\n  sensitive = true\n}\n", name)
+		}
+		vars = vb.String()
+	}
 	if err := writeFile(filepath.Join(outDir, "variables.tf"), vars); err != nil {
 		return err
 	}
@@ -149,6 +198,27 @@ provider "digitalocean" {
 	fmt.Printf("rendered %d resource documents to %s/estate.tf (+ backend.tf, variables.tf)\n", len(docs), outDir)
 	fmt.Printf("next: (cd %s && terraform init && terraform plan -var 'do_ssh_keys=[\"57496891\"]')\n", outDir)
 	return nil
+}
+
+// normalizeJDBC converts a libpq postgres URI (postgres://user:pass@host:port/db?q)
+// to the jdbc:postgresql://host:port/db?q form Keycloak/pgjdbc requires, dropping the
+// embedded credentials (they are injected separately as KC_DB_USERNAME/KC_DB_PASSWORD).
+// An input that is already jdbc form (or empty) is returned unchanged.
+func normalizeJDBC(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.HasPrefix(raw, "jdbc:") {
+		return raw
+	}
+	// strip scheme
+	rest := raw
+	if i := strings.Index(rest, "://"); i >= 0 {
+		rest = rest[i+3:]
+	}
+	// strip creds (user:pass@)
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
+		rest = rest[at+1:]
+	}
+	return "jdbc:postgresql://" + rest
 }
 
 func writeFile(path, content string) error {

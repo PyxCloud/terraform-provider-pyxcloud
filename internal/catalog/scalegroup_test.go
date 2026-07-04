@@ -99,10 +99,10 @@ func TestTranslateScaleGroupGCP(t *testing.T) {
 	}
 }
 
-// TestTranslateScaleGroupDO asserts a DigitalOcean scale-group maps to a DOKS
-// node pool: DO has no native VM ASG primitive, so the AWS->DO migration renders
-// it as a digitalocean_kubernetes_cluster node_pool (the canonical DO autoscaling
-// answer), reusing the SAME droplet SKU resolution as the VM component.
+// TestTranslateScaleGroupDO asserts a DigitalOcean scale-group maps to a
+// droplet_autoscale pool: DO's native VM-autoscaling primitive is
+// digitalocean_droplet_autoscale (a lift-and-shift of the AWS ASG, VM+systemd not
+// DOKS), reusing the SAME droplet SKU resolution as the VM component.
 func TestTranslateScaleGroupDO(t *testing.T) {
 	t.Parallel()
 	// Frankfurt -> fra1; 2 vCPU / 4 GiB x86_64 -> a concrete DO droplet size.
@@ -112,7 +112,7 @@ func TestTranslateScaleGroupDO(t *testing.T) {
 		Min: 2, Max: 6, Desired: 3, Network: "production",
 	})
 	if err != nil {
-		t.Fatalf("DO scale-group should map to droplet-autoscale, got error: %v", err)
+		t.Fatalf("DO scale-group should map to droplet_autoscale, got error: %v", err)
 	}
 	if plan.CSPRegion != "fra1" {
 		t.Errorf("csp_region = %q, want fra1", plan.CSPRegion)
@@ -179,7 +179,8 @@ func TestScaleGroupLinodeStillUnsupported(t *testing.T) {
 
 // TestRenderScaleGroupDO asserts the DO scale-group renders to a native
 // droplet-autoscale group (NOT DOKS): config bounds, droplet_template joining the
-// VPC, per-instance user_data, the fleet tag, and the required ssh_keys.
+// VPC with the catalog-resolved size/image, per-instance user_data, the
+// auto-derived + explicit fleet tags, and the required ssh_keys.
 func TestRenderScaleGroupDO(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
@@ -200,8 +201,9 @@ func TestRenderScaleGroupDO(t *testing.T) {
 		`config {`,
 		`min_instances          = 1`,
 		`max_instances          = 5`,
-		`target_cpu_utilization = 0.6`,
+		`target_cpu_utilization = 0.6`, // elastic pool (min<max)
 		`droplet_template {`,
+		`size               = "s-2vcpu-4gb"`,
 		`region             = "fra1"`,
 		`vpc_uuid           = digitalocean_vpc.production.id`,
 		`tags               = ["pyxcloud", "pyx-web"]`,
@@ -213,9 +215,10 @@ func TestRenderScaleGroupDO(t *testing.T) {
 			t.Errorf("DO droplet-autoscale HCL missing %q:\n%s", want, hcl)
 		}
 	}
-	for _, bad := range []string{"digitalocean_kubernetes_cluster", "node_pool {"} {
+	// No DOKS/Kubernetes leakage on the scale-group path any more.
+	for _, bad := range []string{"digitalocean_kubernetes_cluster", "node_pool", "kubernetes_manifest"} {
 		if strings.Contains(hcl, bad) {
-			t.Errorf("DO scale-group must not emit %q:\n%s", bad, hcl)
+			t.Errorf("DO scale-group must not emit %q (droplet lift-and-shift, not DOKS):\n%s", bad, hcl)
 		}
 	}
 	if !IsASCII(hcl) {
@@ -230,7 +233,7 @@ func TestRenderScaleGroupDODefaults(t *testing.T) {
 	t.Parallel()
 	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
 		Name: "api", Region: "Frankfurt", Provider: "digitalocean",
-		CPU: 2, RAM: 4, Min: 1, Max: 2, Network: "production",
+		CPU: 2, RAM: 4, Min: 1, Max: 1, Desired: 1, Network: "production",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -244,6 +247,32 @@ func TestRenderScaleGroupDODefaults(t *testing.T) {
 	}
 	if strings.Contains(hcl, "user_data") {
 		t.Errorf("no user_data should omit the user_data argument:\n%s", hcl)
+	}
+}
+
+// TestRenderScaleGroupDOFixedPool asserts a fixed pool (min==max) renders a
+// static-count config (the self-healing ASG-of-N pattern the platform
+// scale-groups-of-1 use). DO's autoscale API requires a utilization target on
+// EVERY pool, fixed pools included (a pool with none is rejected 400), so
+// target_cpu_utilization = 0.6 must be present even when min==max.
+func TestRenderScaleGroupDOFixedPool(t *testing.T) {
+	t.Parallel()
+	plan, err := TranslateScaleGroup(context.Background(), MustEmbedded(), ScaleGroupSpec{
+		Name: "api", Region: "Frankfurt", Provider: "digitalocean",
+		CPU: 2, RAM: 4, Min: 1, Max: 1, Desired: 1, Network: "production",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hcl, err := RenderScaleGroupHCL(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(hcl, `min_instances          = 1`) || !strings.Contains(hcl, `max_instances          = 1`) {
+		t.Errorf("fixed pool should set min_instances==max_instances==1:\n%s", hcl)
+	}
+	if !strings.Contains(hcl, "target_cpu_utilization = 0.6") {
+		t.Errorf("fixed pool (min==max) must STILL emit target_cpu_utilization (DO API requires it):\n%s", hcl)
 	}
 }
 
@@ -504,6 +533,62 @@ func TestRenderASGAWSUserDataProfileManaged(t *testing.T) {
 		if !sgTestContains(hcl, want) {
 			t.Errorf("ASG HCL missing %q\n---\n%s", want, hcl)
 		}
+	}
+}
+
+// TestScaleGroupUserDataByProvider proves the per-provider bootstrap override:
+// the same canonical scale-group carries a DigitalOcean-specific user_data that
+// wins on DO, while other providers (and DO with no entry) fall back to the
+// generic UserData. This is the wiring that lets the mcp service pull its
+// artifact from Spaces on DO while AWS keeps its instance-role pull.
+func TestScaleGroupUserDataByProvider(t *testing.T) {
+	t.Parallel()
+	cat := MustEmbedded()
+
+	const generic = "#!/bin/bash\n# generic bootstrap\n"
+	const doOnly = "#!/bin/bash\n# DO-specific bootstrap: aws s3 cp --endpoint-url spaces\n"
+
+	// DigitalOcean: the DO override wins.
+	doPlan, err := TranslateScaleGroup(context.Background(), cat, ScaleGroupSpec{
+		Name: "mcp", Region: "Frankfurt", Provider: ProviderDigitalOcean,
+		CPU: 2, RAM: 4, Min: 1, Max: 1,
+		UserData:           generic,
+		UserDataByProvider: map[string]string{"digitalocean": doOnly},
+	})
+	if err != nil {
+		t.Fatalf("DO translate: %v", err)
+	}
+	if doPlan.UserData != doOnly {
+		t.Errorf("DO user_data = %q, want the DO override %q", doPlan.UserData, doOnly)
+	}
+
+	// AWS: no aws entry -> falls back to the generic UserData.
+	awsPlan, err := TranslateScaleGroup(context.Background(), cat, ScaleGroupSpec{
+		Name: "mcp", Region: "Dublin", Provider: ProviderAWS,
+		CPU: 2, RAM: 4, Min: 1, Max: 1,
+		UserData:           generic,
+		UserDataByProvider: map[string]string{"digitalocean": doOnly},
+	})
+	if err != nil {
+		t.Fatalf("AWS translate: %v", err)
+	}
+	if awsPlan.UserData != generic {
+		t.Errorf("AWS user_data = %q, want the generic fallback %q", awsPlan.UserData, generic)
+	}
+
+	// An empty override entry falls through to the generic default (both "no key"
+	// and "explicit empty" mean use the shared bootstrap).
+	emptyPlan, err := TranslateScaleGroup(context.Background(), cat, ScaleGroupSpec{
+		Name: "mcp", Region: "Frankfurt", Provider: ProviderDigitalOcean,
+		CPU: 2, RAM: 4, Min: 1, Max: 1,
+		UserData:           generic,
+		UserDataByProvider: map[string]string{"digitalocean": ""},
+	})
+	if err != nil {
+		t.Fatalf("empty-override translate: %v", err)
+	}
+	if emptyPlan.UserData != generic {
+		t.Errorf("empty-override user_data = %q, want the generic fallback %q", emptyPlan.UserData, generic)
 	}
 }
 

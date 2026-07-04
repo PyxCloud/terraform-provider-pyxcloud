@@ -68,6 +68,18 @@ func Mitigatable(componentType string) bool {
 	return ok
 }
 
+var vaultHAAliasTypes = map[string]bool{
+	"secrets-manager": true,
+	"kms":             true,
+	"encryption-key":  true,
+}
+
+// VaultHAAliasable reports whether a raw component should be redirected to the
+// DigitalOcean Vault-HA operator path before the VM mitigation fallback runs.
+func VaultHAAliasable(componentType string, provider string) bool {
+	return vaultHAAliasTypes[mitigationType(componentType)] && mitigationType(provider) == ProviderDigitalOcean
+}
+
 // nativeSupport records which providers have a managed as-a-Service for each
 // mitigatable component (derived from the catalog's per-provider render support).
 // A provider absent here for a type means: mitigate (self-host on a VM).
@@ -94,35 +106,52 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true,
 		ProviderOVH: true, ProviderStackIt: true,
 	},
+	// secrets-manager on DO is now handled by the vault-ha operator auto-alias
+	// (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): the assembler routes the raw type to the
+	// Vault-HA operator-pattern component on DOKS instead of the single-VM mitigation.
+	// Mark DO as natively supported so the mitigation fallback is NOT taken.
 	"secrets-manager": {
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
 		ProviderIBM: true, ProviderAlibaba: true, ProviderStackIt: true,
+		ProviderDigitalOcean: true,
 	},
 	"managed-queue": {
+		// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): DO now routes through the RabbitMQ
+		// Cluster Operator on DOKS instead of the single-VM mitigation. Mark DO as
+		// natively supported so the mitigation fallback in assemble.go is NOT taken.
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
-		ProviderAlibaba: true,
+		ProviderAlibaba: true, ProviderDigitalOcean: true,
 	},
 	"message-queue": {
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
-		ProviderAlibaba: true,
+		ProviderAlibaba: true, ProviderDigitalOcean: true,
 	},
 	"event-streaming": {
+		// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): DO now routes through the Strimzi
+		// Kafka Operator on DOKS instead of the single-VM Redpanda mitigation.
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
-		ProviderIBM: true, ProviderAlibaba: true,
+		ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true,
 	},
 	"event-bus": {
 		ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true,
-		ProviderIBM: true, ProviderAlibaba: true,
+		ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true,
 	},
-	"kms":            {ProviderAWS: true, ProviderGCP: true},
-	"encryption-key": {ProviderAWS: true, ProviderGCP: true},
+	// kms/encryption-key on DO are also handled by the vault-ha auto-alias
+	// (pd-MIG-B4-SECRETS-VAULT-AUTOALIAS): Vault Transit replaces KMS via the
+	// operator-pattern component, not a single-VM fallback.
+	"kms":            {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"encryption-key": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 	// monitoring is native on DO via the LGTM operator-pattern stack (kube-prometheus-stack
 	// + Loki + Grafana + Alertmanager), not a self-hosted-VM mitigation (pd-MIG-LGTM-MONITORING).
-	"monitoring":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
-	"synthetics":          {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
-	"uptime-check":        {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
-	"waf-service":         {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
-	"waf":                 {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
+	"monitoring":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"synthetics":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"uptime-check": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	// DigitalOcean and Linode have no managed WAF; they route through Cloudflare WAF
+	// (cloudflare_ruleset) instead of the degraded single-VM ModSecurity mitigation
+	// (pd-MIG-B2-WAF-CLOUDFLARE). Mark both as natively supported so the mitigation
+	// fallback in assemble.go is NOT taken for these providers.
+	"waf-service":         {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true, ProviderLinode: true},
+	"waf":                 {ProviderAWS: true, ProviderGCP: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderDigitalOcean: true, ProviderLinode: true},
 	"serverless-function": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true},
 	"managed-kubernetes":  {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true},
 	"container-service":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true},
@@ -132,8 +161,14 @@ var nativeSupport = map[string]map[string]bool{
 	},
 	"cdn-service":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
 	"cdn":           {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
-	"email-service": {ProviderAWS: true},
-	"email":         {ProviderAWS: true},
+	// email on DO has no managed transactional-email primitive, but F1-05
+	// (pd-MIG-CUTOVER-F1-05, BESPOKE GAP-2) routes it through the native catalog
+	// SMTP-relay render (AWS SES SMTP cross-cloud by default, or a 3rd-party relay)
+	// instead of the degraded single-VM SMTP mitigation. Mark DO natively supported
+	// so the mitigation fallback in assemble.go is NOT taken — mirrors the B1/B2/B4
+	// operator-alias precedents (queue/WAF/secrets). See docs/cutover/EMAIL-PATH.md.
+	"email-service": {ProviderAWS: true, ProviderDigitalOcean: true},
+	"email":         {ProviderAWS: true, ProviderDigitalOcean: true},
 	"block-storage": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
 }
 
@@ -216,7 +251,10 @@ func HasOperatorAlternative(componentType string) bool {
 		"tracing", "distributed-tracing", "tempo", "trace-collector", "otel-tracing",
 		"tls-certificate", "certificate", "cert-manager", "managed-certificate",
 		"vault-ha", "vault", "vault-cluster",
-		"workload-identity", "instance-identity", "workload-id":
+		"workload-identity", "instance-identity", "workload-id",
+		// B1 (pd-MIG-B1-QUEUE-STREAM-OPERATORS): queue/stream operator-pattern replacements.
+		"managed-queue", "message-queue",
+		"event-streaming", "event-bus":
 		return true
 	}
 	return false

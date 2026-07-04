@@ -32,12 +32,13 @@ var wantFullEstateResources = []struct{ component, resource string }{
 	{"platform observability scale-group", `resource "digitalocean_droplet_autoscale" "obs"`},
 	{"platform SAST scale-group", `resource "digitalocean_droplet_autoscale" "sast"`},
 	{"platform backend scale-group", `resource "digitalocean_droplet_autoscale" "backend"`},
+	{"platform mcp scale-group", `resource "digitalocean_droplet_autoscale" "mcp"`},
 	{"container-registry", `resource "digitalocean_container_registry" "app-images"`},
 	{"key-value-store", `resource "digitalocean_database_cluster" "jit-allowlist"`},
 	{"object-storage (Spaces)", `resource "digitalocean_spaces_bucket" "assets"`},
 	{"object-storage bucket-policy", `resource "digitalocean_spaces_bucket_policy" "assets"`},
-	{"load-balancer (L7)", `resource "digitalocean_loadbalancer" "edge-lb"`},
-	{"load-balancer L7 ingress", `resource "kubernetes_manifest" "edge-lb_ingress"`},
+	{"load-balancer", `resource "digitalocean_loadbalancer" "edge-lb"`},
+	{"load-balancer forwards to backend pool by tag", `droplet_tag = "pyx-backend"`},
 	{"tracing (OTel/Tempo operators)", `resource "helm_release" "app-traces_otel_operator"`},
 	{"tracing (TempoStack CR)", `resource "kubernetes_manifest" "app-traces_tempostack"`},
 	{"monitoring (kube-prometheus-stack operator)", `resource "helm_release" "app-monitoring_kube_prometheus_stack"`},
@@ -48,9 +49,13 @@ var wantFullEstateResources = []struct{ component, resource string }{
 	{"tls-certificate (cert-manager)", `resource "kubernetes_manifest" "app-tls_issuer"`},
 	{"scheduled-trigger (CronJob)", `resource "kubernetes_cron_job_v1" "nightly"`},
 	{"reserved-ip", `resource "digitalocean_reserved_ip" "vpn-endpoint"`},
-	{"secrets-manager (Vault mitigation)", `resource "digitalocean_droplet" "app-secrets`},
+	// pd-MIG-B4-SECRETS-VAULT-AUTOALIAS: secrets-manager on DO is now the Vault-HA
+	// operator (helm_release CORE + kubernetes_manifest EXTRA), not a single droplet.
+	{"secrets-manager (Vault-HA operator CORE)", `resource "helm_release" "app-secrets_operator"`},
+	{"secrets-manager (Vault-HA VaultConnection CR)", `resource "kubernetes_manifest" "app-secrets_connection"`},
 	{"network (VPC)", `resource "digitalocean_vpc" "passo-estate-net"`},
-	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-estate-sg"`},
+	// The DO firewall is split one-per-service (max 5 tags per firewall; 6 services).
+	{"security-group (firewall)", `resource "digitalocean_firewall" "passo-estate-sg_backend"`},
 }
 
 // TestFullEstateAssemblesForDO is the plan-only round-trip proof at the string
@@ -105,9 +110,9 @@ func TestFullEstateAssemblesForAWS(t *testing.T) {
 		t.Fatalf("AssembleHCL full estate (AWS): %v", err)
 	}
 	all := strings.Join(docs, "\n")
-	// The 5 platform services -> 5 AWS autoscaling groups.
-	if n := strings.Count(all, `resource "aws_autoscaling_group"`); n != 5 {
-		t.Errorf("want 5 aws_autoscaling_group, got %d", n)
+	// The 6 platform services (sso/vpn/obs/sast/backend/mcp) -> 6 AWS autoscaling groups.
+	if n := strings.Count(all, `resource "aws_autoscaling_group"`); n != 6 {
+		t.Errorf("want 6 aws_autoscaling_group, got %d", n)
 	}
 	for _, want := range []string{
 		`resource "aws_ecr_repository"`,          // container-registry
