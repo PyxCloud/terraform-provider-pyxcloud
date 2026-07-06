@@ -29,6 +29,29 @@ func TestEnvironmentSchemaHasDualModeSelector(t *testing.T) {
 	}
 }
 
+func TestEnvironmentSchemaHasVaultHABlock(t *testing.T) {
+	t.Parallel()
+	r := NewEnvironmentResource()
+	resp := &fwresource.SchemaResponse{}
+	r.Schema(context.Background(), fwresource.SchemaRequest{}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("environment schema diagnostics: %+v", resp.Diagnostics)
+	}
+	attr, ok := resp.Schema.Attributes["vault_ha"]
+	if !ok {
+		t.Fatal("expected 'vault_ha' attribute on pyxcloud_environment")
+	}
+	nested, ok := attr.(schema.SingleNestedAttribute)
+	if !ok {
+		t.Fatalf("vault_ha schema = %T, want schema.SingleNestedAttribute", attr)
+	}
+	for _, field := range []string{"name", "seal", "kms_key_id", "kms_region", "transit_addr", "transit_token", "node_count", "reserved_ips", "aws_access_key_id", "aws_secret_access_key"} {
+		if _, ok := nested.Attributes[field]; !ok {
+			t.Errorf("expected vault_ha.%s attribute", field)
+		}
+	}
+}
+
 func TestEnvironmentSchemaUsesPyxTypedComponentBlocks(t *testing.T) {
 	t.Parallel()
 	r := NewEnvironmentResource()
@@ -122,6 +145,50 @@ func TestEnvironmentAssembleInputUsesFlatComponentFields(t *testing.T) {
 	}
 	if comp.MDB.Engine != "postgres" || comp.MDB.Version != "16" || comp.MDB.StorageGB != 100 || !comp.MDB.Encrypted {
 		t.Errorf("managed database = %+v", comp.MDB)
+	}
+}
+
+func TestEnvironmentAssembleInputMapsVaultHABlock(t *testing.T) {
+	t.Parallel()
+	r := &environmentResource{}
+	in := r.assembleInputFromModel(environmentModel{
+		Name:     types.StringValue("prod"),
+		Provider: types.StringValue("digitalocean"),
+		Region:   types.StringValue("Frankfurt"),
+		VaultHA: &envVaultHAModel{
+			Seal:      types.StringValue("awskms"),
+			KMSKeyID:  types.StringValue("arn:aws:kms:eu-west-1:111:key/abc"),
+			KMSRegion: types.StringValue("eu-west-1"),
+			NodeCount: types.Int64Value(3),
+		},
+	})
+	if in.VaultHADroplet == nil {
+		t.Fatal("expected vault_ha block to populate catalog.AssembleVaultHADroplet")
+	}
+	if in.VaultHADroplet.Seal != "awskms" {
+		t.Errorf("seal = %q, want awskms", in.VaultHADroplet.Seal)
+	}
+	if in.VaultHADroplet.KMSKeyID != "arn:aws:kms:eu-west-1:111:key/abc" {
+		t.Errorf("kms_key_id = %q", in.VaultHADroplet.KMSKeyID)
+	}
+	if in.VaultHADroplet.KMSRegion != "eu-west-1" {
+		t.Errorf("kms_region = %q", in.VaultHADroplet.KMSRegion)
+	}
+	if in.VaultHADroplet.NodeCount != 3 {
+		t.Errorf("node_count = %d, want 3", in.VaultHADroplet.NodeCount)
+	}
+}
+
+func TestEnvironmentAssembleInputOmitsVaultHAWhenUnset(t *testing.T) {
+	t.Parallel()
+	r := &environmentResource{}
+	in := r.assembleInputFromModel(environmentModel{
+		Name:     types.StringValue("prod"),
+		Provider: types.StringValue("digitalocean"),
+		Region:   types.StringValue("Frankfurt"),
+	})
+	if in.VaultHADroplet != nil {
+		t.Errorf("expected nil VaultHADroplet when vault_ha is unset, got %+v", in.VaultHADroplet)
 	}
 }
 

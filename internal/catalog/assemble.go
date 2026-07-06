@@ -504,6 +504,44 @@ type AssembleInput struct {
 	// droplet_templates so SELF-HEALED droplets land in the right project instead of
 	// the account default. Empty => account-default (legacy). Ignored off DO.
 	DOProject string
+
+	// VaultHADroplet, when set, appends the 3-node Raft Vault DROPLET cluster
+	// (vaultha_droplet_do.go's RenderVaultDropletCluster — the SAME renderer
+	// DOBaselineOptions.VaultHA wires into the Mode-B baseline assembler) to this
+	// Mode-A environment. This is the droplet-fleet shape (NOT the DOKS/Helm
+	// `vault-ha` component above — no DOKS cluster is required). DigitalOcean-only;
+	// nil on other providers is a no-op. The environment's own VPC (netName =
+	// Name+"-net") is reused as VPCRef — never a separate network.
+	VaultHADroplet *AssembleVaultHADroplet
+}
+
+// AssembleVaultHADroplet is the Mode-A config for the 3-node Raft Vault DROPLET
+// cluster (pd-MIG-VAULT-HA-HARDEN Phase 0 plumbing into pyxcloud_environment).
+// Mirrors DOBaselineOptions.VaultHASpec's fields that are caller-controlled;
+// Region/Size/Image/VPCRef are resolved by AssembleHCL itself (the environment's
+// own region/network), exactly like DOBaselineOptions does for the baseline VPC.
+type AssembleVaultHADroplet struct {
+	// Name is the resource/hostname prefix. Empty -> "pyx-vault".
+	Name string
+	// Seal selects the seal stanza: VaultSealAWSKMS (default; the migration
+	// bridge so a raft-snapshot-restored dataset unseals under the existing AWS
+	// KMS key) | VaultSealTransit | VaultSealShamir.
+	Seal VaultSealMode
+	// AWS KMS seal parameters (only used when Seal == VaultSealAWSKMS / "").
+	KMSKeyID       string
+	KMSRegion      string
+	AWSAccessKeyID string
+	AWSSecretKey   string
+	// Transit seal parameters (only used when Seal == VaultSealTransit).
+	TransitAddr    string
+	TransitToken   string
+	TransitKeyName string
+	// ReservedIPs, when true, gives each node a stable DO reserved IP. Off by default.
+	ReservedIPs bool
+	// NodeCount, when non-zero, is validated against the renderer's fixed Raft
+	// quorum (3): any other value is a hard plan-time error rather than a
+	// silently different topology. 0 -> not asserted (schema default).
+	NodeCount int
 }
 
 // inferDOKSClusterName scans components for the first managed-kubernetes component
@@ -614,6 +652,11 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// A network (VPC + subnets) is only needed when the environment places VMs or a
 	// managed database. A DNS-only / IAM-only / storage-only env must NOT make a VPC.
 	hasVM, hasNetworked := false, false
+	if in.VaultHADroplet != nil {
+		// The Vault droplet cluster is fixed digitalocean_droplet resources on the
+		// environment's own VPC — same network requirement as a plain VM.
+		hasVM, hasNetworked = true, true
+	}
 	for _, c := range in.Components {
 		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
 			// Mitigation runs the service on a VM, which needs network placement and
@@ -1577,6 +1620,57 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				"(coverage is added component by component, AWS first)", c.Name, c.Type)
 		}
 	}
+
+	// 4. Vault-HA 3-node Raft DROPLET cluster (pd-MIG-VAULT-HA-HARDEN Phase 0,
+	//    Mode-A plumbing): opt-in via in.VaultHADroplet, mirrors the Mode-B
+	//    do_baseline.go integration exactly — same RenderVaultDropletCluster, same
+	//    catalog SKU/image resolution, same environment VPC. DigitalOcean-only.
+	if in.VaultHADroplet != nil {
+		if strings.ToLower(in.Provider) != ProviderDigitalOcean {
+			return nil, fmt.Errorf("vault_ha: only supported on digitalocean today (the 3-node Raft " +
+				"droplet cluster is a DO-specific shape); omit vault_ha for other providers")
+		}
+		if n := in.VaultHADroplet.NodeCount; n != 0 && n != vaultDropletCount {
+			return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — the renderer is a fixed "+
+				"%d-node Raft quorum (this is a hard plan-time error, never a silently different topology); "+
+				"omit node_count or set it to %d", n, vaultDropletCount, vaultDropletCount)
+		}
+		regionRow, err := cat.ResolveRegion(ctx, in.Region, in.Provider)
+		if err != nil {
+			return nil, fmt.Errorf("vault_ha: resolve region %q: %w", in.Region, err)
+		}
+		csp, cspRegion := regionRow.CSP, regionRow.CSPRegion
+		vaultRow, err := cat.ResolveSKU(ctx, csp, cspRegion, "x86_64", 2, 4)
+		if err != nil {
+			return nil, fmt.Errorf("vault_ha: resolve SKU (2vCPU/4GiB): %w", err)
+		}
+		vaultImg, err := cat.ResolveImage(ctx, csp, cspRegion, "ubuntu", "24.04", "x86_64")
+		if err != nil {
+			return nil, fmt.Errorf("vault_ha: resolve image: %w", err)
+		}
+		vspec := VaultDropletSpec{
+			Name:           in.VaultHADroplet.Name,
+			Region:         cspRegion,
+			Size:           vaultRow.Name,
+			Image:          vaultImg.Image,
+			VPCRef:         "digitalocean_vpc." + netName + ".id",
+			Seal:           in.VaultHADroplet.Seal,
+			KMSKeyID:       in.VaultHADroplet.KMSKeyID,
+			KMSRegion:      in.VaultHADroplet.KMSRegion,
+			AWSAccessKeyID: in.VaultHADroplet.AWSAccessKeyID,
+			AWSSecretKey:   in.VaultHADroplet.AWSSecretKey,
+			TransitAddr:    in.VaultHADroplet.TransitAddr,
+			TransitToken:   in.VaultHADroplet.TransitToken,
+			TransitKeyName: in.VaultHADroplet.TransitKeyName,
+			ReservedIPs:    in.VaultHADroplet.ReservedIPs,
+		}
+		vaultDocs, err := RenderVaultDropletCluster(vspec)
+		if err != nil {
+			return nil, fmt.Errorf("vault_ha: %w", err)
+		}
+		docs = append(docs, vaultDocs...)
+	}
+
 	// Cloudflare components each declare `variable "cloudflare_zone_id"` inline when
 	// no explicit zone id is set (so every renderer is usable standalone). When an
 	// environment has MORE THAN ONE such component (e.g. the 3 static-site CDN
@@ -1603,20 +1697,31 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// `terraform plan` stays runnable; a non-empty value (e.g.
 	// -var 'do_ssh_keys=["<key-id-or-fingerprint>"]') MUST be supplied at apply.
 	// A validation enforces that whatever is passed is non-empty.
+	//
+	// The Vault-HA droplet cluster (in.VaultHADroplet) ALSO references
+	// var.do_ssh_keys (its digitalocean_droplet nodes carry ssh_keys =
+	// var.do_ssh_keys, same as a scale-group droplet_template), so it triggers this
+	// declaration too even with no virtual-machine-scale-group component present.
 	if strings.ToLower(in.Provider) == ProviderDigitalOcean {
-		for _, c := range in.Components {
-			if c.Type == "virtual-machine-scale-group" {
-				docs = append([]string{"variable \"do_ssh_keys\" {\n" +
-					"  description = \"DigitalOcean SSH key ids or fingerprints for droplet_autoscale pools. Supplied out of band (account-specific, never in topology/state). MUST be non-empty at apply: DO rejects a pool with no ssh_keys.\"\n" +
-					"  type        = list(string)\n" +
-					"  default     = []\n" +
-					"  validation {\n" +
-					"    condition     = length(var.do_ssh_keys) > 0\n" +
-					"    error_message = \"do_ssh_keys must be non-empty: DigitalOcean droplet_autoscale pools require at least one SSH key.\"\n" +
-					"  }\n" +
-					"}\n"}, docs...)
-				break
+		needsSSHKeysVar := in.VaultHADroplet != nil
+		if !needsSSHKeysVar {
+			for _, c := range in.Components {
+				if c.Type == "virtual-machine-scale-group" {
+					needsSSHKeysVar = true
+					break
+				}
 			}
+		}
+		if needsSSHKeysVar {
+			docs = append([]string{"variable \"do_ssh_keys\" {\n" +
+				"  description = \"DigitalOcean SSH key ids or fingerprints for droplet_autoscale pools / vault-ha droplets. Supplied out of band (account-specific, never in topology/state). MUST be non-empty at apply: DO rejects a pool with no ssh_keys.\"\n" +
+				"  type        = list(string)\n" +
+				"  default     = []\n" +
+				"  validation {\n" +
+				"    condition     = length(var.do_ssh_keys) > 0\n" +
+				"    error_message = \"do_ssh_keys must be non-empty: DigitalOcean droplet_autoscale pools / vault-ha droplets require at least one SSH key.\"\n" +
+				"  }\n" +
+				"}\n"}, docs...)
 		}
 	}
 	// Declare the platform-service DigitalOcean bootstraps' out-of-band variables

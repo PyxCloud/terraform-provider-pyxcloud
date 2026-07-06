@@ -77,8 +77,30 @@ type environmentModel struct {
 	AccountBinding                  types.String           `tfsdk:"account_binding"`
 	DOProject                       types.String           `tfsdk:"do_project"`
 	RemoteState                     *envRemoteStateModel   `tfsdk:"remote_state"`
+	VaultHA                         *envVaultHAModel       `tfsdk:"vault_ha"`
 	WorkDir                         types.String           `tfsdk:"work_dir"`
 	Outputs                         types.Map              `tfsdk:"outputs"`
+}
+
+// envVaultHAModel configures the 3-node Raft Vault DROPLET cluster
+// (catalog.RenderVaultDropletCluster — the SAME renderer the Mode-B DO baseline
+// assembler wires in via DOBaselineOptions.VaultHA) as a first-class block on
+// pyxcloud_environment (Mode A). DigitalOcean-only. The environment's own VPC
+// (name-net) is reused; there is no separate vpc_ref — that's assembled from the
+// environment, never declared here. Secrets (KMS creds, transit token) are passed
+// through as plain string references at apply time (e.g. via a terraform variable
+// or CI secret) — this schema never stores or generates key material itself.
+type envVaultHAModel struct {
+	Name         types.String `tfsdk:"name"`
+	Seal         types.String `tfsdk:"seal"`
+	KMSKeyID     types.String `tfsdk:"kms_key_id"`
+	KMSRegion    types.String `tfsdk:"kms_region"`
+	TransitAddr  types.String `tfsdk:"transit_addr"`
+	TransitToken types.String `tfsdk:"transit_token"`
+	NodeCount    types.Int64  `tfsdk:"node_count"`
+	ReservedIPs  types.Bool   `tfsdk:"reserved_ips"`
+	AWSAccessKey types.String `tfsdk:"aws_access_key_id"`
+	AWSSecretKey types.String `tfsdk:"aws_secret_access_key"`
 }
 
 // envRemoteStateModel configures an S3-compatible remote backend for the
@@ -497,6 +519,68 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"endpoint": schema.StringAttribute{Optional: true, MarkdownDescription: "S3-compatible endpoint (e.g. `https://fra1.digitaloceanspaces.com`). Empty -> real AWS S3."},
 				},
 			},
+			"vault_ha": schema.SingleNestedAttribute{
+				Optional: true,
+				MarkdownDescription: "Provisions a 3-node HashiCorp Vault Raft-HA cluster as fixed " +
+					"`digitalocean_droplet` resources on this environment's own VPC (the SAME tested renderer " +
+					"the DO baseline assembler uses — `catalog.RenderVaultDropletCluster`): a data volume + " +
+					"droplet per node, cloud-auto-join peer discovery by DO tag (no baked IPs), a private-only " +
+					":8200/:8201 firewall, and a configurable seal stanza. DigitalOcean-only. This is STATEFUL " +
+					"infrastructure — review carefully before apply; a raft-snapshot-restored dataset only " +
+					"unseals if `seal`/`kms_key_id`/`kms_region` match the source cluster's existing seal key.",
+				Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "Resource/hostname prefix. Empty -> `pyx-vault`.",
+					},
+					"seal": schema.StringAttribute{
+						Optional: true,
+						MarkdownDescription: "Auto-unseal seal mode: `awskms` (default — the migration bridge: " +
+							"reuses the existing AWS KMS seal key so a raft-snapshot-restored dataset unseals) | " +
+							"`transit` (end-state: auto-unseal against a separate unseal-Vault's transit engine) | " +
+							"`shamir` (no auto-unseal; manual 3-of-5 unseal on every restart).",
+					},
+					"kms_key_id": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "seal=awskms: the EXISTING AWS KMS key id/ARN the source Vault cluster seals under. A reference, never generated or read here.",
+					},
+					"kms_region": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "seal=awskms: the AWS region of `kms_key_id` (e.g. `eu-west-1`).",
+					},
+					"transit_addr": schema.StringAttribute{
+						Optional:            true,
+						MarkdownDescription: "seal=transit: address of the unseal-Vault transit endpoint (e.g. `https://unseal-vault.internal:8200`).",
+					},
+					"transit_token": schema.StringAttribute{
+						Optional:            true,
+						Sensitive:           true,
+						MarkdownDescription: "seal=transit: a Vault token scoped to `transit/` on the unseal-Vault. A reference/injected secret — never generated here.",
+					},
+					"aws_access_key_id": schema.StringAttribute{
+						Optional:  true,
+						Sensitive: true,
+						MarkdownDescription: "seal=awskms: AWS access key id for the KMS seal (a DO droplet has no " +
+							"AWS instance role). A reference to an out-of-band credential (e.g. Vault-sourced or a " +
+							"CI secret) — never generated or stored here.",
+					},
+					"aws_secret_access_key": schema.StringAttribute{
+						Optional:            true,
+						Sensitive:           true,
+						MarkdownDescription: "seal=awskms: AWS secret access key paired with `aws_access_key_id`. Same reference-only discipline.",
+					},
+					"node_count": schema.Int64Attribute{
+						Optional: true,
+						MarkdownDescription: "Raft quorum size. Must be exactly `3` (the renderer's fixed, tested " +
+							"quorum shape) or omitted; any other value is a plan-time error rather than a silently " +
+							"different topology.",
+					},
+					"reserved_ips": schema.BoolAttribute{
+						Optional:            true,
+						MarkdownDescription: "Give each node a stable DO reserved IP (survives a droplet roll). Off by default.",
+					},
+				},
+			},
 			"pyx_vpc":                             pyxEnvironmentComponentBlock("PyxCloud VPC/network component."),
 			"pyx_network_rule":                    pyxEnvironmentComponentBlock("PyxCloud network rule component."),
 			"pyx_access_policy":                   pyxEnvironmentComponentBlock("PyxCloud access policy component."),
@@ -741,6 +825,21 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		Region:    m.Region.ValueString(),
 		CIDR:      strings.TrimSpace(m.CIDR.ValueString()),
 		DOProject: strings.TrimSpace(m.DOProject.ValueString()),
+	}
+	if v := m.VaultHA; v != nil {
+		seal := strings.TrimSpace(v.Seal.ValueString())
+		in.VaultHADroplet = &catalog.AssembleVaultHADroplet{
+			Name:           strings.TrimSpace(v.Name.ValueString()),
+			Seal:           catalog.VaultSealMode(seal), // "" -> renderer default (awskms)
+			KMSKeyID:       v.KMSKeyID.ValueString(),
+			KMSRegion:      v.KMSRegion.ValueString(),
+			AWSAccessKeyID: v.AWSAccessKey.ValueString(),
+			AWSSecretKey:   v.AWSSecretKey.ValueString(),
+			TransitAddr:    v.TransitAddr.ValueString(),
+			TransitToken:   v.TransitToken.ValueString(),
+			ReservedIPs:    v.ReservedIPs.ValueBool(),
+			NodeCount:      int(v.NodeCount.ValueInt64()),
+		}
 	}
 	for _, s := range m.Subnets {
 		if v := strings.TrimSpace(s.ValueString()); v != "" {

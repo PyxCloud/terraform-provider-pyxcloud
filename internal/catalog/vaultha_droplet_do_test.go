@@ -210,6 +210,126 @@ func TestVaultDropletDeterministic(t *testing.T) {
 
 // --- baseline wiring: flag-gated, off by default ---
 
+// --- Mode-A (pyxcloud_environment) wiring: AssembleInput.VaultHADroplet ---
+
+// TestAssembleHCLVaultHADropletOffByDefault asserts an environment with no
+// vault_ha config renders no Vault resources at all (0 change to existing
+// Mode-A users).
+func TestAssembleHCLVaultHADropletOffByDefault(t *testing.T) {
+	docs, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
+		Name: "prod", Provider: "digitalocean", Region: "Frankfurt",
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	if strings.Contains(all, "pyx-vault") || strings.Contains(all, `storage "raft"`) {
+		t.Errorf("vault_ha unset must NOT add any Vault resources, got:\n%s", all)
+	}
+}
+
+// TestAssembleHCLVaultHADropletProducesThreeNodeCluster is the core Mode-A
+// plumbing contract: a pyxcloud_environment with vault_ha set renders the SAME
+// 3-droplet + firewall + awskms-seal HCL as the Mode-B baseline assembler,
+// reusing the environment's own VPC (name-net) and the environment's DO tag.
+func TestAssembleHCLVaultHADropletProducesThreeNodeCluster(t *testing.T) {
+	docs, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
+		Name: "prod", Provider: "digitalocean", Region: "Frankfurt",
+		VaultHADroplet: &AssembleVaultHADroplet{
+			Seal:      VaultSealAWSKMS,
+			KMSKeyID:  "arn:aws:kms:eu-west-1:111:key/abc",
+			KMSRegion: "eu-west-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AssembleHCL: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+
+	// The environment's own VPC is created (vault-only env still needs a network)
+	// and reused as the vault droplets' vpc_uuid — no separate network.
+	if !strings.Contains(all, `resource "digitalocean_vpc" "prod-net"`) {
+		t.Errorf("expected the environment's own VPC (prod-net), got:\n%s", all)
+	}
+	if !strings.Contains(all, "vpc_uuid   = digitalocean_vpc.prod-net.id") {
+		t.Errorf("expected vault droplets wired to the environment VPC (prod-net), got:\n%s", all)
+	}
+
+	// 3 fixed droplet nodes + a data volume each (the tested Raft quorum shape).
+	if n := strings.Count(all, `resource "digitalocean_droplet" "pyx-vault-`); n != 3 {
+		t.Errorf("expected exactly 3 vault droplets, got %d\n%s", n, all)
+	}
+	if n := strings.Count(all, `resource "digitalocean_volume" "pyx-vault-`); n != 3 {
+		t.Errorf("expected exactly 3 vault data volumes, got %d\n%s", n, all)
+	}
+	// The renderer's own private-only firewall, tagged pyx-vault (distinct from
+	// the environment SG — this renderer emits its own tags/firewall).
+	if !strings.Contains(all, `resource "digitalocean_firewall" "pyx-vault-sg"`) {
+		t.Errorf("expected the vault-ha private-only firewall, got:\n%s", all)
+	}
+	if !strings.Contains(all, `tags       = ["pyx-vault"]`) {
+		t.Errorf("expected the pyx-vault tag stamped on every droplet, got:\n%s", all)
+	}
+	// Raft + cloud-auto-join (no baked peer IPs) + awskms seal stanza (the
+	// migration bridge default) carrying the configured KMS key.
+	if !strings.Contains(all, `storage "raft"`) || !strings.Contains(all, "retry_join") {
+		t.Errorf("expected raft storage + retry_join, got:\n%s", all)
+	}
+	if !strings.Contains(all, `seal "awskms"`) {
+		t.Errorf("expected the awskms seal stanza, got:\n%s", all)
+	}
+	if !strings.Contains(all, `kms_key_id = "arn:aws:kms:eu-west-1:111:key/abc"`) {
+		t.Errorf("expected the configured KMS key id in the seal stanza, got:\n%s", all)
+	}
+	// do_ssh_keys must be declared (the droplet resource references var.do_ssh_keys)
+	// even though no virtual-machine-scale-group component is present.
+	if !strings.Contains(all, `variable "do_ssh_keys"`) {
+		t.Errorf("expected var.do_ssh_keys to be declared for the vault droplets, got:\n%s", all)
+	}
+	// digitalocean provider must be pinned (terraform plan requires it once any
+	// digitalocean_* resource is present).
+	if !strings.Contains(all, `source = "digitalocean/digitalocean"`) {
+		t.Errorf("expected the digitalocean provider pinned, got:\n%s", all)
+	}
+}
+
+// TestAssembleHCLVaultHADropletRejectsNonDO asserts vault_ha is a hard plan-time
+// error off DigitalOcean (never a silent no-op/drop).
+func TestAssembleHCLVaultHADropletRejectsNonDO(t *testing.T) {
+	_, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
+		Name: "prod", Provider: "aws", Region: "Dublin",
+		VaultHADroplet: &AssembleVaultHADroplet{Seal: VaultSealAWSKMS, KMSKeyID: "k", KMSRegion: "eu-west-1"},
+	})
+	if err == nil {
+		t.Errorf("expected an error for vault_ha on a non-DO provider")
+	}
+}
+
+// TestAssembleHCLVaultHADropletRejectsBadNodeCount asserts a node_count other
+// than the renderer's fixed 3-node quorum is a hard plan-time error, never a
+// silently different topology.
+func TestAssembleHCLVaultHADropletRejectsBadNodeCount(t *testing.T) {
+	_, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
+		Name: "prod", Provider: "digitalocean", Region: "Frankfurt",
+		VaultHADroplet: &AssembleVaultHADroplet{
+			Seal: VaultSealAWSKMS, KMSKeyID: "k", KMSRegion: "eu-west-1", NodeCount: 5,
+		},
+	})
+	if err == nil {
+		t.Errorf("expected an error for node_count != 3")
+	}
+	// node_count == 3 (matching the fixed quorum) must be accepted.
+	_, err = AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
+		Name: "prod2", Provider: "digitalocean", Region: "Frankfurt",
+		VaultHADroplet: &AssembleVaultHADroplet{
+			Seal: VaultSealAWSKMS, KMSKeyID: "k", KMSRegion: "eu-west-1", NodeCount: 3,
+		},
+	})
+	if err != nil {
+		t.Errorf("node_count=3 (matching the fixed quorum) must be accepted, got: %v", err)
+	}
+}
+
 // TestDOBaselineVaultHAFlagGated asserts the baseline is UNCHANGED when VaultHA is
 // off, and grows the 3-node Vault cluster when on.
 func TestDOBaselineVaultHAFlagGated(t *testing.T) {
