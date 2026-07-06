@@ -1697,6 +1697,15 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			docs = append([]string{decl}, docs...)
 		}
 	}
+	// Per-environment DigitalOcean project binding (phase 2): now that every
+	// resource is in docs, bind the project-assignable ones (databases, LBs,
+	// reserved IPs, spaces, k8s, volumes, domains) to the environment's project by
+	// URN. Autoscale members are already placed via droplet_template.project_id.
+	if in.Provider == ProviderDigitalOcean {
+		if prb := RenderDOProjectResources(in.DOProject, docs); prb != "" {
+			docs = append(docs, prb)
+		}
+	}
 	// Emit a required_providers block when one is needed: a non-default-namespace
 	// cloud provider (e.g. digitalocean/digitalocean) always needs its source pinned,
 	// and once ANY required_providers entry exists (e.g. Cloudflare) terraform also

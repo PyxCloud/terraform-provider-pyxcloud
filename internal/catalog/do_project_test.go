@@ -45,6 +45,91 @@ func TestFullEstateDO_ProjectPlacementWiring(t *testing.T) {
 	}
 }
 
+func TestRenderDOProjectResources(t *testing.T) {
+	// Empty project => no block.
+	if RenderDOProjectResources("", []string{`resource "digitalocean_droplet" "x" {`}) != "" {
+		t.Fatalf("empty project must emit nothing")
+	}
+	// No assignable resources => no block (autoscale + vpc + firewall are excluded).
+	only := []string{
+		"resource \"digitalocean_droplet_autoscale\" \"sso\" {\n}\n",
+		"resource \"digitalocean_vpc\" \"net\" {\n}\n",
+		"resource \"digitalocean_firewall\" \"fw\" {\n}\n",
+		"resource \"digitalocean_container_registry\" \"reg\" {\n}\n",
+	}
+	if got := RenderDOProjectResources("pyxcloud-production", only); got != "" {
+		t.Fatalf("non-assignable resources must not be bound, got:\n%s", got)
+	}
+
+	docs := []string{
+		"resource \"digitalocean_database_cluster\" \"pg\" {\n}\n",
+		"resource \"digitalocean_loadbalancer\" \"edge-lb\" {\n}\n",
+		"resource \"digitalocean_reserved_ip\" \"mcp\" {\n}\n",
+		"resource \"digitalocean_droplet_autoscale\" \"sso\" {\n}\n", // excluded
+		"resource \"digitalocean_vpc\" \"net\" {\n}\n",               // excluded
+		"resource \"digitalocean_spaces_bucket\" \"artifacts\" {\n}\n",
+	}
+	got := RenderDOProjectResources("pyxcloud-production", docs)
+	dsName := doProjectDataSourceName("pyxcloud-production")
+	for _, want := range []string{
+		"resource \"digitalocean_project_resources\" \"" + dsName + "\"",
+		"project = data.digitalocean_project." + dsName + ".id",
+		"digitalocean_database_cluster.pg.urn,",
+		"digitalocean_loadbalancer.edge-lb.urn,",
+		"digitalocean_reserved_ip.mcp.urn,",
+		"digitalocean_spaces_bucket.artifacts.urn,",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("project_resources missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"droplet_autoscale", "digitalocean_vpc"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("project_resources must not bind %q:\n%s", unwanted, got)
+		}
+	}
+	// A header indented inside a heredoc/string body must NOT be picked up: real
+	// top-level HCL resources are always at column 0, so the regex anchors there.
+	tricky := []string{"resource \"x\" \"y\" {\n  user_data = <<EOT\n  resource \"digitalocean_droplet\" \"evil\" {\n  EOT\n}\n"}
+	if strings.Contains(RenderDOProjectResources("p", tricky), "evil") {
+		t.Fatalf("must not match a header indented inside a heredoc")
+	}
+}
+
+func TestFullEstateDO_ProjectResourcesBinding(t *testing.T) {
+	in := FullEstateInput("digitalocean", "Frankfurt", "x86_64", "ubuntu", "1.30")
+	in.DOProject = "pyxcloud-production"
+	docs, err := AssembleHCL(context.Background(), MustEmbedded(), in)
+	if err != nil {
+		t.Fatalf("AssembleHCL DO estate: %v", err)
+	}
+	all := strings.Join(docs, "\n")
+	dsName := doProjectDataSourceName("pyxcloud-production")
+
+	if got := strings.Count(all, "resource \"digitalocean_project_resources\" \""+dsName+"\""); got != 1 {
+		t.Fatalf("expected exactly one project_resources block, got %d", got)
+	}
+	// The estate has a managed database + reserved IP + load balancer; each must be
+	// bound by urn.
+	for _, want := range []string{
+		"digitalocean_database_cluster.",
+		"digitalocean_reserved_ip.",
+	} {
+		if !strings.Contains(all, want) || !strings.Contains(all, ".urn,") {
+			t.Fatalf("estate project_resources missing binding for %q", want)
+		}
+	}
+	// Without do_project: no project_resources block at all.
+	in2 := FullEstateInput("digitalocean", "Frankfurt", "x86_64", "ubuntu", "1.30")
+	docs2, err := AssembleHCL(context.Background(), MustEmbedded(), in2)
+	if err != nil {
+		t.Fatalf("AssembleHCL DO estate (no project): %v", err)
+	}
+	if strings.Contains(strings.Join(docs2, "\n"), "digitalocean_project_resources") {
+		t.Fatalf("no do_project must not emit a project_resources block")
+	}
+}
+
 func TestRenderDOProjectDataSource(t *testing.T) {
 	empty := RenderDOProjectDataSource("")
 	if empty != "" {
