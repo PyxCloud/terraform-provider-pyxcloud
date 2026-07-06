@@ -41,7 +41,9 @@ func TestDOBaselineResourceSet(t *testing.T) {
 		`resource "digitalocean_droplet_autoscale" "sast"`,
 		`resource "digitalocean_droplet_autoscale" "sso"`,
 		`resource "digitalocean_droplet_autoscale" "vpn"`,
-		`resource "digitalocean_loadbalancer" "edge-lb"`,
+		`resource "digitalocean_loadbalancer" "lb-sso"`,
+		`resource "digitalocean_loadbalancer" "lb-backend"`,
+		`resource "digitalocean_loadbalancer" "lb-mcp"`,
 		`resource "digitalocean_spaces_bucket" "artifacts"`,
 	}
 	for _, w := range want {
@@ -368,25 +370,31 @@ func TestDOBaselineRequiresSecrets(t *testing.T) {
 
 // TestDOBaselineLBTerminationOffUnchanged asserts LBTermination defaults false and,
 // left off, produces the exact legacy estate (same resource set / firewall / LB
-// shape asserted by TestDOBaselineResourceSet).
+// shape asserted by TestDOBaselineResourceSet): three per-service TCP-passthrough
+// load balancers (lb-sso/lb-backend/lb-mcp), reconciled to match the already-live
+// DO estate (pd-MIG-CUTOVER state reconciliation) — not the single-LB shape this
+// test asserted before that reconciliation landed.
 func TestDOBaselineLBTerminationOffUnchanged(t *testing.T) {
 	withoutFlag := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
 	explicitOff := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true, LBTermination: false}), "\n")
 	if withoutFlag != explicitOff {
 		t.Fatalf("LBTermination zero-value must match an explicit false")
 	}
-	// Legacy single firewall + single tls_passthrough edge-lb, no per-service LBs,
-	// no certificate resource.
+	// Legacy single firewall + three per-service tls_passthrough LBs (lb-sso /
+	// lb-backend / lb-mcp), no LBTermination certificate resource.
 	for _, want := range []string{
 		`resource "digitalocean_firewall" "passo-do-baseline-sg"`,
-		`resource "digitalocean_loadbalancer" "edge-lb"`,
-		`tls_passthrough = true`,
+		`resource "digitalocean_loadbalancer" "lb-sso"`,
+		`resource "digitalocean_loadbalancer" "lb-backend"`,
+		`resource "digitalocean_loadbalancer" "lb-mcp"`,
+		`tls_passthrough = false`,
 	} {
 		if !strings.Contains(withoutFlag, want) {
 			t.Errorf("legacy (flag off) output missing %q", want)
 		}
 	}
 	for _, unwanted := range []string{
+		`resource "digitalocean_loadbalancer" "edge-lb"`,
 		`resource "digitalocean_loadbalancer" "sso-lb"`,
 		`resource "digitalocean_loadbalancer" "backend-lb"`,
 		`resource "digitalocean_loadbalancer" "mcp-lb"`,
