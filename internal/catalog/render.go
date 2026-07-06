@@ -699,6 +699,14 @@ func renderScaleGroupDO(p ScaleGroupPlan) string {
 	if p.NetworkName != "" {
 		fmt.Fprintf(&b, "    vpc_uuid           = digitalocean_vpc.%s.id\n", tfName(p.NetworkName))
 	}
+	// project_id on the droplet_template: SELF-HEALED droplets inherit it, so a
+	// replaced pool member lands in the environment's DO project instead of the
+	// account default (the class of bug that bled prod droplets into staging).
+	// Resolved from a digitalocean_project data source keyed on the project NAME;
+	// emit that data source once per estate with RenderDOProjectDataSource.
+	if p.DOProject != "" {
+		fmt.Fprintf(&b, "    project_id         = data.digitalocean_project.%s.id\n", doProjectDataSourceName(p.DOProject))
+	}
 	// Tags: the default "pyxcloud", the per-service fleet-selection tag every
 	// scale-group gets automatically (doScaleGroupTag, "pyx-<name>" — the DO
 	// analogue of an AWS ASG's propagated tag, which a sibling firewall/

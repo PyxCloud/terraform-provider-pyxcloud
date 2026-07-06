@@ -75,6 +75,7 @@ type environmentModel struct {
 	PyxALBAttachment                []envComponentModel    `tfsdk:"pyx_alb_attachment"`
 	PyxVPNAccess                    []envComponentModel    `tfsdk:"pyx_vpn_access"`
 	AccountBinding                  types.String           `tfsdk:"account_binding"`
+	DOProject                       types.String           `tfsdk:"do_project"`
 	RemoteState                     *envRemoteStateModel   `tfsdk:"remote_state"`
 	WorkDir                         types.String           `tfsdk:"work_dir"`
 	Outputs                         types.Map              `tfsdk:"outputs"`
@@ -475,6 +476,14 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"the deploy server-side with the binding's stored credentials (no creds on the runner). Mode B " +
 					"requires the server-side managed-deploy gate (DEPLOY-GATE.md §B) and is enabled once that lands.",
 			},
+			"do_project": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "DigitalOcean **project name** this environment's resources belong to " +
+					"(e.g. `pyxcloud-production` vs `pyxcloud-staging`). Set it per environment so placement is " +
+					"decided by config, never the DO account default. When set, scale-group droplet_templates carry " +
+					"`project_id`, so **self-healed** droplets stay in the environment's project instead of drifting " +
+					"to the default. Omit => account-default (legacy). DigitalOcean-only; ignored on other providers.",
+			},
 			"remote_state": schema.SingleNestedAttribute{
 				Optional: true,
 				MarkdownDescription: "Optional S3-compatible remote backend for this environment's terraform state " +
@@ -727,10 +736,11 @@ func (r *environmentResource) Configure(_ context.Context, req resource.Configur
 // the resource model, for LOCAL translation (catalog.AssembleHCL).
 func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog.AssembleInput {
 	in := catalog.AssembleInput{
-		Name:     m.Name.ValueString(),
-		Provider: m.Provider.ValueString(),
-		Region:   m.Region.ValueString(),
-		CIDR:     strings.TrimSpace(m.CIDR.ValueString()),
+		Name:      m.Name.ValueString(),
+		Provider:  m.Provider.ValueString(),
+		Region:    m.Region.ValueString(),
+		CIDR:      strings.TrimSpace(m.CIDR.ValueString()),
+		DOProject: strings.TrimSpace(m.DOProject.ValueString()),
 	}
 	for _, s := range m.Subnets {
 		if v := strings.TrimSpace(s.ValueString()); v != "" {

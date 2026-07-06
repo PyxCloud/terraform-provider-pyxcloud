@@ -496,6 +496,14 @@ type AssembleInput struct {
 	// topology by DeriveSecurityBaseline; additive and never widens access. Off by
 	// default so existing callers are unchanged; the deploy path turns it on.
 	ApplySecurityBaseline bool
+
+	// DOProject is the DigitalOcean PROJECT NAME the environment's resources are
+	// placed in (per-environment, e.g. "pyxcloud-production" vs "pyxcloud-staging"),
+	// from the account binding. When set on a DigitalOcean environment, AssembleHCL
+	// emits one digitalocean_project data source and stamps it onto scale-group
+	// droplet_templates so SELF-HEALED droplets land in the right project instead of
+	// the account default. Empty => account-default (legacy). Ignored off DO.
+	DOProject string
 }
 
 // inferDOKSClusterName scans components for the first managed-kubernetes component
@@ -586,6 +594,13 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	}
 
 	var docs []string
+	// Per-environment DigitalOcean project: emit the lookup data source once so
+	// resources (scale-group droplet_templates today) can be placed in it.
+	if in.Provider == ProviderDigitalOcean {
+		if ds := RenderDOProjectDataSource(in.DOProject); ds != "" {
+			docs = append(docs, ds)
+		}
+	}
 	needsCloudflare := false
 	// needsKubernetes pins the hashicorp/kubernetes provider when a component emits
 	// in-cluster resources (DOKS CronJob, cert-manager manifests) — otherwise
@@ -772,6 +787,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
 			}
 			sgPlan.InstanceProfileManaged = managedInstanceProfiles[sg.InstanceProfile]
+			sgPlan.DOProject = in.DOProject // per-env DO project (no-op off DO / when empty)
 			sgHCL, err := RenderScaleGroupHCL(sgPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
@@ -1679,6 +1695,15 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			decl += "}\n"
 			docs = append([]string{decl}, docs...)
+		}
+	}
+	// Per-environment DigitalOcean project binding (phase 2): now that every
+	// resource is in docs, bind the project-assignable ones (databases, LBs,
+	// reserved IPs, spaces, k8s, volumes, domains) to the environment's project by
+	// URN. Autoscale members are already placed via droplet_template.project_id.
+	if in.Provider == ProviderDigitalOcean {
+		if prb := RenderDOProjectResources(in.DOProject, docs); prb != "" {
+			docs = append(docs, prb)
 		}
 	}
 	// Emit a required_providers block when one is needed: a non-default-namespace

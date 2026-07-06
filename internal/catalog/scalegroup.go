@@ -120,6 +120,16 @@ type ScaleGroupPlan struct {
 	SSHKeys       []string `json:"ssh_keys,omitempty"` // provider SSH-key IDs/fingerprints (DO droplet_template.ssh_keys, required)
 	ResourceType  string   `json:"resource_type"`      // top provider resource, e.g. aws_autoscaling_group
 
+	// DOProject is the DigitalOcean PROJECT NAME the deployed resources belong to
+	// (per-environment: e.g. "pyxcloud-production" vs "pyxcloud-staging"). It comes
+	// from the account binding so the pipeline decides placement, never the DO
+	// account default. On a droplet_autoscale it MUST be set on the droplet_template
+	// so SELF-HEALED droplets land in the right project instead of drifting to the
+	// account-default project (the class of bug that bled prod droplets into
+	// staging). Empty => omit (account-default, legacy behaviour). Non-DO providers
+	// ignore it.
+	DOProject string `json:"do_project,omitempty"`
+
 	// KubernetesVersion is a legacy, now-IGNORED field. DigitalOcean scale-groups
 	// render as digitalocean_droplet_autoscale (a VM pool), not a DOKS cluster, so
 	// no Kubernetes version is used. Retained for source-compatibility only.
