@@ -523,15 +523,10 @@ type AssembleInput struct {
 type AssembleVaultHADroplet struct {
 	// Name is the resource/hostname prefix. Empty -> "pyx-vault".
 	Name string
-	// Seal selects the seal stanza: VaultSealAWSKMS (default; the migration
-	// bridge so a raft-snapshot-restored dataset unseals under the existing AWS
-	// KMS key) | VaultSealTransit | VaultSealShamir.
+	// Seal selects the seal stanza: VaultSealShamir (default; no auto-unseal,
+	// manual 3-of-5 unseal post-reboot — owner decision 2026-07-07, the AWS-KMS
+	// bridge has been retired) | VaultSealTransit.
 	Seal VaultSealMode
-	// AWS KMS seal parameters (only used when Seal == VaultSealAWSKMS / "").
-	KMSKeyID       string
-	KMSRegion      string
-	AWSAccessKeyID string
-	AWSSecretKey   string
 	// Transit seal parameters (only used when Seal == VaultSealTransit).
 	TransitAddr    string
 	TransitToken   string
@@ -1655,10 +1650,6 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			Image:          vaultImg.Image,
 			VPCRef:         "digitalocean_vpc." + netName + ".id",
 			Seal:           in.VaultHADroplet.Seal,
-			KMSKeyID:       in.VaultHADroplet.KMSKeyID,
-			KMSRegion:      in.VaultHADroplet.KMSRegion,
-			AWSAccessKeyID: in.VaultHADroplet.AWSAccessKeyID,
-			AWSSecretKey:   in.VaultHADroplet.AWSSecretKey,
 			TransitAddr:    in.VaultHADroplet.TransitAddr,
 			TransitToken:   in.VaultHADroplet.TransitToken,
 			TransitKeyName: in.VaultHADroplet.TransitKeyName,

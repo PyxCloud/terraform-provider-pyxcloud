@@ -87,20 +87,18 @@ type environmentModel struct {
 // assembler wires in via DOBaselineOptions.VaultHA) as a first-class block on
 // pyxcloud_environment (Mode A). DigitalOcean-only. The environment's own VPC
 // (name-net) is reused; there is no separate vpc_ref — that's assembled from the
-// environment, never declared here. Secrets (KMS creds, transit token) are passed
-// through as plain string references at apply time (e.g. via a terraform variable
-// or CI secret) — this schema never stores or generates key material itself.
+// environment, never declared here. The default seal is Shamir (no auto-unseal;
+// manual 3-of-5 unseal post-reboot — owner decision 2026-07-07, the AWS-KMS
+// bridge has been retired). Transit secrets are passed through as plain string
+// references at apply time (e.g. via a terraform variable or CI secret) — this
+// schema never stores or generates key material itself.
 type envVaultHAModel struct {
 	Name         types.String `tfsdk:"name"`
 	Seal         types.String `tfsdk:"seal"`
-	KMSKeyID     types.String `tfsdk:"kms_key_id"`
-	KMSRegion    types.String `tfsdk:"kms_region"`
 	TransitAddr  types.String `tfsdk:"transit_addr"`
 	TransitToken types.String `tfsdk:"transit_token"`
 	NodeCount    types.Int64  `tfsdk:"node_count"`
 	ReservedIPs  types.Bool   `tfsdk:"reserved_ips"`
-	AWSAccessKey types.String `tfsdk:"aws_access_key_id"`
-	AWSSecretKey types.String `tfsdk:"aws_secret_access_key"`
 }
 
 // envRemoteStateModel configures an S3-compatible remote backend for the
@@ -526,8 +524,9 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					"the DO baseline assembler uses — `catalog.RenderVaultDropletCluster`): a data volume + " +
 					"droplet per node, cloud-auto-join peer discovery by DO tag (no baked IPs), a private-only " +
 					":8200/:8201 firewall, and a configurable seal stanza. DigitalOcean-only. This is STATEFUL " +
-					"infrastructure — review carefully before apply; a raft-snapshot-restored dataset only " +
-					"unseals if `seal`/`kms_key_id`/`kms_region` match the source cluster's existing seal key.",
+					"infrastructure — review carefully before apply. The default seal is Shamir: no seal stanza " +
+					"is rendered, so every node requires a MANUAL unseal (3-of-5 key shares held by the owner) " +
+					"after a restart/reboot — see the unseal runbook in the secrets-manager repo.",
 				Attributes: map[string]schema.Attribute{
 					"name": schema.StringAttribute{
 						Optional:            true,
@@ -535,18 +534,9 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					},
 					"seal": schema.StringAttribute{
 						Optional: true,
-						MarkdownDescription: "Auto-unseal seal mode: `awskms` (default — the migration bridge: " +
-							"reuses the existing AWS KMS seal key so a raft-snapshot-restored dataset unseals) | " +
-							"`transit` (end-state: auto-unseal against a separate unseal-Vault's transit engine) | " +
-							"`shamir` (no auto-unseal; manual 3-of-5 unseal on every restart).",
-					},
-					"kms_key_id": schema.StringAttribute{
-						Optional:            true,
-						MarkdownDescription: "seal=awskms: the EXISTING AWS KMS key id/ARN the source Vault cluster seals under. A reference, never generated or read here.",
-					},
-					"kms_region": schema.StringAttribute{
-						Optional:            true,
-						MarkdownDescription: "seal=awskms: the AWS region of `kms_key_id` (e.g. `eu-west-1`).",
+						MarkdownDescription: "Auto-unseal seal mode: `shamir` (default; no auto-unseal — manual " +
+							"3-of-5 unseal required after every restart, key shares held by the owner) | " +
+							"`transit` (auto-unseal against a separate unseal-Vault's transit engine).",
 					},
 					"transit_addr": schema.StringAttribute{
 						Optional:            true,
@@ -556,18 +546,6 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 						Optional:            true,
 						Sensitive:           true,
 						MarkdownDescription: "seal=transit: a Vault token scoped to `transit/` on the unseal-Vault. A reference/injected secret — never generated here.",
-					},
-					"aws_access_key_id": schema.StringAttribute{
-						Optional:  true,
-						Sensitive: true,
-						MarkdownDescription: "seal=awskms: AWS access key id for the KMS seal (a DO droplet has no " +
-							"AWS instance role). A reference to an out-of-band credential (e.g. Vault-sourced or a " +
-							"CI secret) — never generated or stored here.",
-					},
-					"aws_secret_access_key": schema.StringAttribute{
-						Optional:            true,
-						Sensitive:           true,
-						MarkdownDescription: "seal=awskms: AWS secret access key paired with `aws_access_key_id`. Same reference-only discipline.",
 					},
 					"node_count": schema.Int64Attribute{
 						Optional: true,
@@ -830,11 +808,7 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		seal := strings.TrimSpace(v.Seal.ValueString())
 		in.VaultHADroplet = &catalog.AssembleVaultHADroplet{
 			Name:           strings.TrimSpace(v.Name.ValueString()),
-			Seal:           catalog.VaultSealMode(seal), // "" -> renderer default (awskms)
-			KMSKeyID:       v.KMSKeyID.ValueString(),
-			KMSRegion:      v.KMSRegion.ValueString(),
-			AWSAccessKeyID: v.AWSAccessKey.ValueString(),
-			AWSSecretKey:   v.AWSSecretKey.ValueString(),
+			Seal:           catalog.VaultSealMode(seal), // "" -> renderer default (shamir)
 			TransitAddr:    v.TransitAddr.ValueString(),
 			TransitToken:   v.TransitToken.ValueString(),
 			ReservedIPs:    v.ReservedIPs.ValueBool(),

@@ -139,31 +139,23 @@ func run() error {
 
 	// VaultHA (pd-MIG-VAULT-HA-HARDEN Phase 0): opt-in via DO_VAULT_HA=1 so the
 	// baseline appends the 3-node Raft Vault droplet cluster (vaultha_droplet_do.go).
-	// Off by default => 0 change to the deployed estate. The seal + auto-join
-	// credentials are RENDER-TIME injections read from the environment here and inlined
-	// into the droplet systemd drop-in; they are NEVER committed and NEVER stored as a
-	// terraform resource attribute (the generated/ dir is gitignored). Region/Size/
-	// Image/VPCRef are resolved by AssembleDOBaseline via the catalog, not set here.
+	// Off by default => 0 change to the deployed estate. Region/Size/Image/VPCRef are
+	// resolved by AssembleDOBaseline via the catalog, not set here.
+	//
+	// SEAL = SHAMIR (owner decision 2026-07-07): the AWS-KMS auto-unseal bridge (a
+	// review-flagged security item — static AWS creds baked into the droplet's
+	// systemd env) has been dropped. No seal stanza is rendered; every node requires
+	// a MANUAL unseal (3-of-5 key shares held by the owner) after a restart/reboot —
+	// see the unseal runbook in the secrets-manager repo. DO_VAULT_SEAL can still
+	// select seal=transit for a future opt-in.
 	vaultHA := strings.TrimSpace(os.Getenv("DO_VAULT_HA")) == "1"
 	var vaultSpec catalog.VaultDropletSpec
 	if vaultHA {
-		// Seal mode: default to the AWS-KMS migration bridge (matches the running AWS
-		// Vault so raft-snapshot-restored data unseals). Overridable via DO_VAULT_SEAL.
 		seal := catalog.VaultSealMode(strings.TrimSpace(os.Getenv("DO_VAULT_SEAL")))
 		if seal == "" {
-			seal = catalog.VaultSealAWSKMS
+			seal = catalog.VaultSealShamir
 		}
 		vaultSpec.Seal = seal
-		// AWS-KMS seal parameters. KMS region defaults to eu-west-1 (where the existing
-		// seal key lives). AWS creds reach the DO droplet via the injected static key
-		// (no AWS instance role on a droplet) — source them from beta-DO-VaultKmsUnsealCreds.
-		vaultSpec.KMSKeyID = strings.TrimSpace(os.Getenv("DO_VAULT_KMS_KEY_ID"))
-		vaultSpec.KMSRegion = strings.TrimSpace(os.Getenv("DO_VAULT_KMS_REGION"))
-		if vaultSpec.KMSRegion == "" {
-			vaultSpec.KMSRegion = "eu-west-1"
-		}
-		vaultSpec.AWSAccessKeyID = os.Getenv("DO_VAULT_KMS_ACCESS_KEY_ID")
-		vaultSpec.AWSSecretKey = os.Getenv("DO_VAULT_KMS_SECRET_ACCESS_KEY")
 		// Optional stable public addresses so beta-vault A-record / a DO LB origin
 		// survives a droplet roll (durable-DO-edge memo). Off unless DO_VAULT_RESERVED_IPS=1.
 		vaultSpec.ReservedIPs = strings.TrimSpace(os.Getenv("DO_VAULT_RESERVED_IPS")) == "1"
@@ -172,23 +164,10 @@ func run() error {
 		//   Environment=DIGITALOCEAN_TOKEN=${DIGITALOCEAN_TOKEN}
 		// which is NOT valid inside a terraform heredoc (HCL parses ${...} as an
 		// interpolation of an undeclared symbol and errors), so the harness substitutes
-		// the real token into estate.tf at RENDER time (same inline model as the KMS
-		// creds; generated/ is gitignored). Fail fast so a bad render never reaches
-		// terraform.
+		// the real token into estate.tf at RENDER time (generated/ is gitignored). Fail
+		// fast so a bad render never reaches terraform.
 		if strings.TrimSpace(os.Getenv("DIGITALOCEAN_TOKEN")) == "" {
 			return fmt.Errorf("missing env DIGITALOCEAN_TOKEN — required for DO_VAULT_HA=1 (vault raft auto-join by DO tag; source from beta-DigitalOceanToken)")
-		}
-		// Fail fast on the awskms bridge if its required seal params are missing.
-		if seal == catalog.VaultSealAWSKMS {
-			for name, v := range map[string]string{
-				"DO_VAULT_KMS_KEY_ID":            vaultSpec.KMSKeyID,
-				"DO_VAULT_KMS_ACCESS_KEY_ID":     vaultSpec.AWSAccessKeyID,
-				"DO_VAULT_KMS_SECRET_ACCESS_KEY": vaultSpec.AWSSecretKey,
-			} {
-				if strings.TrimSpace(v) == "" {
-					return fmt.Errorf("missing env %s — required for DO_VAULT_HA=1 with the awskms seal bridge (source from beta-DO-VaultKmsUnsealCreds / beta-vault-auto-unseal; see cutover/README.md)", name)
-				}
-			}
 		}
 	}
 
