@@ -426,11 +426,14 @@ func RenderVPNBootstrapUserData(spec VPNBootstrapSpec) (string, error) {
 
 // escapeBashExpansionsForHeredoc converts every bash `${...}` expansion in a
 // user_data script to the Terraform-escaped `$${...}` form, EXCEPT the deliberate
-// `${var.<x>}` Terraform variable references which must survive to be interpolated.
-// This lets a bootstrap author write natural bash without hand-escaping every
-// expansion while keeping the heredoc valid HCL (the DO scale-group renderer bakes
-// user_data into an unquoted heredoc). Only `${` sequences NOT already escaped
-// (i.e. not preceded by an extra `$`) and NOT beginning `${var.` are rewritten.
+// `${var.<x>}` Terraform variable references and `${data.<x>...}` Terraform data
+// source references (EPIC-BOOTFETCH-AWS-SM-TO-VAULT: `${data.vault_kv_secret_v2.
+// <label>.data["<key>"]}`, see vault_datasource.go) which must survive to be
+// interpolated. This lets a bootstrap author write natural bash without
+// hand-escaping every expansion while keeping the heredoc valid HCL (the DO
+// scale-group renderer bakes user_data into an unquoted heredoc). Only `${`
+// sequences NOT already escaped (i.e. not preceded by an extra `$`) and NOT
+// beginning `${var.` or `${data.` are rewritten.
 func escapeBashExpansionsForHeredoc(s string) string {
 	var out strings.Builder
 	out.Grow(len(s) + 32)
@@ -441,8 +444,8 @@ func escapeBashExpansionsForHeredoc(s string) string {
 				out.WriteByte(s[i])
 				continue
 			}
-			// A deliberate Terraform variable reference — keep verbatim.
-			if strings.HasPrefix(s[i:], "${var.") {
+			// A deliberate Terraform variable or data-source reference — keep verbatim.
+			if strings.HasPrefix(s[i:], "${var.") || strings.HasPrefix(s[i:], "${data.") {
 				out.WriteByte(s[i])
 				continue
 			}

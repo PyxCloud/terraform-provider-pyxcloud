@@ -144,13 +144,12 @@ func TestEdgeTLSTerminatorValidation(t *testing.T) {
 }
 
 // fullBaselineSecrets extends the test secrets with the sso literal-injected set
-// so the FullServiceBootstraps render succeeds.
+// so the FullServiceBootstraps render succeeds. Most sso secrets (keycloak-db
+// URL/creds, admin password, Spaces keys, SMTP) are now Vault data sources
+// (EPIC-BOOTFETCH-AWS-SM-TO-VAULT wave 2) and need no test value; only the two
+// unmigrated fields remain literal.
 func fullBaselineSecrets() DOBaselineSecrets {
 	s := testDOBaselineSecrets()
-	s.SSOKCDBURL = "jdbc:postgresql://kc-do-user.db.ondigitalocean.com:25060/defaultdb?sslmode=require"
-	s.SSOKCDBUsername = "doadmin"
-	s.SSOKCDBPassword = "TEST_KC_PW"
-	s.SSOAdminPassword = "TEST_ADMIN_PW"
 	s.SSOVaultOIDCSecret = "TEST_VAULT_OIDC"
 	s.SSORunnerPublicKey = "ssh-ed25519 AAAATESTRUNNERKEY runner@pyx"
 	return s

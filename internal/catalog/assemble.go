@@ -649,6 +649,11 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// upstream operator via helm_release (the operator-pattern CORE — tracing's
 	// OTel/Tempo operators, cert-manager's chart). Mirrors needsKubernetes.
 	needsHelm := false
+	// needsVault pins the hashicorp/vault provider when a rendered DO platform
+	// bootstrap references a `data "vault_kv_secret_v2"` block
+	// (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2 — sast/mcp/sso). Set below, once the
+	// DO user_data blob is available. Mirrors needsCloudflare/needsKubernetes/needsHelm.
+	needsVault := false
 
 	// A network (VPC + subnets) is only needed when the environment places VMs or a
 	// managed database. A DNS-only / IAM-only / storage-only env must NOT make a VPC.
@@ -1723,16 +1728,22 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		}
 	}
 	// Declare the platform-service DigitalOcean bootstraps' out-of-band variables
-	// when a DO scale-group's bootstrap references them. Each of the SIX canonical
-	// services (mcp, sso, obs, sast, backend, vpn) reaches for its secrets — Spaces
-	// keys, the board/main DB URL, registry/API tokens, OIDC/Vault/embed secrets,
-	// WireGuard keys, … — by ${var.<x>}; the operator wires those to Vault / the
-	// secret source, never the topology. We emit the UNION of every referenced
-	// variable across all six, each `variable {}` block at most once and only when
-	// the rendered user_data actually references it, so an estate with no DO platform
-	// bootstrap stays clean. Deterministic order (fixed service slice, then the
-	// per-service deterministic var order). No duplicate declarations: a var already
-	// declared inline by a component (or by an earlier service) is skipped.
+	// when a DO scale-group's bootstrap references them. Of the SIX canonical
+	// services (mcp, sso, obs, sast, backend, vpn), obs/backend/vpn/mcp still
+	// reach for some secrets — the board/main DB URL, registry/API tokens,
+	// embed secrets, WireGuard keys, … — by ${var.<x>}; the operator wires those
+	// to Vault / the secret source, never the topology. We emit the UNION of
+	// every referenced variable across those, each `variable {}` block at most
+	// once and only when the rendered user_data actually references it, so an
+	// estate with no DO platform bootstrap stays clean. Deterministic order
+	// (fixed service slice, then the per-service deterministic var order). No
+	// duplicate declarations: a var already declared inline by a component (or
+	// by an earlier service) is skipped.
+	//
+	// sast is NOT in this union (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2): its
+	// render-time secrets (DO Spaces keys, DO API token) are now resolved by
+	// Terraform directly from Vault via `data "vault_kv_secret_v2"` blocks
+	// (see the Vault-data-source emission below), not ${var.<x>} + -var.
 	if strings.ToLower(in.Provider) == ProviderDigitalOcean {
 		var userDataBlob strings.Builder
 		for _, c := range in.Components {
@@ -1745,7 +1756,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		}
 		blob := userDataBlob.String()
 
-		// Collect, in deterministic order, every (name, sensitive) the six DO
+		// Collect, in deterministic order, every (name, sensitive) the DO
 		// bootstraps can reference. A name seen twice keeps its first classification
 		// (sensitive wins if any producer marks it sensitive — handled below).
 		type varDecl struct {
@@ -1754,7 +1765,6 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		}
 		mcpPlain, mcpSens := McpDOBootstrapSpec{Environment: "x"}.McpDOBootstrapVariableNames()
 		obsPlain, obsSens := OBSDOBootstrapSpec{}.OBSDOBootstrapVariableNames()
-		sastPlain, sastSens := SastDOBootstrapSpec{Environment: "x"}.SastDOBootstrapVariableNames()
 		backPlain, backSens := BackendBootstrapSpec{Environment: "x"}.BackendBootstrapVariableNames()
 		vpnPlain, vpnSens := VPNBootstrapSpec{Environment: "x"}.VPNBootstrapVariableNames()
 
@@ -1767,12 +1777,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		// Sensitive first so a name shared plain+sensitive is classified sensitive.
 		add(mcpSens, true)
 		add(obsSens, true)
-		add(sastSens, true)
 		add(backSens, true)
 		add(vpnSens, true)
 		add(mcpPlain, false)
 		add(obsPlain, false)
-		add(sastPlain, false)
 		add(backPlain, false)
 		add(vpnPlain, false)
 
@@ -1799,6 +1807,26 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			decl += "}\n"
 			docs = append([]string{decl}, docs...)
 		}
+
+		// Emit `data "vault_kv_secret_v2"` blocks for every Vault KV leaf a rendered
+		// DO bootstrap references (${data.vault_kv_secret_v2.<label>.data["<key>"]}
+		// — see vault_datasource.go). Covers sast (always) and, when
+		// FullServiceBootstraps callers migrate them, mcp/sso. Deterministic label
+		// order; each leaf declared at most once. The `vault` provider itself is
+		// pinned via requiredProvidersBlock below (needsVault) — the provider
+		// auto-configures from VAULT_ADDR/VAULT_TOKEN in the environment, exactly
+		// like every other provider in this package (no explicit provider block).
+		if refs := vaultKVLabelsReferenced(blob); len(refs) > 0 {
+			needsVault = true
+			for _, path := range refs {
+				doc, label := VaultKVDataSourceHCL(path)
+				declPrefix := "data \"vault_kv_secret_v2\" \"" + label + "\" {"
+				if strings.Contains(strings.Join(docs, "\n"), declPrefix) {
+					continue
+				}
+				docs = append([]string{doc}, docs...)
+			}
+		}
 	}
 	// Per-environment DigitalOcean project binding (phase 2): now that every
 	// resource is in docs, bind the project-assignable ones (databases, LBs,
@@ -1814,7 +1842,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// and once ANY required_providers entry exists (e.g. Cloudflare) terraform also
 	// requires the cloud provider declared. AWS-only envs need NO block (hashicorp/aws
 	// auto-installs), keeping the common case clean.
-	if rp := requiredProvidersBlock(in.Provider, needsCloudflare, needsKubernetes, needsHelm); rp != "" {
+	if rp := requiredProvidersBlock(in.Provider, needsCloudflare, needsKubernetes, needsHelm, needsVault); rp != "" {
 		docs = append([]string{rp}, docs...)
 	}
 	return docs, nil
@@ -1863,16 +1891,20 @@ func dedupeCloudflareZoneIDVar(docs []string) []string {
 }
 
 // requiredProvidersBlock returns the terraform{required_providers{...}} HCL when
-// one is needed (non-default cloud source, or Cloudflare present), else "".
-func requiredProvidersBlock(provider string, needsCloudflare, needsKubernetes, needsHelm bool) string {
+// one is needed (non-default cloud source, or Cloudflare/Vault present), else "".
+// Exactly one required_providers block may exist per module — Terraform errors
+// ("Duplicate required providers configuration") on a second one — so every
+// provider this assembler might need (cloud, cloudflare, kubernetes, helm,
+// vault) is merged into this single call, never emitted as a standalone block.
+func requiredProvidersBlock(provider string, needsCloudflare, needsKubernetes, needsHelm, needsVault bool) string {
 	src, ok := cloudProviderSource[strings.ToLower(provider)]
 	cloudNonDefault := ok && !strings.HasPrefix(src[1], "hashicorp/")
 	// hashicorp/kubernetes and hashicorp/helm auto-install (default namespace) but
 	// once ANY required_providers entry exists, terraform requires every used
 	// provider to be declared — so we only need a block when there is a non-default
-	// source OR Cloudflare. When such a block IS emitted and kubernetes/helm
+	// source OR Cloudflare OR Vault. When such a block IS emitted and kubernetes/helm
 	// resources are present, pin them too so the block stays self-consistent.
-	if !needsCloudflare && !cloudNonDefault {
+	if !needsCloudflare && !needsVault && !cloudNonDefault {
 		return "" // AWS/GCP/Azure-only: hashicorp namespace auto-installs, no block needed
 	}
 	var b strings.Builder
@@ -1890,6 +1922,14 @@ func requiredProvidersBlock(provider string, needsCloudflare, needsKubernetes, n
 		// The operator-pattern CORE (upstream operator via helm_release) needs the
 		// hashicorp/helm provider declared.
 		b.WriteString("    helm = {\n      source = \"hashicorp/helm\"\n    }\n")
+	}
+	if needsVault {
+		// EPIC-BOOTFETCH-AWS-SM-TO-VAULT: pinned whenever a rendered DO bootstrap
+		// references a `data "vault_kv_secret_v2"` block. No explicit `provider
+		// "vault" {}` is emitted — like every other provider here, it auto-configures
+		// from the environment (VAULT_ADDR / VAULT_TOKEN, or VAULT_ROLE_ID +
+		// VAULT_SECRET_ID via a login step in CI).
+		b.WriteString("    vault = {\n      source  = \"hashicorp/vault\"\n      version = \"~> 4.0\"\n    }\n")
 	}
 	b.WriteString("  }\n}\n")
 	return b.String()

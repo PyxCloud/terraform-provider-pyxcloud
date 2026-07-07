@@ -249,21 +249,17 @@ type DOBaselineSecrets struct {
 	DigitalOceanToken string
 	McpReservedIP     string
 
-	// --- SSO (Keycloak) literal-injected secrets (pd-MIG-CUTOVER durable edge) ---
-	// The sso DO bootstrap (RenderSSODOBootstrapUserData) inlines its secret VALUES
-	// into user_data (it does NOT use ${var.<x>} refs), so a droplet self-heal boots
-	// a fully-configured Keycloak. These are fetched from Secrets Manager by the
-	// harness (cutover/render.go) and injected at render time. Required when
-	// DOBaselineOptions.FullServiceBootstraps is set.
-	SSOKCDBURL         string // beta-DO-keycloak-db-url (jdbc form, sslmode=require)
-	SSOKCDBUsername    string // keycloak-db username
-	SSOKCDBPassword    string // keycloak-db password
-	SSOAdminPassword   string // Keycloak bootstrap admin password
-	SSOVaultOIDCSecret string // pyx Vault OIDC client secret (file vault)
-	SSORunnerPublicKey string // deploy-runner stable SSH public key (optional)
-	SSOSMTPUser        string // SES SMTP user (optional)
-	SSOSMTPPassword    string // SES SMTP password (optional)
-	SSOSenderEmail     string // passo.build SES From address (optional)
+	// --- SSO (Keycloak) secrets (pd-MIG-CUTOVER durable edge) ---
+	// EPIC-BOOTFETCH-AWS-SM-TO-VAULT (wave 2): most sso secrets (keycloak-db URL/
+	// creds, the bootstrap admin password, DO Spaces keys, SMTP creds) are now
+	// resolved by Terraform directly from Vault via `data "vault_kv_secret_v2"`
+	// blocks rendered alongside the sso user_data (see
+	// SSODOBootstrapSpec.SSODOVaultDataSources in platform_bootstrap_sso_do.go) —
+	// they are NO LONGER fields here. Only the two secrets with no provisioned
+	// Vault leaf remain literal-injected-at-render, exactly as before:
+	SSOVaultOIDCSecret string // pyx Vault OIDC client secret (file vault) — no Vault KV leaf provisioned yet
+	SSORunnerPublicKey string // deploy-runner stable SSH public key (optional) — the only related leaf holds a private_key, do not wire blindly
+	SSOSenderEmail     string // passo.build SES From address (optional; not a secret, kept for convenience)
 }
 
 // UsePrivateDBHost, when true, rewrites the BoardDatabaseURL host to the DO
@@ -698,6 +694,14 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 		docs = append(docs, vaultDocs...)
 	}
 
+	// 8. Vault `data "vault_kv_secret_v2"` blocks (+ shared provider) for the
+	//    FullServiceBootstraps render-time secrets sourced from Vault
+	//    (sast/mcp/EMBED_TOKEN/sso — EPIC-BOOTFETCH-AWS-SM-TO-VAULT wave 2). Only
+	//    emitted when FullServiceBootstraps actually rendered those services.
+	if opts.FullServiceBootstraps {
+		docs = append(docs, DOBaselineVaultDataSources()...)
+	}
+
 	return docs, nil
 }
 
@@ -896,9 +900,30 @@ func doBaselineBackendSpec() BackendBootstrapSpec {
 	return (BackendBootstrapSpec{Environment: doBaselineEnv}).withDefaults()
 }
 
+// doBaselineSSOSpec is the ONE deterministic sso bootstrap spec for the DURABLE
+// render, shared by renderFullServiceBootstrap (which renders the user_data)
+// and DOBaselineVaultDataSources (which must declare the exact same set of
+// `data "vault_kv_secret_v2"` leaves the rendered user_data references — most
+// importantly SMTPKVPath, which is conditional). Defining it once here means
+// the two can never drift out of sync (a real bug this wave: SMTPKVPath was
+// set in the render call but not mirrored into the data-source declaration,
+// producing a `terraform validate` "Reference to undeclared resource" error).
+func doBaselineSSOSpec(secrets DOBaselineSecrets) SSODOBootstrapSpec {
+	return SSODOBootstrapSpec{
+		Environment:           doBaselineEnv,
+		DomainName:            "pyxcloud.io",
+		VaultOIDCSecret:       secrets.SSOVaultOIDCSecret,
+		RunnerPublicKey:       secrets.SSORunnerPublicKey,
+		SMTPKVPath:            "infra/staging/sso/smtp",
+		PassobuildSenderEmail: secrets.SSOSenderEmail,
+	}
+}
+
 // renderFullServiceBootstrap renders the COMPLETE DigitalOcean bootstrap for one
-// service (pd-MIG-CUTOVER-F5 durable render). Var-model services keep ${var.<x>}
-// refs; sso inlines its secret values from DOBaselineSecrets. For the three
+// service (pd-MIG-CUTOVER-F5 durable render). mcp/obs/sast now source their
+// secrets from Vault `data "vault_kv_secret_v2"` blocks (EPIC-BOOTFETCH-AWS-SM-
+// TO-VAULT); sso does too EXCEPT its two unmigrated fields (VaultOIDCSecret,
+// RunnerPublicKey), still inlined from DOBaselineSecrets. For the three
 // Cloudflare-Full origins (sso/backend/mcp) the nginx :443 terminator is appended
 // so the droplet template carries BOTH the service and its edge in one boot.
 func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts DOBaselineOptions) (string, error) {
@@ -908,21 +933,7 @@ func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts 
 	case "mcp":
 		ud, err = RenderMcpDOUserData(McpDOBootstrapSpec{Environment: doBaselineEnv})
 	case "sso":
-		ud, err = RenderSSODOBootstrapUserData(SSODOBootstrapSpec{
-			Environment:           doBaselineEnv,
-			DomainName:            "pyxcloud.io",
-			KCDBURL:               secrets.SSOKCDBURL,
-			KCDBUsername:          secrets.SSOKCDBUsername,
-			KCDBPassword:          secrets.SSOKCDBPassword,
-			AdminPassword:         secrets.SSOAdminPassword,
-			VaultOIDCSecret:       secrets.SSOVaultOIDCSecret,
-			SpacesAccessKey:       secrets.SpacesAccessKey,
-			SpacesSecretKey:       secrets.SpacesSecretKey,
-			RunnerPublicKey:       secrets.SSORunnerPublicKey,
-			SMTPUser:              secrets.SSOSMTPUser,
-			SMTPPassword:          secrets.SSOSMTPPassword,
-			PassobuildSenderEmail: secrets.SSOSenderEmail,
-		})
+		ud, err = RenderSSODOBootstrapUserData(doBaselineSSOSpec(secrets))
 	case "obs":
 		ud, err = RenderOBSDOBootstrapUserData(OBSDOBootstrapSpec{})
 	case "sast":
@@ -953,12 +964,17 @@ func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts 
 }
 
 // DOBaselineVariableNames returns the deterministic, deduplicated set of Terraform
-// variable names the DURABLE render (FullServiceBootstraps) references via
-// ${var.<x>} across the var-model services (mcp/obs/sast/backend/vpn). The harness
-// (cutover/render.go) emits a `variable "<x>" {}` declaration for each so the
-// rendered estate.tf is self-contained and `terraform validate`s; the values are
-// supplied at apply time via -var from Secrets Manager. sso is excluded (it inlines
-// its secret values, not variable refs).
+// variable names the DURABLE render (FullServiceBootstraps) still references via
+// ${var.<x>} across the var-model services (mcp/obs/backend/vpn — the board DB
+// URL for mcp has no Vault leaf yet; obs/backend/vpn secrets are unmigrated).
+// The harness (cutover/render.go) emits a `variable "<x>" {}` declaration for
+// each so the rendered estate.tf is self-contained and `terraform validate`s;
+// the values are supplied at apply time via -var from Secrets Manager. sso is
+// excluded (it inlines its two unmigrated secret values, not variable refs).
+//
+// sast is EXCLUDED here (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2): its secrets
+// are now Vault `data "vault_kv_secret_v2"` references — see
+// DOBaselineVaultDataSources.
 func DOBaselineVariableNames() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -975,7 +991,6 @@ func DOBaselineVariableNames() []string {
 	}
 	mp, ms := (McpDOBootstrapSpec{Environment: doBaselineEnv}).McpDOBootstrapVariableNames()
 	op, os_ := (OBSDOBootstrapSpec{}).OBSDOBootstrapVariableNames()
-	sp, ss := (SastDOBootstrapSpec{Environment: doBaselineEnv}).SastDOBootstrapVariableNames()
 	bp, bs := doBaselineBackendSpec().BackendBootstrapVariableNames()
 	vp, vs := (VPNBootstrapSpec{Environment: doBaselineEnv}).VPNBootstrapVariableNames()
 	// origin_tls_key / origin_tls_cert: the Cloudflare Origin cert material the
@@ -983,8 +998,52 @@ func DOBaselineVariableNames() []string {
 	// unconditionally (like every other var here) so the harness always emits a
 	// matching `variable` block; they are only REFERENCED in the rendered HCL
 	// when DOBaselineOptions.LBTermination is set.
-	add(mp, ms, op, os_, sp, ss, bp, bs, vp, vs, []string{doOriginCertKeyVar, doOriginCertLeafVar})
+	add(mp, ms, op, os_, bp, bs, vp, vs, []string{doOriginCertKeyVar, doOriginCertLeafVar})
 	return out
+}
+
+// DOBaselineVaultDataSources returns the deterministic, deduplicated set of
+// `data "vault_kv_secret_v2"` HCL blocks (+ the shared vault provider block)
+// the DURABLE render (FullServiceBootstraps) needs across sast/mcp/sso
+// (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2). The harness (cutover/render.go)
+// appends these to the rendered estate.tf so it is self-contained and
+// `terraform validate`s — no operator-populated -var for these leaves anymore;
+// Terraform reads Vault directly at apply time.
+//
+// Uses doBaselineSSOSpec(DOBaselineSecrets{}) — a zero-value secrets struct —
+// because NONE of the KV path fields SSODOVaultDataSources reads (KCDBURLKVPath
+// etc., all fixed defaults) depend on secrets content; only the two unmigrated
+// literal fields (VaultOIDCSecret/RunnerPublicKey) do, and those are irrelevant
+// here. This MUST stay the same spec shape renderFullServiceBootstrap uses for
+// sso (see doBaselineSSOSpec's doc comment for the bug this guards against).
+func DOBaselineVaultDataSources() []string {
+	seen := map[string]bool{}
+	var docs []string
+	add := func(groups ...[]string) {
+		for _, group := range groups {
+			for _, doc := range group {
+				if seen[doc] {
+					continue
+				}
+				seen[doc] = true
+				docs = append(docs, doc)
+			}
+		}
+	}
+	add(
+		(SastDOBootstrapSpec{Environment: doBaselineEnv}).SastDOVaultDataSources(),
+		(McpDOBootstrapSpec{Environment: doBaselineEnv}).McpDOVaultDataSources(),
+		doBaselineSSOSpec(DOBaselineSecrets{}).SSODOVaultDataSources(),
+	)
+	// NOTE: no `required_providers`/`provider "vault"` block is emitted here — a
+	// Terraform module may have only ONE required_providers block (a second one
+	// is a hard "Duplicate required providers configuration" error), and this
+	// harness's backend.tf (cutover/render.go) already owns that block for the
+	// `digitalocean` provider. The caller (cutover/render.go) is responsible for
+	// merging `vault` into that SAME required_providers block whenever these data
+	// sources are non-empty (see full's handling there), exactly as it already
+	// merges kubernetes/helm/cloudflare in the generic AssembleHCL path.
+	return docs
 }
 
 // indentPreserveVars indents each line of an already-heredoc-escaped user_data

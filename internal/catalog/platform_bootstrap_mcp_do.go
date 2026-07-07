@@ -53,6 +53,15 @@ import (
 // credential (the Spaces keys, the board DB URL, the embed-token secret) is
 // referenced by Terraform variable name; the operator wires those vars to the
 // same Secrets Manager source. The script never embeds a literal credential.
+//
+// VAULT MIGRATION (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2): the Spaces keys and
+// EMBED_TOKEN_SECRET are now resolved by Terraform at APPLY time directly from
+// Vault via `data "vault_kv_secret_v2"` (see vault_datasource.go) —
+// secret/infra/<env>/do/spaces-keys (access_key/secret_key) and
+// secret/infra/<env>/mcp (key embed_token) — instead of an operator-populated
+// ${var.<x>} sourced from a Secrets Manager export. The board DB URL
+// (BoardDBURLVar) has no Vault leaf yet, so it stays a ${var.<x>} render input
+// for now (unmigrated; tracked separately).
 
 // Pinned artifact coordinates for the board-OS MCP binary on DO Spaces — one
 // place so a cutover version/key change is a single edit.
@@ -97,20 +106,24 @@ type McpDOBootstrapSpec struct {
 	Environment string
 
 	// --- DO Spaces (binary source; replaces any S3 instance-role pull) ---
-	// SpacesKeyVar / SpacesSecretVar name the Terraform variables holding the DO
-	// Spaces access key / secret (Secrets Manager beta-DigitalOceanSpacesKeys).
-	SpacesKeyVar    string // default "do_spaces_key"
-	SpacesSecretVar string // default "do_spaces_secret"
+	// SpacesKVPath is the Vault KV-v2 leaf (under the `secret` mount) holding the
+	// DO Spaces access_key/secret_key, resolved by Terraform at apply time via a
+	// `data "vault_kv_secret_v2"` block (EPIC-BOOTFETCH-AWS-SM-TO-VAULT).
+	// Default "infra/staging/do/spaces-keys".
+	SpacesKVPath string
 
 	// --- Board database (DO pyx-main-db, mesh_app) ---
-	// BoardDBURLVar names the variable holding the full BOARD_DATABASE_URL for the
-	// DO Managed Postgres pyx-main-db mesh_app database (Secrets Manager
-	// beta-DO-pyx-main-db-url).
+	// BoardDBURLVar names the Terraform variable holding the full
+	// BOARD_DATABASE_URL for the DO Managed Postgres pyx-main-db mesh_app
+	// database. UNMIGRATED: no Vault leaf exists for this secret yet, so it
+	// stays a render-time ${var.<x>} input (Secrets Manager beta-DO-pyx-main-db-url).
 	BoardDBURLVar string // default "do_main_db_url"
 
-	// --- Embed-token secret (injected at render) ---
-	// EmbedTokenSecretVar names the variable holding EMBED_TOKEN_SECRET.
-	EmbedTokenSecretVar string // default "mcp_embed_token_secret"
+	// --- Embed-token secret ---
+	// EmbedTokenKVPath is the Vault KV-v2 leaf holding EMBED_TOKEN_SECRET (key
+	// "embed_token"), resolved by Terraform at apply time.
+	// Default "infra/staging/mcp".
+	EmbedTokenKVPath string
 }
 
 // withDefaults fills the production-faithful defaults for any unset field so a
@@ -123,37 +136,50 @@ func (s McpDOBootstrapSpec) withDefaults() McpDOBootstrapSpec {
 		return v
 	}
 	s.Environment = def(s.Environment, "beta")
-	s.SpacesKeyVar = def(s.SpacesKeyVar, "do_spaces_key")
-	s.SpacesSecretVar = def(s.SpacesSecretVar, "do_spaces_secret")
+	s.SpacesKVPath = def(s.SpacesKVPath, "infra/staging/do/spaces-keys")
 	// Shares the backend's DO Managed Postgres URL variable (same pyx-main-db /
 	// mesh_app), so a single Secrets-Manager-backed variable serves both services.
 	s.BoardDBURLVar = def(s.BoardDBURLVar, "do_main_db_url")
-	s.EmbedTokenSecretVar = def(s.EmbedTokenSecretVar, "mcp_embed_token_secret")
+	s.EmbedTokenKVPath = def(s.EmbedTokenKVPath, "infra/staging/mcp")
 	return s
 }
 
 // McpDOBootstrapVariableNames returns, in deterministic order, the Terraform
-// variable names this bootstrap references, partitioned plain vs sensitive so the
-// assembler/CLI can emit the matching `variable "<x>" {}` declarations (the
-// credential-bearing ones marked sensitive).
+// variable names this bootstrap still references via ${var.<x>} (only the
+// unmigrated board-DB URL today), partitioned plain vs sensitive so the
+// assembler/CLI can emit the matching `variable "<x>" {}` declarations.
 func (s McpDOBootstrapSpec) McpDOBootstrapVariableNames() (plain []string, sensitive []string) {
 	s = s.withDefaults()
 	plain = []string{}
 	sensitive = []string{
-		s.SpacesKeyVar, s.SpacesSecretVar,
 		s.BoardDBURLVar,
-		s.EmbedTokenSecretVar,
 	}
 	return plain, sensitive
 }
 
+// McpDOVaultDataSources returns, in deterministic order, the `data
+// "vault_kv_secret_v2"` HCL blocks this bootstrap's render-time secrets need
+// (see vault_datasource.go): the DO Spaces keys and the embed-token secret.
+func (s McpDOBootstrapSpec) McpDOVaultDataSources() []string {
+	s = s.withDefaults()
+	var docs []string
+	for _, path := range []string{s.SpacesKVPath, s.EmbedTokenKVPath} {
+		doc, _ := VaultKVDataSourceHCL(path)
+		docs = append(docs, doc)
+	}
+	return docs
+}
+
 // RenderMcpDOUserData renders the canonical board-OS MCP DigitalOcean cloud-init
-// as a bash script with `${var.<x>}` placeholders. It reproduces the LIVE
-// beta-passobuild-mcp bootstrap: pull mcp.tar.gz from DO Spaces (injected keys,
-// no instance role), write /etc/passobuild-mcp.env (BOARD_DATABASE_URL,
-// EMBED_TOKEN_SECRET, the decompose/verify/optimize thresholds, BOARD_ADMIN_ROLES),
-// install a hardened systemd unit and listen on :8787 (no CloudWatch). The
-// returned string is meant to be placed into the mcp scale-group's
+// as a bash script with Vault-sourced secret references (DO Spaces keys,
+// EMBED_TOKEN_SECRET — resolved by Terraform at apply time from Vault, see
+// vault_datasource.go) and one remaining ${var.<x>} placeholder for the
+// not-yet-migrated board DB URL. It reproduces the LIVE beta-passobuild-mcp
+// bootstrap: pull mcp.tar.gz from DO Spaces (injected keys, no instance role),
+// write /etc/passobuild-mcp.env (BOARD_DATABASE_URL, EMBED_TOKEN_SECRET, the
+// decompose/verify/optimize thresholds, BOARD_ADMIN_ROLES), install a hardened
+// systemd unit and listen on :8787 (no CloudWatch). The returned string is
+// meant to be placed into the mcp scale-group's
 // UserDataByProvider["digitalocean"], closing the F2-02 catalog drift.
 func RenderMcpDOUserData(spec McpDOBootstrapSpec) (string, error) {
 	s := spec.withDefaults()
@@ -161,6 +187,11 @@ func RenderMcpDOUserData(spec McpDOBootstrapSpec) (string, error) {
 		return "", fmt.Errorf("mcp-bootstrap: environment is required")
 	}
 	v := func(name string) string { return "${var." + name + "}" }
+	_, spacesLabel := VaultKVDataSourceHCL(s.SpacesKVPath)
+	_, embedLabel := VaultKVDataSourceHCL(s.EmbedTokenKVPath)
+	spacesAccessKeyRef := VaultKVRef(spacesLabel, "access_key")
+	spacesSecretKeyRef := VaultKVRef(spacesLabel, "secret_key")
+	embedTokenRef := VaultKVRef(embedLabel, "embed_token")
 
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
@@ -170,7 +201,8 @@ func RenderMcpDOUserData(spec McpDOBootstrapSpec) (string, error) {
 	w("export DEBIAN_FRONTEND=noninteractive")
 	w("# Canonical board-OS MCP server (Go, skill-plugin/mcp-go) DigitalOcean bootstrap —")
 	w("# reproduces the LIVE beta-passobuild-mcp droplet (pd-MIG-CUTOVER-F2-02, closes drift).")
-	w("# Provider-neutral placeholders; all secrets are Terraform variables, never inlined.")
+	w("# Spaces keys + EMBED_TOKEN_SECRET are Vault data sources (apply-time); the board")
+	w("# DB URL is still a Terraform variable. No secret is ever inlined as a literal.")
 	w("")
 	w("# Base dependencies + the AWS CLI (used as the S3-compatible client for DO Spaces).")
 	w("sudo apt-get update -y")
@@ -187,8 +219,8 @@ func RenderMcpDOUserData(spec McpDOBootstrapSpec) (string, error) {
 	w("# --- Board database (DO Managed Postgres pyx-main-db, database %s) ---", mcpMainDBDatabase)
 	w("# from Secrets Manager beta-DO-pyx-main-db-url (the same managed PG the backend uses).")
 	w("BOARD_DATABASE_URL=%s", v(s.BoardDBURLVar))
-	w("# --- Embedded-widget SSO token signing secret (injected at render) ---")
-	w("EMBED_TOKEN_SECRET=%s", v(s.EmbedTokenSecretVar))
+	w("# --- Embedded-widget SSO token signing secret (Vault secret/infra/<env>/mcp, key embed_token) ---")
+	w("EMBED_TOKEN_SECRET=%s", embedTokenRef)
 	w("# --- Board decomposition / verify / optimize complexity gates (live values) ---")
 	w("BOARD_DECOMPOSE_MIN_COMPLEXITY=%d", mcpDecomposeMinComplexity)
 	w("BOARD_VERIFY_MIN_COMPLEXITY=%d", mcpVerifyMinComplexity)
@@ -204,9 +236,9 @@ func RenderMcpDOUserData(spec McpDOBootstrapSpec) (string, error) {
 	w("EOV")
 	w("chmod 640 /etc/passobuild-mcp.env && chown root:mcp /etc/passobuild-mcp.env")
 	w("")
-	w("# --- Pull the mcp tarball from DO Spaces (S3-compatible; injected keys, NO instance role) ---")
-	w("export AWS_ACCESS_KEY_ID=\"%s\"", v(s.SpacesKeyVar))
-	w("export AWS_SECRET_ACCESS_KEY=\"%s\"", v(s.SpacesSecretVar))
+	w("# --- Pull the mcp tarball from DO Spaces (S3-compatible; Vault-sourced keys, NO instance role) ---")
+	w("export AWS_ACCESS_KEY_ID=\"%s\"", spacesAccessKeyRef)
+	w("export AWS_SECRET_ACCESS_KEY=\"%s\"", spacesSecretKeyRef)
 	w("SPACES_ENDPOINT=\"%s\"", mcpSpacesEndpoint)
 	w("echo \"Pulling board-OS MCP tarball from DO Spaces s3://%s/%s ...\"", mcpSpacesBucket, mcpSpacesKey)
 	w("/usr/local/bin/aws s3 cp \"s3://%s/%s\" /tmp/mcp.tar.gz --endpoint-url \"$SPACES_ENDPOINT\" --region %s", mcpSpacesBucket, mcpSpacesKey, mcpSpacesRegion)

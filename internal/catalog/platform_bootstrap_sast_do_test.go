@@ -61,7 +61,9 @@ func TestRenderSastDOBootstrapFaithfulPort(t *testing.T) {
 }
 
 // TestRenderSastDOBootstrapInlinesNoSecretValues is the security invariant:
-// every credential is referenced by Terraform variable, never inlined.
+// every credential is referenced by a Vault data source, never inlined
+// (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2: sast's secrets are resolved by
+// Terraform from Vault at apply time, not an operator-populated ${var.x}).
 func TestRenderSastDOBootstrapInlinesNoSecretValues(t *testing.T) {
 	t.Parallel()
 	ud, err := RenderSastDOBootstrapUserData(SastDOBootstrapSpec{Environment: "beta"})
@@ -69,13 +71,40 @@ func TestRenderSastDOBootstrapInlinesNoSecretValues(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	for _, ref := range []string{
-		"${var.do_spaces_access_key}",
-		"${var.do_spaces_secret_key}",
-		"${var.do_registry_token}",
-		"${var.do_api_token}",
+		`${data.vault_kv_secret_v2.infra_staging_do_spaces_keys.data["access_key"]}`,
+		`${data.vault_kv_secret_v2.infra_staging_do_spaces_keys.data["secret_key"]}`,
+		`${data.vault_kv_secret_v2.infra_staging_do_api_token.data["token"]}`,
 	} {
 		if !strings.Contains(ud, ref) {
-			t.Errorf("expected secret to be referenced by variable %q, but it was not", ref)
+			t.Errorf("expected secret to be referenced via Vault data source %q, but it was not", ref)
+		}
+	}
+	// No lingering ${var.x} secret refs from the pre-Vault era.
+	for _, retired := range []string{"${var.do_spaces_access_key}", "${var.do_spaces_secret_key}", "${var.do_registry_token}", "${var.do_api_token}"} {
+		if strings.Contains(ud, retired) {
+			t.Errorf("rendered SAST DO bootstrap must not reference the retired ${var.x} secret %q", retired)
+		}
+	}
+}
+
+// TestSastDOVaultDataSources asserts the bootstrap declares exactly the two
+// Vault KV data sources it needs (Spaces keys + API token), each scoped to the
+// `secret` mount.
+func TestSastDOVaultDataSources(t *testing.T) {
+	t.Parallel()
+	docs := SastDOBootstrapSpec{Environment: "beta"}.SastDOVaultDataSources()
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 vault data sources, got %d: %v", len(docs), docs)
+	}
+	joined := strings.Join(docs, "\n")
+	for _, want := range []string{
+		`data "vault_kv_secret_v2" "infra_staging_do_spaces_keys"`,
+		`name  = "infra/staging/do/spaces-keys"`,
+		`data "vault_kv_secret_v2" "infra_staging_do_api_token"`,
+		`name  = "infra/staging/do/api-token"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in:\n%s", want, joined)
 		}
 	}
 }
@@ -91,28 +120,6 @@ func TestSastDOScaleDownFloorIsOne(t *testing.T) {
 	}
 	if !strings.Contains(ud, "SCALE_DOWN_TO=1") {
 		t.Errorf("expected zero scale-down target to be clamped to the DO floor of 1, got:\n%s", ud)
-	}
-}
-
-// TestSastDOBootstrapVariableNamesSensitive asserts all four credentials are
-// partitioned as sensitive so the assembler marks the emitted variable blocks.
-func TestSastDOBootstrapVariableNamesSensitive(t *testing.T) {
-	t.Parallel()
-	plain, sensitive := SastDOBootstrapSpec{Environment: "beta"}.SastDOBootstrapVariableNames()
-	if len(plain) != 0 {
-		t.Errorf("expected no plain vars, got %v", plain)
-	}
-	want := map[string]bool{
-		"do_spaces_access_key": true, "do_spaces_secret_key": true,
-		"do_registry_token": true, "do_api_token": true,
-	}
-	if len(sensitive) != len(want) {
-		t.Fatalf("expected %d sensitive vars, got %v", len(want), sensitive)
-	}
-	for _, s := range sensitive {
-		if !want[s] {
-			t.Errorf("unexpected sensitive var %q", s)
-		}
 	}
 }
 

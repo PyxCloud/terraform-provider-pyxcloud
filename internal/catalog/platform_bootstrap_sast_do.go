@@ -49,6 +49,20 @@ import (
 // Spaces keys, the DO registry token, and the DO API token are referenced by
 // Terraform variable NAME (${var.<x>}); the operator wires those vars to Vault /
 // the secret source. The script never embeds a literal credential.
+//
+// VAULT MIGRATION (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2): these four
+// credentials are provider-level (DO Spaces / DO API), consumed by a bash
+// script Terraform bakes into the droplet_autoscale launch template at
+// APPLY time — there is no on-droplet AppRole boot-fetch on this path (unlike
+// obs). Previously the operator ran `aws secretsmanager get-secret-value` and
+// passed the value in via `-var`; now the SAME apply-time sourcing is done by
+// Terraform itself via `data "vault_kv_secret_v2"` (see vault_datasource.go),
+// reading secret/infra/<env>/do/spaces-keys (access_key/secret_key) and
+// secret/infra/<env>/do/api-token (token — used for BOTH the registry login
+// and the self-scale-down API call, exactly as the AWS-SM-era comments here
+// already documented). SastDOBootstrapVariableNames is retired in favor of
+// SastDOVaultDataSources; the rendered user_data now interpolates
+// ${data.vault_kv_secret_v2.<label>.data["<key>"]} instead of ${var.<x>}.
 
 // SastDOBootstrapSpec is the typed, provider-neutral input for the DigitalOcean
 // SAST runner bootstrap. Every AWS interpolation from sast-asg.tf's
@@ -83,20 +97,18 @@ type SastDOBootstrapSpec struct {
 	// only for a warm pool.
 	ScaleDownTo int
 
-	// --- secret VARIABLE NAMES (never values) ---
+	// --- Vault KV-v2 leaf paths (render/apply-time data sources, never values) ---
+	// EPIC-BOOTFETCH-AWS-SM-TO-VAULT: the DO Spaces keys and the DO API token (used
+	// both for the registry login and the self-scale-down call) are resolved by
+	// Terraform at apply time from Vault, not injected by the operator via -var.
 
-	// SpacesAccessKeyVar / SpacesSecretKeyVar name the Terraform variables holding
-	// the Spaces S3-compatible access/secret keys. Default "do_spaces_access_key" /
-	// "do_spaces_secret_key".
-	SpacesAccessKeyVar string
-	SpacesSecretKeyVar string
-	// RegistryTokenVar names the variable holding the DO registry read token used
-	// for `docker login registry.digitalocean.com` (the DO API token works).
-	// Default "do_registry_token".
-	RegistryTokenVar string
-	// APITokenVar names the variable holding the DO API token the runner uses to
-	// call the droplet_autoscale API for self-scale-down. Default "do_api_token".
-	APITokenVar string
+	// SpacesKVPath is the KV-v2 leaf (under the `secret` mount) holding the DO
+	// Spaces access_key/secret_key. Default "infra/staging/do/spaces-keys".
+	SpacesKVPath string
+	// APITokenKVPath is the KV-v2 leaf holding the DO API token (key "token"),
+	// used for BOTH the registry docker-login and the self-scale-down API call.
+	// Default "infra/staging/do/api-token".
+	APITokenKVPath string
 }
 
 // withDefaults fills the production-faithful defaults for any unset field so
@@ -120,34 +132,38 @@ func (s SastDOBootstrapSpec) withDefaults() SastDOBootstrapSpec {
 		// an ASG). Clamp the self-scale-down target to the floor.
 		s.ScaleDownTo = 1
 	}
-	s.SpacesAccessKeyVar = def(s.SpacesAccessKeyVar, "do_spaces_access_key")
-	s.SpacesSecretKeyVar = def(s.SpacesSecretKeyVar, "do_spaces_secret_key")
-	s.RegistryTokenVar = def(s.RegistryTokenVar, "do_registry_token")
-	s.APITokenVar = def(s.APITokenVar, "do_api_token")
+	s.SpacesKVPath = def(s.SpacesKVPath, "infra/staging/do/spaces-keys")
+	s.APITokenKVPath = def(s.APITokenKVPath, "infra/staging/do/api-token")
 	return s
 }
 
-// SastDOBootstrapVariableNames returns, in deterministic order, the Terraform
-// variable names this bootstrap references, partitioned plain vs sensitive so
-// the assembler/CLI emits the matching `variable "<x>" {}` blocks (the
-// credential-bearing ones marked sensitive) and the rendered .tf is
-// self-contained and `terraform validate`s.
-func (s SastDOBootstrapSpec) SastDOBootstrapVariableNames() (plain []string, sensitive []string) {
+// SastDOVaultDataSources returns, in deterministic order, the `data
+// "vault_kv_secret_v2"` HCL blocks this bootstrap's render-time secrets need
+// (see vault_datasource.go). The caller (do_baseline.go /
+// renderFullServiceBootstrap, or the generic AssembleHCL path in assemble.go)
+// appends these to the rendered document set; the `vault` provider itself is
+// pinned into the module's ONE required_providers block by the caller (a
+// second required_providers block is a hard terraform error — see
+// requiredProvidersBlock in assemble.go / the backend.tf merge in
+// cutover/render.go), never via a standalone VaultProviderBlock() doc here.
+// Superseded here: SastDOBootstrapVariableNames / ${var.<x>} (the operator
+// used to -var these in from a Secrets-Manager export); Terraform now reads
+// Vault directly.
+func (s SastDOBootstrapSpec) SastDOVaultDataSources() []string {
 	s = s.withDefaults()
-	// No plain vars today: the runner reads only secrets by variable; the bucket /
-	// region / pool / image are literals baked at render time. Kept as a return
-	// for symmetry with SSOBootstrapVariableNames and future plain inputs.
-	plain = []string{}
-	sensitive = []string{
-		s.SpacesAccessKeyVar, s.SpacesSecretKeyVar, s.RegistryTokenVar, s.APITokenVar,
+	var docs []string
+	for _, path := range []string{s.SpacesKVPath, s.APITokenKVPath} {
+		doc, _ := VaultKVDataSourceHCL(path)
+		docs = append(docs, doc)
 	}
-	return plain, sensitive
+	return docs
 }
 
 // RenderSastDOBootstrapUserData renders the canonical DigitalOcean SAST runner
-// cloud-init as a bash script with `${var.<x>}` placeholders for the secrets. It
-// is a faithful port of sast-asg.tf's sast_runner_user_data with the three AWS
-// primitives swapped for DO equivalents (ECR->DO registry, S3->Spaces,
+// cloud-init as a bash script with Vault-sourced secret references (see
+// vault_datasource.go) resolved by Terraform at apply time. It is a faithful
+// port of sast-asg.tf's sast_runner_user_data with the three AWS primitives
+// swapped for DO equivalents (ECR->DO registry, S3->Spaces,
 // ASG-SetDesiredCapacity->DO droplet_autoscale API). The returned string is
 // meant to be placed into AssembleScaleGroup.UserDataByProvider["digitalocean"]
 // for the `sast` service — so ONLY a DigitalOcean placement gets this bootstrap;
@@ -157,7 +173,11 @@ func RenderSastDOBootstrapUserData(spec SastDOBootstrapSpec) (string, error) {
 	if strings.TrimSpace(s.Environment) == "" {
 		return "", fmt.Errorf("sast-do-bootstrap: environment is required (drives the Spaces bucket and the droplet_autoscale pool name)")
 	}
-	v := func(name string) string { return "${var." + name + "}" }
+	_, spacesLabel := VaultKVDataSourceHCL(s.SpacesKVPath)
+	_, apiTokenLabel := VaultKVDataSourceHCL(s.APITokenKVPath)
+	spacesAccessKeyRef := VaultKVRef(spacesLabel, "access_key")
+	spacesSecretKeyRef := VaultKVRef(spacesLabel, "secret_key")
+	apiTokenRef := VaultKVRef(apiTokenLabel, "token")
 	endpoint := fmt.Sprintf("https://%s.digitaloceanspaces.com", s.SpacesRegion)
 
 	var b strings.Builder
@@ -196,15 +216,18 @@ func RenderSastDOBootstrapUserData(spec SastDOBootstrapSpec) (string, error) {
 	w("SCALE_DOWN_TO=%d", s.ScaleDownTo)
 	w("")
 	w("# Spaces S3-compatible credentials (aws CLI reads AWS_* env; Spaces keys go here).")
-	w("export AWS_ACCESS_KEY_ID=\"%s\"", v(s.SpacesAccessKeyVar))
-	w("export AWS_SECRET_ACCESS_KEY=\"%s\"", v(s.SpacesSecretKeyVar))
+	w("# Sourced by Terraform at apply time from Vault secret/infra/<env>/do/spaces-keys")
+	w("# (EPIC-BOOTFETCH-AWS-SM-TO-VAULT), not a human-populated -var.")
+	w("export AWS_ACCESS_KEY_ID=\"%s\"", spacesAccessKeyRef)
+	w("export AWS_SECRET_ACCESS_KEY=\"%s\"", spacesSecretKeyRef)
 	w("export AWS_DEFAULT_REGION=\"$SPACES_REGION\"")
 	w("# aws s3 against Spaces: always pass the endpoint.")
 	w("s3s() { aws --endpoint-url \"$SPACES_ENDPOINT\" \"$@\"; }")
 	w("")
 	w("# Log in to the DO Container Registry and pull the scanner super-image.")
-	w("# The DO API / registry read token works as BOTH username and password.")
-	w("echo \"%s\" | docker login registry.digitalocean.com -u \"%s\" --password-stdin", v(s.RegistryTokenVar), v(s.RegistryTokenVar))
+	w("# The DO API token (Vault secret/infra/<env>/do/api-token, key \"token\") works")
+	w("# as BOTH username and password for the registry login.")
+	w("echo \"%s\" | docker login registry.digitalocean.com -u \"%s\" --password-stdin", apiTokenRef, apiTokenRef)
 	w("docker pull \"$REGISTRY_IMAGE\"")
 	w("")
 	w("echo \"SAST Runner initialized. Polling Spaces bucket $BUCKET for jobs...\"")
@@ -268,7 +291,7 @@ func RenderSastDOBootstrapUserData(spec SastDOBootstrapSpec) (string, error) {
 	w("# default 1), NOT zero. Resolve the pool id by name, then set min=max=floor.")
 	w("echo \"All jobs processed. Scaling pool $POOL_NAME down to $SCALE_DOWN_TO...\"")
 	w("DO_API=\"https://api.digitalocean.com/v2/droplets/autoscale\"")
-	w("DO_TOKEN=\"%s\"", v(s.APITokenVar))
+	w("DO_TOKEN=\"%s\"", apiTokenRef)
 	w("POOL_ID=$(curl -sf -H \"Authorization: Bearer $DO_TOKEN\" \"$DO_API\" \\")
 	w("  | jq -r --arg n \"$POOL_NAME\" '.autoscale_pools[]? | select(.name==$n) | .id' | head -n1)")
 	w("if [ -n \"$POOL_ID\" ] && [ \"$POOL_ID\" != \"null\" ]; then")

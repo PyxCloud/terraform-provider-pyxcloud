@@ -64,12 +64,26 @@ the DO Spaces artifact fetch.
 
 `cutover/generated/` is git-ignored: the rendered `estate.tf` carries the
 render-time-injected secrets in the mcp launch template. It is fully reproducible
-from the committed catalog + Secrets Manager, so it is never committed.
+from the committed catalog + secret sources, so it is never committed.
 
-- **Injected at RENDER time** (into `user_data`): Spaces keys, EMBED token, and the
-  mesh_app `BOARD_DATABASE_URL`.
-- **Read by terraform at PLAN/APPLY time** (from the environment, never rendered):
-  the DO API token and the Spaces provider credentials.
+- **Injected at RENDER time** (Go-string literal, baked into `user_data`): the
+  mesh_app `BOARD_DATABASE_URL` (mcp; no Vault leaf yet), and, when
+  `DO_FULL_SERVICE_BOOTSTRAPS=1`, sso's `VaultOIDCSecret` / `RunnerPublicKey` (no
+  Vault leaf provisioned for either — see the RISK note in
+  `internal/catalog/platform_bootstrap_sso_do.go`).
+- **Resolved by TERRAFORM at PLAN/APPLY time, directly from Vault**
+  (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2 — `data "vault_kv_secret_v2"` blocks,
+  see `internal/catalog/vault_datasource.go`): the sast Spaces keys + DO API
+  token, the mcp Spaces keys + `EMBED_TOKEN_SECRET`, and (when
+  `DO_FULL_SERVICE_BOOTSTRAPS=1`) sso's keycloak-db URL/creds, bootstrap admin
+  password, Spaces keys, and SMTP creds. Terraform authenticates to Vault via
+  `VAULT_ADDR`/`VAULT_TOKEN` (or `VAULT_ROLE_ID`+`VAULT_SECRET_ID` via a CI OIDC
+  login step) in the environment — no `-var`, no AWS Secrets Manager export, for
+  any of these anymore.
+- **Read by terraform at PLAN/APPLY time from the environment** (never
+  rendered, unrelated to Vault): the DO API token and the Spaces provider
+  credentials used by the `digitalocean` provider block itself
+  (`DIGITALOCEAN_TOKEN` / `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY`).
 
 ## Reproducible workflow
 

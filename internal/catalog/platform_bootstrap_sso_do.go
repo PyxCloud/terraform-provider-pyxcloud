@@ -42,6 +42,37 @@ import (
 // user_data must be treated as sensitive (it is, exactly like the injected mcp
 // EMBED_TOKEN_SECRET). The file vault + keycloak.conf are written 0600/0640 and
 // owned by the service user, same as the AWS port.
+//
+// VAULT MIGRATION (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2 — the MOST DELICATE of
+// the three: this is the auth service). "Injected at render" no longer means "an
+// operator ran `aws secretsmanager get-secret-value` and passed a Go string into
+// this function" — it means Terraform itself resolves the value from Vault via a
+// `data "vault_kv_secret_v2"` block (vault_datasource.go) at APPLY time and the
+// rendered user_data interpolates ${data.vault_kv_secret_v2.<label>.data["<key>"]}
+// directly in the keycloak.conf heredoc (exactly where ${var.<x>} used to sit for
+// mcp/sast). The droplet STILL never talks to Vault itself (no boot-fetch, no
+// instance role, unchanged reasoning above) — only the SOURCE of the render-time
+// value moved from a human-exported AWS-SM env var to a Vault data source
+// Terraform reads at plan/apply. Mapping (secret/infra/<env>/...):
+//
+//	KCDBURL         -> sso/keycloak-db-url      key "url"
+//	KCDBUsername    -> sso/keycloak-db          key "username"
+//	KCDBPassword    -> sso/keycloak-db          key "password"
+//	AdminPassword   -> sso/keycloak-admin       key "password"
+//	SpacesAccessKey -> do/spaces-keys           key "access_key"
+//	SpacesSecretKey -> do/spaces-keys           key "secret_key"
+//	SMTPUser        -> sso/smtp                 key "username"
+//	SMTPPassword    -> sso/smtp                 key "password"
+//
+// NOT migrated (kept as plain injected-value fields; see the RISK note in the
+// PR description):
+//   - VaultOIDCSecret: no Vault KV leaf was provisioned for the pyx Vault OIDC
+//     client secret in this wave.
+//   - RunnerPublicKey: the only related leaf (sso/runner-ssh-key) holds a
+//     "private_key" field, not a public key — injecting a private key into
+//     authorized_keys would be a serious bug, so this field is left exactly as
+//     it was (an operator-supplied public-key string) rather than guessing a
+//     wrong mapping.
 
 // DO Spaces boot-fetch constants for the SSO runtime bundle. The bundle object
 // (SPI jars + themes + realm.json) is unchanged from the AWS path; only the
@@ -60,10 +91,14 @@ const (
 )
 
 // SSODOBootstrapSpec is the typed input for the DigitalOcean SSO (Keycloak)
-// bootstrap. Unlike the AWS SSOBootstrapSpec (which names Terraform variables),
-// the credential fields here hold the actual INJECTED VALUES — resolved from
-// Secrets Manager at render time, because a DO droplet has no instance role to
-// fetch them on boot (the mcp EMBED_TOKEN_SECRET pattern).
+// bootstrap. Most credential fields now name a Vault KV-v2 leaf PATH (resolved
+// by Terraform at apply time via a `data "vault_kv_secret_v2"` block — see the
+// VAULT MIGRATION note above and vault_datasource.go), not a literal value: the
+// rendered heredoc interpolates ${data.vault_kv_secret_v2...} exactly where a
+// literal used to sit. The two fields with no provisioned Vault leaf
+// (VaultOIDCSecret, RunnerPublicKey) remain literal INJECTED VALUES, resolved by
+// the operator/CI exactly as before — because a DO droplet has no instance role
+// to fetch anything itself (the mcp EMBED_TOKEN_SECRET reasoning still applies).
 type SSODOBootstrapSpec struct {
 	// Environment is the deploy environment (e.g. "beta"); drives the public
 	// hostname (<env>-auth.<domain>) and the keystore file names. Required.
@@ -72,39 +107,43 @@ type SSODOBootstrapSpec struct {
 	// Defaults to "pyxcloud.io".
 	DomainName string
 
-	// KCDBURL is the FULL jdbc URL for the DO Managed Postgres keycloak-db,
-	// injected from Secrets Manager beta-DO-keycloak-db-url. It is a jdbc form with
-	// sslmode=require, e.g.
+	// KCDBURLKVPath is the Vault KV-v2 leaf holding the FULL jdbc URL for the DO
+	// Managed Postgres keycloak-db (key "url"), e.g.
 	//   jdbc:postgresql://kc-do-do-user.db.ondigitalocean.com:25060/defaultdb?sslmode=require
-	// Required (there is no on-droplet fetch to fall back to).
-	KCDBURL string
-	// KCDBUsername / KCDBPassword are the keycloak-db credentials, injected from
-	// Secrets Manager (part of the beta-DO-keycloak-db secret set). Required.
-	KCDBUsername string
-	KCDBPassword string
-	// AdminPassword is the Keycloak bootstrap admin password, injected from Secrets
-	// Manager. Required.
-	AdminPassword string
+	// Default "infra/staging/sso/keycloak-db-url".
+	KCDBURLKVPath string
+	// KCDBKVPath is the Vault KV-v2 leaf holding the keycloak-db credentials
+	// (keys "username"/"password"). Default "infra/staging/sso/keycloak-db".
+	KCDBKVPath string
+	// AdminKVPath is the Vault KV-v2 leaf holding the Keycloak bootstrap admin
+	// credentials (key "password" used here). Default "infra/staging/sso/keycloak-admin".
+	AdminKVPath string
 	// VaultOIDCSecret is the pyx Vault OIDC client secret written to the file vault
-	// (KC_VAULT=file), injected from Secrets Manager. Required.
+	// (KC_VAULT=file), injected at render. UNMIGRATED: no Vault KV leaf was
+	// provisioned for this secret in this wave, so it stays a literal value.
+	// Required.
 	VaultOIDCSecret string
 
-	// SpacesAccessKey / SpacesSecretKey are the DO Spaces keys used to boot-fetch
-	// the runtime bundle, injected from Secrets Manager beta-DigitalOceanSpacesKeys.
-	// Required (the bundle fetch is the substance of the SSO box).
-	SpacesAccessKey string
-	SpacesSecretKey string
+	// SpacesKVPath is the Vault KV-v2 leaf holding the DO Spaces keys (keys
+	// "access_key"/"secret_key") used to boot-fetch the runtime bundle (the
+	// bundle fetch is the substance of the SSO box). Default
+	// "infra/staging/do/spaces-keys".
+	SpacesKVPath string
 
-	// RunnerPublicKey is the deploy runner's STABLE SSH public key (injected from
-	// Secrets Manager beta-SsoRunnerSshKey). Optional; empty -> no authorized_keys.
+	// RunnerPublicKey is the deploy runner's STABLE SSH public key, injected at
+	// render. UNMIGRATED: the only related Vault leaf (sso/runner-ssh-key) holds
+	// a "private_key" field, not a public key — see the RISK note above; do not
+	// wire this to that leaf without confirming with the operator which key
+	// material it actually holds. Optional; empty -> no authorized_keys.
 	RunnerPublicKey string
 
 	// SES SMTP (cross-cloud per F1-05 / ADR-0001). SMTPHost defaults to the AWS SES
-	// SMTP endpoint for SESRegion; SMTPUser/SMTPPassword are the injected IAM SMTP
-	// creds. Empty user/password -> the SMTP env lines are omitted.
-	SESRegion    string // AWS region for the SES SMTP host; default "eu-west-1"
-	SMTPUser     string
-	SMTPPassword string
+	// SMTP endpoint for SESRegion. SMTPKVPath is the Vault KV-v2 leaf holding the
+	// IAM SMTP creds (keys "username"/"password"). Default "infra/staging/sso/smtp".
+	// Empty SMTPKVPath -> the SMTP env lines are omitted (matches the old
+	// empty-user/password behavior).
+	SESRegion  string // AWS region for the SES SMTP host; default "eu-west-1"
+	SMTPKVPath string
 	// PassobuildSenderEmail backs KC_PASSOBUILD_SMTP_FROM. Optional.
 	PassobuildSenderEmail string
 }
@@ -116,7 +155,37 @@ func (s SSODOBootstrapSpec) withDefaults() SSODOBootstrapSpec {
 	if strings.TrimSpace(s.SESRegion) == "" {
 		s.SESRegion = "eu-west-1"
 	}
+	if strings.TrimSpace(s.KCDBURLKVPath) == "" {
+		s.KCDBURLKVPath = "infra/staging/sso/keycloak-db-url"
+	}
+	if strings.TrimSpace(s.KCDBKVPath) == "" {
+		s.KCDBKVPath = "infra/staging/sso/keycloak-db"
+	}
+	if strings.TrimSpace(s.AdminKVPath) == "" {
+		s.AdminKVPath = "infra/staging/sso/keycloak-admin"
+	}
+	if strings.TrimSpace(s.SpacesKVPath) == "" {
+		s.SpacesKVPath = "infra/staging/do/spaces-keys"
+	}
 	return s
+}
+
+// SSODOVaultDataSources returns, in deterministic order, the `data
+// "vault_kv_secret_v2"` HCL blocks this bootstrap's render-time secrets need
+// (see vault_datasource.go). SMTPKVPath is included only when set (matches the
+// bootstrap's own "empty -> SMTP omitted" behavior).
+func (s SSODOBootstrapSpec) SSODOVaultDataSources() []string {
+	s = s.withDefaults()
+	paths := []string{s.KCDBURLKVPath, s.KCDBKVPath, s.AdminKVPath, s.SpacesKVPath}
+	if strings.TrimSpace(s.SMTPKVPath) != "" {
+		paths = append(paths, s.SMTPKVPath)
+	}
+	var docs []string
+	for _, path := range paths {
+		doc, _ := VaultKVDataSourceHCL(path)
+		docs = append(docs, doc)
+	}
+	return docs
 }
 
 // RenderSSODOBootstrapUserData renders the DigitalOcean SSO (Keycloak) cloud-init
@@ -133,19 +202,33 @@ func RenderSSODOBootstrapUserData(spec SSODOBootstrapSpec) (string, error) {
 	if strings.TrimSpace(s.Environment) == "" {
 		return "", fmt.Errorf("sso-do-bootstrap: environment is required (drives <env>-auth.%s and the keystore file names)", s.DomainName)
 	}
-	// Every credential must be injected (no on-droplet fetch on DO).
+	// The two secrets with no provisioned Vault leaf still must be injected (no
+	// on-droplet fetch on DO). The Vault-sourced fields always have a default KV
+	// path (withDefaults above), so there is nothing to validate for those — a
+	// missing/wrong Vault leaf now fails at `terraform apply`, not at render.
 	for _, req := range []struct{ name, val string }{
-		{"KCDBURL (beta-DO-keycloak-db-url)", s.KCDBURL},
-		{"KCDBUsername", s.KCDBUsername},
-		{"KCDBPassword", s.KCDBPassword},
-		{"AdminPassword", s.AdminPassword},
 		{"VaultOIDCSecret", s.VaultOIDCSecret},
-		{"SpacesAccessKey (beta-DigitalOceanSpacesKeys)", s.SpacesAccessKey},
-		{"SpacesSecretKey (beta-DigitalOceanSpacesKeys)", s.SpacesSecretKey},
 	} {
 		if strings.TrimSpace(req.val) == "" {
-			return "", fmt.Errorf("sso-do-bootstrap: %s must be injected at render (DO droplets have no instance role to fetch it)", req.name)
+			return "", fmt.Errorf("sso-do-bootstrap: %s must be injected at render (DO droplets have no instance role to fetch it, and no Vault leaf is provisioned for it)", req.name)
 		}
+	}
+
+	_, kcDBURLLabel := VaultKVDataSourceHCL(s.KCDBURLKVPath)
+	_, kcDBLabel := VaultKVDataSourceHCL(s.KCDBKVPath)
+	_, adminLabel := VaultKVDataSourceHCL(s.AdminKVPath)
+	_, spacesLabel := VaultKVDataSourceHCL(s.SpacesKVPath)
+	kcDBURLRef := VaultKVRef(kcDBURLLabel, "url")
+	kcDBUsernameRef := VaultKVRef(kcDBLabel, "username")
+	kcDBPasswordRef := VaultKVRef(kcDBLabel, "password")
+	adminPasswordRef := VaultKVRef(adminLabel, "password")
+	spacesAccessKeyRef := VaultKVRef(spacesLabel, "access_key")
+	spacesSecretKeyRef := VaultKVRef(spacesLabel, "secret_key")
+	var smtpUserRef, smtpPasswordRef string
+	if strings.TrimSpace(s.SMTPKVPath) != "" {
+		_, smtpLabel := VaultKVDataSourceHCL(s.SMTPKVPath)
+		smtpUserRef = VaultKVRef(smtpLabel, "username")
+		smtpPasswordRef = VaultKVRef(smtpLabel, "password")
 	}
 
 	host := fmt.Sprintf("%s-auth.%s", s.Environment, s.DomainName)
@@ -201,11 +284,12 @@ func RenderSSODOBootstrapUserData(spec SSODOBootstrapSpec) (string, error) {
 	w("sudo chown -R main:main /etc/keycloak/vault")
 	w("")
 	w("# Boot-fetch the SSO runtime bundle (providers + themes + realm.json) from DO")
-	w("# Spaces (S3-compatible). Keys are INJECTED (no instance role on DO).")
+	w("# Spaces (S3-compatible). Keys are resolved by Terraform from Vault")
+	w("# secret/infra/<env>/do/spaces-keys at apply time (no instance role on DO).")
 	w("command -v aws >/dev/null 2>&1 || sudo snap install aws-cli --classic || sudo apt install -y awscli || true")
 	w("mkdir -p /tmp/sso-bundle")
-	w("export AWS_ACCESS_KEY_ID=%q", s.SpacesAccessKey)
-	w("export AWS_SECRET_ACCESS_KEY=%q", s.SpacesSecretKey)
+	w("export AWS_ACCESS_KEY_ID=\"%s\"", spacesAccessKeyRef)
+	w("export AWS_SECRET_ACCESS_KEY=\"%s\"", spacesSecretKeyRef)
 	w("if aws s3 cp %q /tmp/sso-bundle.tgz --endpoint-url %q; then", ssoDOBundleURI, ssoDOSpacesEndpoint)
 	w("  tar -xzf /tmp/sso-bundle.tgz -C /tmp/sso-bundle")
 	w("  sudo find /tmp/sso-bundle -maxdepth 2 -name 'pyx-event-listener-*.jar' -exec cp {} /opt/keycloak/providers/ \\;")
@@ -234,14 +318,15 @@ func RenderSSODOBootstrapUserData(spec SSODOBootstrapSpec) (string, error) {
 	w("sudo chown -R main:main /opt/keycloak/data")
 	w("")
 	w("# keycloak.conf — KC_DB_URL points at the DO Managed keycloak-db (jdbc,")
-	w("# sslmode=require, injected from beta-DO-keycloak-db-url). KC_CACHE=%s.", ssoCacheMode)
+	w("# sslmode=require, resolved by Terraform from Vault secret/infra/<env>/sso/")
+	w("# keycloak-db-url at apply time). KC_CACHE=%s.", ssoCacheMode)
 	w("sudo tee /etc/keycloak/keycloak.conf > /dev/null <<EOCONF")
-	w("KC_DB_URL=%s", s.KCDBURL)
-	w("KC_DB_USERNAME=%s", s.KCDBUsername)
-	w("KC_DB_PASSWORD='%s'", s.KCDBPassword)
+	w("KC_DB_URL=%s", kcDBURLRef)
+	w("KC_DB_USERNAME=%s", kcDBUsernameRef)
+	w("KC_DB_PASSWORD='%s'", kcDBPasswordRef)
 	w("KC_DB=postgres")
 	w("KC_BOOTSTRAP_ADMIN_USERNAME=admin")
-	w("KC_BOOTSTRAP_ADMIN_PASSWORD='%s'", s.AdminPassword)
+	w("KC_BOOTSTRAP_ADMIN_PASSWORD='%s'", adminPasswordRef)
 	w("KC_HTTPS_KEY_STORE_FILE=/opt/keycloak/data/import/%s.jks", host)
 	w("KC_HTTPS_KEY_STORE_PASSWORD=$KCPW")
 	w("KC_METRICS_ENABLED=true")
@@ -272,12 +357,12 @@ func RenderSSODOBootstrapUserData(spec SSODOBootstrapSpec) (string, error) {
 	w("ExecStart=/opt/keycloak/bin/kc.sh start --verbose --import-realm --optimized")
 	w("Restart=on-failure")
 	w("Environment=KC_SPI_EXPORT_IMPORT_DIR_STRATEGY=OVERWRITE_EXISTING")
-	if strings.TrimSpace(s.SMTPUser) != "" && strings.TrimSpace(s.SMTPPassword) != "" {
+	if strings.TrimSpace(s.SMTPKVPath) != "" {
 		w("Environment=KC_SMTP_HOST=email-smtp.%s.amazonaws.com", s.SESRegion)
 		w("Environment=KC_SMTP_PORT=587")
 		w("Environment=KC_SMTP_FROM=no-reply@%s", s.DomainName)
-		w("Environment=KC_SMTP_USER=%s", s.SMTPUser)
-		w("Environment=KC_SMTP_PASSWORD=%s", s.SMTPPassword)
+		w("Environment=KC_SMTP_USER=%s", smtpUserRef)
+		w("Environment=KC_SMTP_PASSWORD=%s", smtpPasswordRef)
 		w("Environment=KC_SMTP_AUTH=true")
 		w("Environment=KC_SMTP_STARTTLS=true")
 	}
