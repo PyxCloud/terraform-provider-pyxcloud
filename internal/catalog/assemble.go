@@ -31,6 +31,12 @@ type AssembleVM struct {
 	OSVersion       string
 	UserData        string
 	InstanceProfile string
+	// Tag is an extra provider tag stamped on the droplet (a DO firewall/LB selects
+	// the box by tag). Empty -> only the default "pyxcloud" tag. Mirrors AssembleScaleGroup.Tag.
+	Tag string
+	// SSHKeys are provider SSH-key IDs/fingerprints attached to the droplet.
+	// Mirrors AssembleScaleGroup.SSHKeys. Empty -> no ssh_keys rendered.
+	SSHKeys []string
 }
 
 // AssembleScaleGroup is the canonical config for a `virtual-machine-scale-group`
@@ -801,6 +807,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				OS: c.VM.OS, OSVersion: c.VM.OSVersion, Count: c.Count,
 				Network: netName, Subnet: subnetName, SecurityGroup: vmSG,
 				UserData: c.VM.UserData, InstanceProfile: c.VM.InstanceProfile,
+				Tag: c.VM.Tag, SSHKeys: c.VM.SSHKeys,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)

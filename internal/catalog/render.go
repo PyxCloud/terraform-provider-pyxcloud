@@ -490,7 +490,14 @@ func renderVMDO(p VMPlan) string {
 		if p.UserData != "" {
 			fmt.Fprintf(&b, "  user_data = %s\n", vmHeredoc(p.UserData))
 		}
-		fmt.Fprintf(&b, "  tags = [\"pyxcloud\"]\n")
+		vmTags := []string{"pyxcloud"}
+		if p.Tag != "" {
+			vmTags = append(vmTags, p.Tag)
+		}
+		fmt.Fprintf(&b, "  tags = %s\n", hclStringList(vmTags))
+		if len(p.SSHKeys) > 0 {
+			fmt.Fprintf(&b, "  ssh_keys = %s\n", hclStringList(p.SSHKeys))
+		}
 		b.WriteString("}\n\n")
 	}
 	// DO firewalls attach to droplets by droplet_ids; if a security-group is
