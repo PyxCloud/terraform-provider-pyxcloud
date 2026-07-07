@@ -77,6 +77,9 @@ type VMSpec struct {
 
 	UserData        string // cloud-init/bootstrap script (provider-neutral plaintext)
 	InstanceProfile string // IAM instance-profile/service-account name to attach
+
+	Tag     string   // extra fleet-selection tag stamped on the instance (DO firewall/LB); "" -> default only
+	SSHKeys []string // provider SSH-key IDs/fingerprints attached to the instance
 }
 
 // VMInstancePlan is one concrete instance in the translated plan.
@@ -88,26 +91,28 @@ type VMInstancePlan struct {
 // for one provider. STRUCTURED plan (not rendered .tf) — the provider owns
 // rendering and state, consistent with NetworkPlan / SecurityGroupPlan (§8).
 type VMPlan struct {
-	Provider        string           `json:"provider"`         // aws | gcp | digitalocean
-	CSP             string           `json:"csp"`              // catalog token: aws | gcp | do
-	RegionName      string           `json:"region_name"`      // abstract pyx region
-	CSPRegion       string           `json:"csp_region"`       // concrete provider region (catalog-resolved)
-	VMName          string           `json:"vm_name"`          // logical VM/component name
-	InstanceType    string           `json:"instance_type"`    // concrete SKU from `virtual_machine` (e.g. t3.medium)
-	Architecture    string           `json:"architecture"`     // resolved architecture
-	CPU             int              `json:"cpu"`              // resolved vCPU
-	RAM             int              `json:"ram"`              // resolved RAM (GiB)
-	OSName          string           `json:"os_name"`          // ubuntu | debian
-	OSVersion       string           `json:"os_version"`       // resolved version
-	Image           string           `json:"image"`            // concrete provider image (AMI / family / slug)
-	Instances       []VMInstancePlan `json:"instances"`        // count instances
-	NetworkName     string           `json:"network_name"`     // VPC/network it lives in
-	SubnetName      string           `json:"subnet_name"`      // subnet (where applicable)
-	SecurityGroup   string           `json:"security_group"`   // SG/firewall to attach
+	Provider               string           `json:"provider"`         // aws | gcp | digitalocean
+	CSP                    string           `json:"csp"`              // catalog token: aws | gcp | do
+	RegionName             string           `json:"region_name"`      // abstract pyx region
+	CSPRegion              string           `json:"csp_region"`       // concrete provider region (catalog-resolved)
+	VMName                 string           `json:"vm_name"`          // logical VM/component name
+	InstanceType           string           `json:"instance_type"`    // concrete SKU from `virtual_machine` (e.g. t3.medium)
+	Architecture           string           `json:"architecture"`     // resolved architecture
+	CPU                    int              `json:"cpu"`              // resolved vCPU
+	RAM                    int              `json:"ram"`              // resolved RAM (GiB)
+	OSName                 string           `json:"os_name"`          // ubuntu | debian
+	OSVersion              string           `json:"os_version"`       // resolved version
+	Image                  string           `json:"image"`            // concrete provider image (AMI / family / slug)
+	Instances              []VMInstancePlan `json:"instances"`        // count instances
+	NetworkName            string           `json:"network_name"`     // VPC/network it lives in
+	SubnetName             string           `json:"subnet_name"`      // subnet (where applicable)
+	SecurityGroup          string           `json:"security_group"`   // SG/firewall to attach
 	UserData               string           `json:"user_data"`        // cloud-init/bootstrap
 	InstanceProfile        string           `json:"instance_profile"` // IAM instance-profile name
 	InstanceProfileManaged bool             `json:"instance_profile_managed"`
-	ResourceType           string           `json:"resource_type"`    // top provider resource
+	Tag                    string           `json:"tag"`           // extra fleet-selection tag (DO)
+	SSHKeys                []string         `json:"ssh_keys"`      // provider SSH-key IDs/fingerprints
+	ResourceType           string           `json:"resource_type"` // top provider resource
 }
 
 // VMCatalog is the resolution boundary for virtual-machine SKUs and OS images.
@@ -241,6 +246,8 @@ func TranslateVM(ctx context.Context, cat VMCatalog, spec VMSpec) (VMPlan, error
 		SecurityGroup:   spec.SecurityGroup,
 		UserData:        spec.UserData,
 		InstanceProfile: spec.InstanceProfile,
+		Tag:             spec.Tag,
+		SSHKeys:         spec.SSHKeys,
 	}
 
 	switch plan.Provider {

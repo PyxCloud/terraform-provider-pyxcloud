@@ -876,6 +876,10 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		comp := catalog.AssembleComponent{Path: cm.Path.ValueString(), Name: cm.Name.ValueString(), Type: typed.canonicalType, Count: count}
 
 		if typed.canonicalType == "virtual-machine" || hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
+			var vmSSHKeys []string
+			for _, k := range cm.SSHKeys {
+				vmSSHKeys = append(vmSSHKeys, k.ValueString())
+			}
 			comp.VM = &catalog.AssembleVM{
 				Architecture:    cm.Architecture.ValueString(),
 				CPU:             cm.CPU.ValueString(),
@@ -883,6 +887,8 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 				OS:              cm.OSName.ValueString(),
 				UserData:        cm.UserData.ValueString(),
 				InstanceProfile: cm.InstanceProfileName.ValueString(),
+				Tag:             cm.Tag.ValueString(),
+				SSHKeys:         vmSSHKeys,
 			}
 		}
 		if typed.canonicalType == "virtual-machine-scale-group" || hasScaleGroupFields(cm) {
