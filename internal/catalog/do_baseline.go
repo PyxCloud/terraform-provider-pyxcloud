@@ -417,11 +417,22 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 				nonOrigin = append(nonOrigin, s.Tag)
 			}
 		}
-		docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
+		var chunk []string
+		for i, tag := range nonOrigin {
+			chunk = append(chunk, tag)
+			if len(chunk) == 5 || i == len(nonOrigin)-1 {
+				suffix := ""
+				if len(nonOrigin) > 5 && i >= 5 {
+					suffix = fmt.Sprintf("-%d", (i/5)+1)
+				}
+				docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
   name = %q
   tags = %s
 %s
-}`, doBaselineName+"-sg", doBaselineName+"-sg", hclStringList(nonOrigin), doBaselineEgressRules()))
+}`, doBaselineName+"-sg"+suffix, doBaselineName+"-sg"+suffix, hclStringList(chunk), doBaselineEgressRules()))
+				chunk = nil
+			}
+		}
 
 		for _, o := range doEdgeOrigins() {
 			docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
@@ -438,7 +449,15 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 				itoa(o.UpstreamPort), o.Service+"-lb", doBaselineEgressRules()))
 		}
 	} else {
-		docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
+		var chunk []string
+		for i, tag := range tags {
+			chunk = append(chunk, tag)
+			if len(chunk) == 5 || i == len(tags)-1 {
+				suffix := ""
+				if len(tags) > 5 && i >= 5 {
+					suffix = fmt.Sprintf("-%d", (i/5)+1)
+				}
+				docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
   name = %q
   tags = %s
 
@@ -448,7 +467,10 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 %s
-}`, doBaselineName+"-sg", doBaselineName+"-sg", hclStringList(tags), doBaselineEgressRules()))
+}`, doBaselineName+"-sg"+suffix, doBaselineName+"-sg"+suffix, hclStringList(chunk), doBaselineEgressRules()))
+				chunk = nil
+			}
+		}
 	}
 
 	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes.
