@@ -473,15 +473,15 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 		}
 	}
 
-	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes.
+	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, db-s-1vcpu-1gb, 1 node.
 	for _, db := range []string{"pyx-main-db", "keycloak-db"} {
 		docs = append(docs, fmt.Sprintf(`resource "digitalocean_database_cluster" %q {
   name                 = %q
   engine               = "pg"
   version              = "17"
-  size                 = "db-s-2vcpu-4gb"
+  size                 = "db-s-1vcpu-1gb"
   region               = %q
-  node_count           = 2
+  node_count           = 1
   private_network_uuid = digitalocean_vpc.%s.id
   tags                 = ["pyxcloud"]
 }`, db, db, region, doBaselineName+"-net"))

@@ -115,6 +115,7 @@ func run() error {
 	ctx := context.Background()
 	// Same descriptor as the requested AssembleHCL(... DOBaselineInput ...) call.
 	in := catalog.DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
+	in.DOProject = "pyxcloud-staging"
 	// EdgeTLSOrigins (pd-MIG-CUTOVER-F4-PREP): opt-in via DO_EDGE_TLS_ORIGINS=1 so
 	// each Cloudflare-routed origin (sso/backend/mcp) renders an nginx :443 TLS
 	// terminator and can be flipped onto its DO origin behind Cloudflare "Full".
