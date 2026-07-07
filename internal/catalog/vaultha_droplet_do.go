@@ -318,6 +318,14 @@ func renderVaultNodeUserData(s VaultDropletSpec, nodeID string) string {
 	// a sed pass after the heredoc so the node advertises its real private address.
 	w("cat > /etc/vault.d/vault.hcl <<'VAULTHCL'")
 	w("ui = true")
+	// Vault >= 1.20 REFUSES to start unless disable_mlock is set explicitly
+	// (older 1.15.x defaulted it to false). The apt pin below falls back to the
+	// latest Vault when the pinned version is gone from the repo, so a fresh
+	// droplet can boot a >= 1.20 binary — without this line it crash-loops with
+	// "disable_mlock must be configured 'true' or 'false'". true is correct on
+	// raft/integrated-storage droplets: enabling mlock would also require
+	// CAP_IPC_LOCK + LimitMEMLOCK in the systemd unit (not set here).
+	w("disable_mlock = true")
 	w("cluster_addr = \"https://__PRIV_IP__:%d\"", vaultClusterPort)
 	w("api_addr     = \"https://__PRIV_IP__:%d\"", vaultListenerPort)
 	w("")
