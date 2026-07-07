@@ -526,18 +526,22 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 }`, doBaselineName+"-"+stagingFEServiceName+"-sg", doBaselineName+"-"+stagingFEServiceName+"-sg",
 		stagingFEServiceTag, in.CIDR, "pyx-edge", doBaselineEgressRules()))
 
-	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, db-s-1vcpu-1gb, 1 node.
+	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, node_count = 1.
 	for _, db := range []string{"pyx-main-db", "keycloak-db"} {
+		size := "db-s-1vcpu-2gb"
+		if db == "pyx-main-db" {
+			size = "db-s-2vcpu-4gb"
+		}
 		docs = append(docs, fmt.Sprintf(`resource "digitalocean_database_cluster" %q {
   name                 = %q
   engine               = "pg"
   version              = "17"
-  size                 = "db-s-1vcpu-1gb"
+  size                 = %q
   region               = %q
   node_count           = 1
   private_network_uuid = digitalocean_vpc.%s.id
   tags                 = ["pyxcloud"]
-}`, db, db, region, doBaselineName+"-net"))
+}`, db, db, size, region, doBaselineName+"-net"))
 	}
 
 	// 4. Droplet-autoscale groups (6 services), sized via the catalog SKU resolver.
