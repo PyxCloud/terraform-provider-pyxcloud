@@ -37,8 +37,14 @@ import (
 // cluster reproducible and roll-safe. (Fixed private IPs are also emitted as a
 // commented fallback for air-gapped discovery.)
 //
-// VAULT VERSION is pinned to 1.15.6 to MATCH the AWS source Vault, so a
-// `raft snapshot restore` from the AWS cluster into this one is byte-clean (Phase 2).
+// VAULT VERSION is pinned to the current latest stable (2.0.3). The old 1.15.6
+// pin (chosen to byte-match the now-decommissioned AWS source Vault) no longer
+// resolves in HashiCorp's apt repo; the silent `|| vault` fallback then pulled
+// whatever was latest and crash-looped the estate (2.0.x refuses to boot
+// without disable_mlock). We now pin latest deliberately and FAIL LOUD if it is
+// gone, instead of drifting silently. A raft snapshot from a 1.15.6-era cluster
+// restored into 2.0.3 crosses a major version — validate, or stage the restore
+// on a 1.15.x binary (releases.hashicorp.com) then upgrade in place.
 //
 // SEAL = SHAMIR (owner decision 2026-07-07, pd-MIG-VAULT-HA-HARDEN)
 // -------------------------------------------------------------
@@ -53,9 +59,9 @@ import (
 
 // Vault droplet-mode constants.
 const (
-	// vaultDropletVersion matches the running AWS Vault (findings §1.1) so a raft
-	// snapshot restore across the migration is version-clean.
-	vaultDropletVersion = "1.15.6"
+	// vaultDropletVersion is the latest Vault stable (checkpoint API, 2026-07-07).
+	// Bump deliberately; the install below fails loud rather than drifting.
+	vaultDropletVersion = "2.0.3"
 	// vaultDropletCount is the fixed Raft quorum (odd, >= 3). Not tunable in Phase 0
 	// — 3 is the migration target; a larger odd count is a later concern.
 	vaultDropletCount = 3
@@ -290,8 +296,10 @@ func renderVaultNodeUserData(s VaultDropletSpec, nodeID string) string {
 	w("curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /etc/apt/keyrings/hashicorp.gpg")
 	w(`echo "deb [signed-by=/etc/apt/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list`)
 	w("apt-get update -y")
-	w("# Pin the version to match the AWS source Vault so raft snapshot restore is clean.")
-	w("apt-get install -y vault=%s || apt-get install -y vault", vaultDropletVersion)
+	// Pin the exact version and FAIL LOUD if it is gone from the repo — never
+	// silently fall back to latest (that drift crash-looped the estate 2026-07-07).
+	w("log \"install Vault %s (pinned; fail loud on drift)\"", vaultDropletVersion)
+	w("apt-get install -y vault=%s || { echo \"FATAL: vault %s not available in apt repo — bump vaultDropletVersion in the render\" >&2; exit 1; }", vaultDropletVersion, vaultDropletVersion)
 	w("")
 	w("log \"mount data volume at /opt/vault/data\"")
 	w("DATA_DEV=$(ls /dev/disk/by-id/*pyx*vault*data* 2>/dev/null | head -n1 || true)")

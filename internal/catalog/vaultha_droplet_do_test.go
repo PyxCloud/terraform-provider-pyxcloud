@@ -52,9 +52,14 @@ func TestVaultDropletRendersThreeRaftNodes(t *testing.T) {
 	if !strings.Contains(joined, "retry_join") {
 		t.Errorf("expected retry_join stanza")
 	}
-	// Vault version must match the AWS source for a clean snapshot restore.
-	if !strings.Contains(joined, "1.15.6") {
-		t.Errorf("expected Vault 1.15.6 (matches AWS source for snapshot restore)")
+	// Vault version is pinned to the latest stable (2.0.3) and installed with a
+	// fail-loud guard — never the silent `|| vault` fallback that drifted to a
+	// disable_mlock-requiring binary and crash-looped the estate on 2026-07-07.
+	if !strings.Contains(joined, "vault=2.0.3") {
+		t.Errorf("expected pinned Vault 2.0.3 install")
+	}
+	if strings.Contains(joined, "|| apt-get install -y vault") {
+		t.Errorf("silent latest-fallback must be gone (it caused the 2026-07-07 crash-loop)")
 	}
 	// :8200 listener present.
 	if !strings.Contains(joined, `address       = "0.0.0.0:8200"`) {
