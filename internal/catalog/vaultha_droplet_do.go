@@ -133,6 +133,9 @@ type VaultDropletSpec struct {
 
 	// NodeCount is the number of nodes in the cluster (e.g. 1 or 3).
 	NodeCount int
+	// VPCCIDR is the network range allowed to query the Vault API/cluster ports,
+	// e.g. "10.0.1.0/24". Required so the private firewall rules select the correct VPC.
+	VPCCIDR string
 }
 
 // VaultDropletDefaults normalizes a spec and enforces the invariants (odd quorum,
@@ -178,6 +181,9 @@ func (s VaultDropletSpec) normalized() (VaultDropletSpec, error) {
 	default:
 		return out, fmt.Errorf("vault-ha droplet: unknown seal mode %q (transit | shamir)", out.Seal)
 	}
+	if strings.TrimSpace(out.VPCCIDR) == "" {
+		out.VPCCIDR = "10.0.1.0/24"
+	}
 	return out, nil
 }
 
@@ -205,12 +211,12 @@ func RenderVaultDropletCluster(spec VaultDropletSpec) ([]string, error) {
   inbound_rule {
     protocol         = "tcp"
     port_range       = "%d"
-    source_addresses = ["10.0.1.0/24"]
+    source_addresses = [%q]
   }
   inbound_rule {
     protocol         = "tcp"
     port_range       = "%d"
-    source_addresses = ["10.0.1.0/24"]
+    source_addresses = [%q]
   }
 
   outbound_rule {
@@ -227,7 +233,7 @@ func RenderVaultDropletCluster(spec VaultDropletSpec) ([]string, error) {
     protocol              = "icmp"
     destination_addresses = ["0.0.0.0/0", "::/0"]
   }
-}`, s.Name+"-sg", s.Name+"-sg", vaultDropletTag, vaultListenerPort, vaultClusterPort))
+}`, s.Name+"-sg", s.Name+"-sg", vaultDropletTag, vaultListenerPort, s.VPCCIDR, vaultClusterPort, s.VPCCIDR))
 
 	// 2..N per-node: block volume + droplet (+ optional reserved IP).
 	for i := 1; i <= s.NodeCount; i++ {
