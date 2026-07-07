@@ -143,6 +143,7 @@ func run() error {
 		// Optional stable public addresses so beta-vault A-record / a DO LB origin
 		// survives a droplet roll (durable-DO-edge memo). Off unless DO_VAULT_RESERVED_IPS=1.
 		vaultSpec.ReservedIPs = strings.TrimSpace(os.Getenv("DO_VAULT_RESERVED_IPS")) == "1"
+		vaultSpec.NodeCount = 1
 		// The go-discover DO tag auto-join needs DIGITALOCEAN_TOKEN in the droplet env.
 		// The catalog emits the placeholder line
 		//   Environment=DIGITALOCEAN_TOKEN=${DIGITALOCEAN_TOKEN}

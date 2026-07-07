@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -292,8 +293,7 @@ func TestAssembleHCLVaultHADropletRejectsNonDO(t *testing.T) {
 }
 
 // TestAssembleHCLVaultHADropletRejectsBadNodeCount asserts a node_count other
-// than the renderer's fixed 3-node quorum is a hard plan-time error, never a
-// silently different topology.
+// than the renderer's supported 1 or 3 nodes is a hard plan-time error.
 func TestAssembleHCLVaultHADropletRejectsBadNodeCount(t *testing.T) {
 	_, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
 		Name: "prod", Provider: "digitalocean", Region: "Frankfurt",
@@ -302,17 +302,19 @@ func TestAssembleHCLVaultHADropletRejectsBadNodeCount(t *testing.T) {
 		},
 	})
 	if err == nil {
-		t.Errorf("expected an error for node_count != 3")
+		t.Errorf("expected an error for node_count != 1 && node_count != 3")
 	}
-	// node_count == 3 (matching the fixed quorum) must be accepted.
-	_, err = AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
-		Name: "prod2", Provider: "digitalocean", Region: "Frankfurt",
-		VaultHADroplet: &AssembleVaultHADroplet{
-			Seal: VaultSealShamir, NodeCount: 3,
-		},
-	})
-	if err != nil {
-		t.Errorf("node_count=3 (matching the fixed quorum) must be accepted, got: %v", err)
+	// node_count == 1 and 3 must be accepted.
+	for _, n := range []int{1, 3} {
+		_, err = AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
+			Name: fmt.Sprintf("prod-%d", n), Provider: "digitalocean", Region: "Frankfurt",
+			VaultHADroplet: &AssembleVaultHADroplet{
+				Seal: VaultSealShamir, NodeCount: n,
+			},
+		})
+		if err != nil {
+			t.Errorf("node_count=%d must be accepted, got: %v", n, err)
+		}
 	}
 }
 
