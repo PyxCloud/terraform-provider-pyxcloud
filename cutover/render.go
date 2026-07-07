@@ -93,38 +93,22 @@ func run() error {
 
 	// DURABLE render (pd-MIG-CUTOVER-F5): render the FULL per-service bootstrap for
 	// every droplet so a self-heal/roll boots the real service + edge, not a bare
-	// box. Opt-in via DO_FULL_SERVICE_BOOTSTRAPS=1. When set, the sso box inlines
-	// its secret VALUES (Keycloak is fully configured on boot), so its extra secrets
-	// must be injected from Secrets Manager; the other services keep ${var.<x>} refs
-	// resolved at apply from -var (see variables.tf + cutover/README.md).
+	// box. Opt-in via DO_FULL_SERVICE_BOOTSTRAPS=1.
+	//
+	// EPIC-BOOTFETCH-AWS-SM-TO-VAULT (wave 2): sast/mcp/sso now source almost all
+	// of their render-time secrets DIRECTLY from Vault via `data
+	// "vault_kv_secret_v2"` blocks Terraform resolves at apply time (see
+	// DOBaselineVaultDataSources, appended to estate.tf below) — no more
+	// operator-exported AWS-SM env vars for those. Only the two sso secrets with
+	// no provisioned Vault leaf (VaultOIDCSecret, RunnerPublicKey — see the RISK
+	// note in platform_bootstrap_sso_do.go) still come from the environment.
 	full := strings.TrimSpace(os.Getenv("DO_FULL_SERVICE_BOOTSTRAPS")) == "1"
 	if full {
-		// The sso render (RenderSSODOBootstrapUserData) emits KC_DB_URL verbatim and
-		// requires the jdbc form (jdbc:postgresql://host:port/db?params). The
-		// beta-DO-keycloak-db-url secret is stored as a libpq URI
-		// (postgres://user:pass@host:port/db?sslmode=require) — pgjdbc rejects that
-		// scheme ("Driver does not support the provided URL") and Keycloak crash-loops.
-		// Normalize to jdbc here (creds are injected separately via KC_DB_USERNAME/
-		// KC_DB_PASSWORD), mirroring the backend #127/#128 jdbc-normalize fix.
-		secrets.SSOKCDBURL = normalizeJDBC(os.Getenv("DO_SSO_KCDB_URL"))
-		secrets.SSOKCDBUsername = os.Getenv("DO_SSO_KCDB_USERNAME")
-		secrets.SSOKCDBPassword = os.Getenv("DO_SSO_KCDB_PASSWORD")
-		secrets.SSOAdminPassword = os.Getenv("DO_SSO_ADMIN_PASSWORD")
 		secrets.SSOVaultOIDCSecret = os.Getenv("DO_SSO_VAULT_OIDC_SECRET")
 		secrets.SSORunnerPublicKey = os.Getenv("DO_SSO_RUNNER_PUBLIC_KEY")
-		secrets.SSOSMTPUser = os.Getenv("DO_SSO_SMTP_USER")
-		secrets.SSOSMTPPassword = os.Getenv("DO_SSO_SMTP_PASSWORD")
 		secrets.SSOSenderEmail = os.Getenv("DO_SSO_SENDER_EMAIL")
-		for name, v := range map[string]string{
-			"DO_SSO_KCDB_URL":          secrets.SSOKCDBURL,
-			"DO_SSO_KCDB_USERNAME":     secrets.SSOKCDBUsername,
-			"DO_SSO_KCDB_PASSWORD":     secrets.SSOKCDBPassword,
-			"DO_SSO_ADMIN_PASSWORD":    secrets.SSOAdminPassword,
-			"DO_SSO_VAULT_OIDC_SECRET": secrets.SSOVaultOIDCSecret,
-		} {
-			if strings.TrimSpace(v) == "" {
-				return fmt.Errorf("missing env %s — required for DO_FULL_SERVICE_BOOTSTRAPS (sso inlines its secrets; see cutover/README.md)", name)
-			}
+		if strings.TrimSpace(secrets.SSOVaultOIDCSecret) == "" {
+			return fmt.Errorf("missing env DO_SSO_VAULT_OIDC_SECRET — required for DO_FULL_SERVICE_BOOTSTRAPS (no Vault KV leaf provisioned for it yet; see cutover/README.md)")
 		}
 	}
 
@@ -188,6 +172,23 @@ func run() error {
 	// the file, so nothing secret is committed or rendered. The terraform s3 backend
 	// reads its credentials from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY at
 	// init/plan/apply time; export the Spaces keys into those (see cutover/README.md).
+	//
+	// A Terraform module may have only ONE required_providers block (a second one
+	// is a hard error), so `vault` is merged into THIS SAME block — never a
+	// separate one — whenever the full render needs it (EPIC-BOOTFETCH-AWS-SM-
+	// TO-VAULT: sast always; mcp/sso once DOBaselineVaultDataSources is non-empty).
+	// The vault provider itself needs no explicit `provider "vault" {}` block: it
+	// auto-configures from VAULT_ADDR/VAULT_TOKEN (or VAULT_ROLE_ID+VAULT_SECRET_ID
+	// via a CI OIDC login step) in the environment, exactly like `digitalocean`
+	// reads DIGITALOCEAN_TOKEN below.
+	vaultRequiredProvider := ""
+	if full && len(catalog.DOBaselineVaultDataSources()) > 0 {
+		vaultRequiredProvider = `    vault = {
+      source  = "hashicorp/vault"
+      version = "~> 4.0"
+    }
+`
+	}
 	backend := fmt.Sprintf(`terraform {
   backend "s3" {
     bucket   = %q
@@ -214,24 +215,30 @@ func run() error {
       source  = "digitalocean/digitalocean"
       version = "~> 2.0"
     }
-  }
+%s  }
 }
 
 # Provider credentials come from the environment (never committed):
 #   DIGITALOCEAN_TOKEN                       (beta-DigitalOceanToken)
 #   SPACES_ACCESS_KEY_ID / SPACES_SECRET_ACCESS_KEY (beta-DigitalOceanSpacesKeys)
+#   VAULT_ADDR / VAULT_TOKEN (or VAULT_ROLE_ID + VAULT_SECRET_ID via CI OIDC)
 provider "digitalocean" {
 }
-`, stateBucket, stateKey, stateRegion, stateEndpoint)
+`, stateBucket, stateKey, stateRegion, stateEndpoint, vaultRequiredProvider)
 	if err := writeFile(filepath.Join(outDir, "backend.tf"), backend); err != nil {
 		return err
 	}
 
 	// variables.tf — do_ssh_keys is passed at apply time (-var 'do_ssh_keys=["57496891"]').
-	// When the DURABLE render is on, the var-model services (mcp/obs/sast/backend/vpn)
-	// reference secrets as ${var.<x>}; declare one sensitive variable per name so the
-	// estate `terraform validate`s. Values are supplied at apply time via -var from
-	// Secrets Manager (see cutover/README.md). sso is NOT here — it inlines its values.
+	// When the DURABLE render is on, the still-unmigrated var-model secrets
+	// (mcp's board DB URL, obs/backend/vpn) reference ${var.<x>}; declare one
+	// sensitive variable per name so the estate `terraform validate`s. Values are
+	// supplied at apply time via -var from Secrets Manager (see cutover/README.md).
+	// sast/mcp's Spaces+embed-token/sso's migrated secrets are NOT here — they are
+	// `data "vault_kv_secret_v2"` blocks Terraform resolves directly from Vault
+	// (see estate.tf / DOBaselineVaultDataSources; the `vault` provider itself
+	// authenticates via VAULT_ADDR/VAULT_TOKEN or VAULT_ROLE_ID+VAULT_SECRET_ID in
+	// the environment/CI OIDC, never a -var here).
 	vars := `variable "do_ssh_keys" {
   description = "DigitalOcean SSH key IDs injected into every droplet template."
   type        = list(string)
@@ -277,26 +284,18 @@ provider "digitalocean" {
 	return nil
 }
 
-// normalizeJDBC converts a libpq postgres URI (postgres://user:pass@host:port/db?q)
-// to the jdbc:postgresql://host:port/db?q form Keycloak/pgjdbc requires, dropping the
-// embedded credentials (they are injected separately as KC_DB_USERNAME/KC_DB_PASSWORD).
-// An input that is already jdbc form (or empty) is returned unchanged.
-func normalizeJDBC(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || strings.HasPrefix(raw, "jdbc:") {
-		return raw
-	}
-	// strip scheme
-	rest := raw
-	if i := strings.Index(rest, "://"); i >= 0 {
-		rest = rest[i+3:]
-	}
-	// strip creds (user:pass@)
-	if at := strings.LastIndex(rest, "@"); at >= 0 {
-		rest = rest[at+1:]
-	}
-	return "jdbc:postgresql://" + rest
-}
+// NOTE (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2): this file used to normalize a
+// libpq keycloak-db URI to the jdbc form Keycloak/pgjdbc requires (dropping
+// embedded credentials) at Go-render time, because the operator exported the
+// raw AWS-SM secret value into DO_SSO_KCDB_URL. Now that KC_DB_URL is a Vault
+// `data "vault_kv_secret_v2"` reference resolved by Terraform (see
+// platform_bootstrap_sso_do.go), that normalization can no longer happen in
+// Go. RISK: secret/infra/staging/sso/keycloak-db-url's "url" key must already
+// be stored in jdbc form (jdbc:postgresql://host:port/db?sslmode=require, NO
+// embedded credentials) — if it is still the libpq form
+// (postgres://user:pass@host:port/db?...), Keycloak will crash-loop exactly as
+// it did before PR #10 fixed this the first time. Verify/fix the stored Vault
+// value before rolling sso; do not assume it was migrated automatically.
 
 func writeFile(path, content string) error {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
