@@ -2,6 +2,9 @@ package catalog
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -163,5 +166,27 @@ func TestOBSDOBootstrapRoundTripDO(t *testing.T) {
 	}
 	if strings.Contains(all, "OBS_USE_AWS") {
 		t.Errorf("rendered DO HCL must not contain OBS_USE_AWS (CloudWatch dropped):\n%s", all)
+	}
+}
+
+// Regression: a fmt verb/argument mismatch in any w(...) call leaks literal
+// "%!s(MISSING)" / "%!(EXTRA ...)" markers into the rendered script — Go's fmt
+// does NOT error on these — and the "(EXTRA" parenthesis is a bash syntax
+// error that bricked the obs droplet bootstrap on 2026-07-07. Assert the
+// rendered script is marker-free AND passes `bash -n`.
+func TestRenderOBSDOBootstrapNoFmtMarkersAndBashParses(t *testing.T) {
+	ud, err := RenderOBSDOBootstrapUserData(OBSDOBootstrapSpec{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(ud, "%!") {
+		t.Fatalf("rendered user_data contains fmt error markers (%%! ...):\n%s", ud)
+	}
+	f := filepath.Join(t.TempDir(), "ud.sh")
+	if err := os.WriteFile(f, []byte(ud), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if out, err := exec.Command("bash", "-n", f).CombinedOutput(); err != nil {
+		t.Fatalf("bash -n failed: %v\n%s", err, out)
 	}
 }
