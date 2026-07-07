@@ -549,9 +549,8 @@ func (r *environmentResource) Schema(_ context.Context, _ resource.SchemaRequest
 					},
 					"node_count": schema.Int64Attribute{
 						Optional: true,
-						MarkdownDescription: "Raft quorum size. Must be exactly `3` (the renderer's fixed, tested " +
-							"quorum shape) or omitted; any other value is a plan-time error rather than a silently " +
-							"different topology.",
+						MarkdownDescription: "Raft quorum size. Must be exactly `1` or `3` (quorum size); " +
+							"any other value is a plan-time error rather than a silently different topology.",
 					},
 					"reserved_ips": schema.BoolAttribute{
 						Optional:            true,

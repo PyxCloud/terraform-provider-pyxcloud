@@ -1637,10 +1637,13 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			return nil, fmt.Errorf("vault_ha: only supported on digitalocean today (the 3-node Raft " +
 				"droplet cluster is a DO-specific shape); omit vault_ha for other providers")
 		}
-		if n := in.VaultHADroplet.NodeCount; n != 0 && n != vaultDropletCount {
-			return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — the renderer is a fixed "+
-				"%d-node Raft quorum (this is a hard plan-time error, never a silently different topology); "+
-				"omit node_count or set it to %d", n, vaultDropletCount, vaultDropletCount)
+		nodeCount := 3
+		if n := in.VaultHADroplet.NodeCount; n != 0 {
+			if n != 1 && n != 3 {
+				return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — only 1 or 3 nodes are supported; " +
+					"omit node_count or set it to 1 or 3", n)
+			}
+			nodeCount = n
 		}
 		regionRow, err := cat.ResolveRegion(ctx, in.Region, in.Provider)
 		if err != nil {
@@ -1666,6 +1669,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			TransitToken:   in.VaultHADroplet.TransitToken,
 			TransitKeyName: in.VaultHADroplet.TransitKeyName,
 			ReservedIPs:    in.VaultHADroplet.ReservedIPs,
+			NodeCount:      nodeCount,
 		}
 		vaultDocs, err := RenderVaultDropletCluster(vspec)
 		if err != nil {

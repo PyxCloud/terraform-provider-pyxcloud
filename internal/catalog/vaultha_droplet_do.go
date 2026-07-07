@@ -124,6 +124,9 @@ type VaultDropletSpec struct {
 	// LB origin survives a droplet roll (durable-DO-edge memo). Off by default: Phase
 	// 0 renders the cluster; the reserved-IP/LB fronting is the Phase-1 wiring.
 	ReservedIPs bool
+
+	// NodeCount is the number of nodes in the cluster (e.g. 1 or 3).
+	NodeCount int
 }
 
 // VaultDropletDefaults normalizes a spec and enforces the invariants (odd quorum,
@@ -145,6 +148,12 @@ func (s VaultDropletSpec) normalized() (VaultDropletSpec, error) {
 	}
 	if strings.TrimSpace(out.VPCRef) == "" {
 		return out, fmt.Errorf("vault-ha droplet: VPCRef is required (nodes must be private-VPC only)")
+	}
+	if out.NodeCount == 0 {
+		out.NodeCount = 3
+	}
+	if out.NodeCount != 1 && out.NodeCount != 3 {
+		return out, fmt.Errorf("vault-ha droplet: node_count=%d is not supported (only 1 or 3 nodes)", out.NodeCount)
 	}
 	if out.Seal == "" {
 		out.Seal = VaultSealShamir // default: no auto-unseal, manual 3-of-5 post-reboot
@@ -215,7 +224,7 @@ func RenderVaultDropletCluster(spec VaultDropletSpec) ([]string, error) {
 }`, s.Name+"-sg", s.Name+"-sg", vaultDropletTag, vaultListenerPort, vaultClusterPort))
 
 	// 2..N per-node: block volume + droplet (+ optional reserved IP).
-	for i := 1; i <= vaultDropletCount; i++ {
+	for i := 1; i <= s.NodeCount; i++ {
 		node := fmt.Sprintf("%s-%d", s.Name, i)
 		nodeID := fmt.Sprintf("vault-node-%d", i)
 
