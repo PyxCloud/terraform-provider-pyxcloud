@@ -23,8 +23,8 @@ import (
 // block volume per node (durable /opt/vault/data), optional DO reserved IPs (so a
 // droplet roll/self-heal does not break the hardcoded beta-vault A-record — see the
 // durable-DO-edge memo), a DO firewall that keeps :8200 PRIVATE (VPC + WireGuard
-// only), and a configurable seal stanza so the Phase-6 KMS->Transit seal migration
-// is a single config flip.
+// only), and a configurable seal stanza (Shamir by default; Transit remains
+// available as a single config flip for a future opt-in).
 //
 // PEER DISCOVERY (the chicken/egg) — SOLVED WITHOUT HARDCODED IPS
 // --------------------------------------------------------------
@@ -39,6 +39,17 @@ import (
 //
 // VAULT VERSION is pinned to 1.15.6 to MATCH the AWS source Vault, so a
 // `raft snapshot restore` from the AWS cluster into this one is byte-clean (Phase 2).
+//
+// SEAL = SHAMIR (owner decision 2026-07-07, pd-MIG-VAULT-HA-HARDEN)
+// -------------------------------------------------------------
+// The AWS-KMS auto-unseal bridge (a review-flagged security item: static AWS
+// creds baked as systemd Environment=) has been dropped. The rendered vault.hcl
+// carries NO seal stanza — Shamir default — so every node requires a MANUAL
+// unseal (3-of-5 key shares held by the owner) after a restart/reboot. The
+// staging cluster was migrated live to Shamir on 2026-07-07; this render change
+// aligns future clusters (including vault prod) with that same shape. See the
+// unseal runbook in the secrets-manager repo. The AWS KMS key backing the old
+// bridge is scheduled for deletion.
 
 // Vault droplet-mode constants.
 const (
@@ -61,28 +72,27 @@ const (
 
 // VaultSealMode selects the auto-unseal seal stanza the nodes render.
 //
-//   - VaultSealAWSKMS  — the MIGRATION BRIDGE: keep the existing AWS KMS `seal
-//     "awskms"` so a raft-snapshot-restored dataset (encrypted under the AWS seal)
-//     unseals during cutover. DO has no KMS, so this reuses the AWS key until the
-//     final step. This is the recommended Phase-1 boot mode.
-//   - VaultSealTransit — the END-STATE: `seal "transit"` against a separate small
-//     "unseal Vault"'s transit engine. Phase 6 flips KMS->Transit via
-//     `vault operator seal-migration`; in the catalog that is JUST this enum value.
-//   - VaultSealShamir  — no auto-unseal (manual 3-of-5). Emits NO seal stanza. Worst
-//     ops (every self-heal needs a human unseal); provided only for completeness.
+//   - VaultSealShamir  — the DEFAULT and current end-state (owner decision
+//     2026-07-07): no auto-unseal. Emits NO seal stanza; every restart/reboot
+//     requires a MANUAL unseal (3-of-5 key shares held by the owner). The AWS-KMS
+//     bridge that used to fill this role has been retired (static AWS creds baked
+//     into systemd were a review-flagged security item, and the AWS estate is
+//     being decommissioned).
+//   - VaultSealTransit — an auto-unseal option against a separate small
+//     "unseal Vault"'s transit engine, for a future opt-in (never the default).
 type VaultSealMode string
 
 const (
-	VaultSealAWSKMS  VaultSealMode = "awskms"
 	VaultSealTransit VaultSealMode = "transit"
 	VaultSealShamir  VaultSealMode = "shamir"
 )
 
 // VaultDropletSpec describes the 3-node Raft droplet cluster. Everything secret
-// (KMS key id / region, Transit addr+token+key) is a RENDER-TIME injection passed
+// (Transit addr+token+key, when seal=transit) is a RENDER-TIME injection passed
 // through here and inlined into user_data — it is NEVER committed and NEVER stored
 // in terraform state as a resource attribute (same discipline as DOBaselineSecrets
-// and workloadidentity.go's out-of-band env).
+// and workloadidentity.go's out-of-band env). The default seal (Shamir) has no
+// secret material to inject at all — unseal is a manual, out-of-band operator step.
 type VaultDropletSpec struct {
 	// Name is the resource/hostname prefix, e.g. "pyx-vault". Empty -> "pyx-vault".
 	Name string
@@ -99,16 +109,9 @@ type VaultDropletSpec struct {
 	// private VPC network.
 	VPCRef string
 
-	// Seal selects the seal stanza. Empty -> VaultSealAWSKMS (the migration bridge).
+	// Seal selects the seal stanza. Empty -> VaultSealShamir (no auto-unseal; manual
+	// 3-of-5 unseal post-reboot — see the runbook in the secrets-manager repo).
 	Seal VaultSealMode
-	// AWS KMS seal parameters (only used when Seal == VaultSealAWSKMS). KMSKeyID and
-	// KMSRegion identify the EXISTING AWS seal key so restored data unseals. AWS
-	// credentials reach the box via the injected AWSAccessKeyID/SecretAccessKey (no
-	// AWS instance role on a DO droplet).
-	KMSKeyID       string
-	KMSRegion      string
-	AWSAccessKeyID string
-	AWSSecretKey   string
 	// Transit seal parameters (only used when Seal == VaultSealTransit). TransitAddr
 	// is the unseal-Vault address, TransitToken a token with `transit/` access,
 	// TransitKeyName the key. All injected out-of-band at render time.
@@ -144,15 +147,9 @@ func (s VaultDropletSpec) normalized() (VaultDropletSpec, error) {
 		return out, fmt.Errorf("vault-ha droplet: VPCRef is required (nodes must be private-VPC only)")
 	}
 	if out.Seal == "" {
-		out.Seal = VaultSealAWSKMS // migration bridge default
+		out.Seal = VaultSealShamir // default: no auto-unseal, manual 3-of-5 post-reboot
 	}
 	switch out.Seal {
-	case VaultSealAWSKMS:
-		if strings.TrimSpace(out.KMSKeyID) == "" || strings.TrimSpace(out.KMSRegion) == "" {
-			return out, fmt.Errorf(
-				"vault-ha droplet: seal=awskms (migration bridge) requires KMSKeyID + KMSRegion of the EXISTING AWS seal key " +
-					"so raft-snapshot-restored data unseals")
-		}
 	case VaultSealTransit:
 		if strings.TrimSpace(out.TransitAddr) == "" || strings.TrimSpace(out.TransitToken) == "" {
 			return out, fmt.Errorf(
@@ -164,7 +161,7 @@ func (s VaultDropletSpec) normalized() (VaultDropletSpec, error) {
 	case VaultSealShamir:
 		// No seal stanza; manual unseal. Nothing to validate.
 	default:
-		return out, fmt.Errorf("vault-ha droplet: unknown seal mode %q (awskms | transit | shamir)", out.Seal)
+		return out, fmt.Errorf("vault-ha droplet: unknown seal mode %q (transit | shamir)", out.Seal)
 	}
 	return out, nil
 }
@@ -183,7 +180,8 @@ func RenderVaultDropletCluster(spec VaultDropletSpec) ([]string, error) {
 	// 1. Private-only firewall: :8200 (API) + :8201 (raft cluster) reachable ONLY
 	//    from inside the VPC (backend/sso/mcp) — plus SSH from the WireGuard base SG
 	//    for humans. NO public 0.0.0.0/0 on :8200 (findings: private-only exposure).
-	//    Egress open so the box can KMS-unseal / auto-join via the DO API.
+	//    Egress open so the box can auto-join via the DO API (and reach the Transit
+	//    unseal-Vault, when seal=transit).
 	docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
   name = %q
   tags = [%q]
@@ -343,12 +341,6 @@ func renderVaultNodeUserData(s VaultDropletSpec, nodeID string) string {
 	w("mkdir -p /etc/systemd/system/vault.service.d")
 	w("cat > /etc/systemd/system/vault.service.d/10-pyx.conf <<'DROPIN'")
 	w("[Service]")
-	if s.Seal == VaultSealAWSKMS {
-		// DO droplet has no AWS role — the KMS seal needs static AWS creds injected.
-		w("Environment=AWS_ACCESS_KEY_ID=%s", s.AWSAccessKeyID)
-		w("Environment=AWS_SECRET_ACCESS_KEY=%s", s.AWSSecretKey)
-		w("Environment=AWS_REGION=%s", s.KMSRegion)
-	}
 	if s.Seal == VaultSealTransit {
 		w("Environment=VAULT_TRANSIT_SEAL_TOKEN=%s", s.TransitToken)
 	}
@@ -361,23 +353,19 @@ func renderVaultNodeUserData(s VaultDropletSpec, nodeID string) string {
 	w("systemctl daemon-reload")
 	w("systemctl enable vault")
 	w("systemctl restart vault")
-	w("log \"node up — 'vault operator init' on node-1 OR raft snapshot restore (Phase 2); peers auto-join by tag\"")
+	w("log \"node up (seal=%s) — 'vault operator init' on node-1 OR raft snapshot restore (Phase 2); peers auto-join by tag\"", string(s.Seal))
+	if s.Seal == VaultSealShamir {
+		w("log \"seal=shamir: MANUAL unseal required after every restart/reboot (3-of-5 key shares held by the owner; runbook in the secrets-manager repo)\"")
+	}
 
 	return strings.TrimRight(b.String(), "\n")
 }
 
 // renderSealStanza returns the seal { } HCL for the configured mode. Making this a
-// pure function of the seal mode is the whole point: the Phase-6 KMS->Transit seal
-// migration is a single enum flip here, not a rewrite.
+// pure function of the seal mode keeps a future seal change a single enum flip
+// here, not a rewrite.
 func renderSealStanza(s VaultDropletSpec) string {
 	switch s.Seal {
-	case VaultSealAWSKMS:
-		// Migration bridge: reuse the EXISTING AWS KMS key so restored data unseals.
-		return fmt.Sprintf(`# MIGRATION BRIDGE seal: existing AWS KMS key. Phase 6 flips this to transit.
-seal "awskms" {
-  region     = %q
-  kms_key_id = %q
-}`, s.KMSRegion, s.KMSKeyID)
 	case VaultSealTransit:
 		// End-state: auto-unseal against the separate unseal-Vault's transit engine.
 		return fmt.Sprintf(`# END-STATE seal: transit auto-unseal against the unseal-Vault (no cloud KMS).
@@ -388,7 +376,10 @@ seal "transit" {
   key_name   = %q
 }`, s.TransitAddr, s.TransitKeyName)
 	default:
-		// Shamir: no seal stanza (manual 3-of-5 unseal).
-		return "# seal: shamir (manual unseal) — no seal stanza rendered."
+		// Shamir (the default): no seal stanza. MANUAL unseal required post-reboot
+		// (3-of-5 key shares held by the owner) — see the unseal runbook in the
+		// secrets-manager repo.
+		return "# seal: shamir (default) — no seal stanza. Manual unseal required post-reboot\n" +
+			"# (3-of-5 key shares held by the owner); see the unseal runbook in the secrets-manager repo."
 	}
 }

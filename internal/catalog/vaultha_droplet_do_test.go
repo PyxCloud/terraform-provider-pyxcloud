@@ -6,18 +6,14 @@ import (
 	"testing"
 )
 
-func testVaultKMSSpec() VaultDropletSpec {
+func testVaultShamirSpec() VaultDropletSpec {
 	return VaultDropletSpec{
-		Name:           "pyx-vault",
-		Region:         "fra1",
-		Size:           "s-2vcpu-4gb",
-		Image:          "ubuntu-24-04-x64",
-		VPCRef:         "digitalocean_vpc.passo-do-baseline-net.id",
-		Seal:           VaultSealAWSKMS,
-		KMSKeyID:       "arn:aws:kms:eu-west-1:111:key/abc",
-		KMSRegion:      "eu-west-1",
-		AWSAccessKeyID: "AKIATEST",
-		AWSSecretKey:   "SECRETTEST",
+		Name:   "pyx-vault",
+		Region: "fra1",
+		Size:   "s-2vcpu-4gb",
+		Image:  "ubuntu-24-04-x64",
+		VPCRef: "digitalocean_vpc.passo-do-baseline-net.id",
+		Seal:   VaultSealShamir,
 	}
 }
 
@@ -25,7 +21,7 @@ func testVaultKMSSpec() VaultDropletSpec {
 // droplet nodes, a data volume each, raft storage with distinct node_ids, and
 // cloud-auto-join retry_join (no hardcoded peer IPs).
 func TestVaultDropletRendersThreeRaftNodes(t *testing.T) {
-	docs, err := RenderVaultDropletCluster(testVaultKMSSpec())
+	docs, err := RenderVaultDropletCluster(testVaultShamirSpec())
 	if err != nil {
 		t.Fatalf("RenderVaultDropletCluster: %v", err)
 	}
@@ -68,7 +64,7 @@ func TestVaultDropletRendersThreeRaftNodes(t *testing.T) {
 // TestVaultDropletPrivateOnlyFirewall asserts the firewall keeps 8200/8201 on the
 // VPC only — no public 0.0.0.0/0 exposure on the Vault API.
 func TestVaultDropletPrivateOnlyFirewall(t *testing.T) {
-	docs, err := RenderVaultDropletCluster(testVaultKMSSpec())
+	docs, err := RenderVaultDropletCluster(testVaultShamirSpec())
 	if err != nil {
 		t.Fatalf("RenderVaultDropletCluster: %v", err)
 	}
@@ -94,32 +90,38 @@ func TestVaultDropletPrivateOnlyFirewall(t *testing.T) {
 }
 
 // TestVaultDropletSealConfigurable asserts the seal stanza is a pure function of
-// the seal mode (the Phase-6 KMS->Transit flip = one enum change).
+// the seal mode. Shamir (the default) emits no auto-unseal stanza and no AWS
+// KMS material anywhere in the render (owner decision 2026-07-07: the AWS-KMS
+// bridge has been retired); transit remains a config flip for a future opt-in.
 func TestVaultDropletSealConfigurable(t *testing.T) {
-	// AWS KMS bridge.
-	kms, err := RenderVaultDropletCluster(testVaultKMSSpec())
+	// Shamir — the default; no seal stanza, no AWS/KMS material anywhere.
+	sh, err := RenderVaultDropletCluster(testVaultShamirSpec())
 	if err != nil {
-		t.Fatalf("kms: %v", err)
+		t.Fatalf("shamir: %v", err)
 	}
-	kj := strings.Join(kms, "\n")
-	if !strings.Contains(kj, `seal "awskms"`) {
-		t.Errorf("awskms mode must render seal \"awskms\"")
+	shj := strings.Join(sh, "\n")
+	if strings.Contains(shj, `seal "awskms"`) || strings.Contains(shj, `seal "transit"`) {
+		t.Errorf("shamir mode must render no auto-unseal seal stanza")
 	}
-	if !strings.Contains(kj, `kms_key_id = "arn:aws:kms:eu-west-1:111:key/abc"`) {
-		t.Errorf("awskms seal must carry the existing KMS key id")
-	}
-	if strings.Contains(kj, `seal "transit"`) {
-		t.Errorf("awskms mode must not render a transit seal")
-	}
-	// AWS creds injected via the systemd drop-in (no AWS role on a DO box).
-	if !strings.Contains(kj, "AWS_ACCESS_KEY_ID=AKIATEST") {
-		t.Errorf("awskms mode must inject AWS creds for the seal")
+	if strings.Contains(shj, "awskms") || strings.Contains(shj, "AWS_ACCESS_KEY_ID") || strings.Contains(shj, "AWS_SECRET_ACCESS_KEY") {
+		t.Errorf("shamir mode must not reference AWS KMS / AWS creds at all, got:\n%s", shj)
 	}
 
-	// Transit end-state — a pure config flip.
-	tspec := testVaultKMSSpec()
+	// Empty Seal must default to shamir (same assertions as explicit shamir).
+	defSpec := testVaultShamirSpec()
+	defSpec.Seal = ""
+	def, err := RenderVaultDropletCluster(defSpec)
+	if err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	defj := strings.Join(def, "\n")
+	if strings.Contains(defj, `seal "awskms"`) || strings.Contains(defj, `seal "transit"`) {
+		t.Errorf("default (empty) seal must render no auto-unseal seal stanza (shamir)")
+	}
+
+	// Transit — a config flip, still available.
+	tspec := testVaultShamirSpec()
 	tspec.Seal = VaultSealTransit
-	tspec.KMSKeyID, tspec.KMSRegion = "", ""
 	tspec.TransitAddr = "https://unseal-vault.internal:8200"
 	tspec.TransitToken = "s.transittoken"
 	tr, err := RenderVaultDropletCluster(tspec)
@@ -140,55 +142,41 @@ func TestVaultDropletSealConfigurable(t *testing.T) {
 	if strings.Contains(trj, `token      = "s.transittoken"`) {
 		t.Errorf("transit token must not be written into vault.hcl")
 	}
-
-	// Shamir — no seal stanza.
-	sspec := testVaultKMSSpec()
-	sspec.Seal = VaultSealShamir
-	sspec.KMSKeyID, sspec.KMSRegion = "", ""
-	sh, err := RenderVaultDropletCluster(sspec)
-	if err != nil {
-		t.Fatalf("shamir: %v", err)
-	}
-	shj := strings.Join(sh, "\n")
-	if strings.Contains(shj, `seal "awskms"`) || strings.Contains(shj, `seal "transit"`) {
-		t.Errorf("shamir mode must render no auto-unseal seal stanza")
-	}
 }
 
 // TestVaultDropletValidation covers the guard rails.
 func TestVaultDropletValidation(t *testing.T) {
-	// awskms without a key id must fail loudly.
-	bad := testVaultKMSSpec()
-	bad.KMSKeyID = ""
-	if _, err := RenderVaultDropletCluster(bad); err == nil {
-		t.Errorf("expected error for awskms seal without KMS key id")
-	}
 	// transit without addr/token must fail loudly.
 	bad2 := VaultDropletSpec{Name: "v", Region: "fra1", Size: "s", Image: "i", VPCRef: "x", Seal: VaultSealTransit}
 	if _, err := RenderVaultDropletCluster(bad2); err == nil {
 		t.Errorf("expected error for transit seal without addr/token")
 	}
 	// missing VPC ref must fail (private-only invariant).
-	bad3 := testVaultKMSSpec()
+	bad3 := testVaultShamirSpec()
 	bad3.VPCRef = ""
 	if _, err := RenderVaultDropletCluster(bad3); err == nil {
 		t.Errorf("expected error for missing VPCRef")
 	}
-	// unknown seal mode must fail.
-	bad4 := testVaultKMSSpec()
+	// unknown seal mode must fail — including the retired "awskms" token.
+	bad4 := testVaultShamirSpec()
 	bad4.Seal = VaultSealMode("nope")
 	if _, err := RenderVaultDropletCluster(bad4); err == nil {
 		t.Errorf("expected error for unknown seal mode")
+	}
+	bad5 := testVaultShamirSpec()
+	bad5.Seal = VaultSealMode("awskms")
+	if _, err := RenderVaultDropletCluster(bad5); err == nil {
+		t.Errorf("expected error for the retired awskms seal mode")
 	}
 }
 
 // TestVaultDropletReservedIPs asserts reserved IPs are opt-in.
 func TestVaultDropletReservedIPs(t *testing.T) {
-	off, _ := RenderVaultDropletCluster(testVaultKMSSpec())
+	off, _ := RenderVaultDropletCluster(testVaultShamirSpec())
 	if strings.Contains(strings.Join(off, "\n"), "digitalocean_reserved_ip") {
 		t.Errorf("reserved IPs must be off by default")
 	}
-	spec := testVaultKMSSpec()
+	spec := testVaultShamirSpec()
 	spec.ReservedIPs = true
 	on, err := RenderVaultDropletCluster(spec)
 	if err != nil {
@@ -201,8 +189,8 @@ func TestVaultDropletReservedIPs(t *testing.T) {
 
 // TestVaultDropletDeterministic asserts byte-stable output.
 func TestVaultDropletDeterministic(t *testing.T) {
-	a, _ := RenderVaultDropletCluster(testVaultKMSSpec())
-	b, _ := RenderVaultDropletCluster(testVaultKMSSpec())
+	a, _ := RenderVaultDropletCluster(testVaultShamirSpec())
+	b, _ := RenderVaultDropletCluster(testVaultShamirSpec())
 	if strings.Join(a, "\n") != strings.Join(b, "\n") {
 		t.Errorf("render is not deterministic")
 	}
@@ -230,15 +218,13 @@ func TestAssembleHCLVaultHADropletOffByDefault(t *testing.T) {
 
 // TestAssembleHCLVaultHADropletProducesThreeNodeCluster is the core Mode-A
 // plumbing contract: a pyxcloud_environment with vault_ha set renders the SAME
-// 3-droplet + firewall + awskms-seal HCL as the Mode-B baseline assembler,
-// reusing the environment's own VPC (name-net) and the environment's DO tag.
+// 3-droplet + firewall + shamir (no seal stanza) HCL as the Mode-B baseline
+// assembler, reusing the environment's own VPC (name-net) and DO tag.
 func TestAssembleHCLVaultHADropletProducesThreeNodeCluster(t *testing.T) {
 	docs, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
 		Name: "prod", Provider: "digitalocean", Region: "Frankfurt",
 		VaultHADroplet: &AssembleVaultHADroplet{
-			Seal:      VaultSealAWSKMS,
-			KMSKeyID:  "arn:aws:kms:eu-west-1:111:key/abc",
-			KMSRegion: "eu-west-1",
+			Seal: VaultSealShamir,
 		},
 	})
 	if err != nil {
@@ -270,16 +256,16 @@ func TestAssembleHCLVaultHADropletProducesThreeNodeCluster(t *testing.T) {
 	if !strings.Contains(all, `tags       = ["pyx-vault"]`) {
 		t.Errorf("expected the pyx-vault tag stamped on every droplet, got:\n%s", all)
 	}
-	// Raft + cloud-auto-join (no baked peer IPs) + awskms seal stanza (the
-	// migration bridge default) carrying the configured KMS key.
+	// Raft + cloud-auto-join (no baked peer IPs), and NO auto-unseal seal stanza
+	// (shamir: manual unseal, no AWS KMS anywhere).
 	if !strings.Contains(all, `storage "raft"`) || !strings.Contains(all, "retry_join") {
 		t.Errorf("expected raft storage + retry_join, got:\n%s", all)
 	}
-	if !strings.Contains(all, `seal "awskms"`) {
-		t.Errorf("expected the awskms seal stanza, got:\n%s", all)
+	if strings.Contains(all, `seal "awskms"`) || strings.Contains(all, `seal "transit"`) {
+		t.Errorf("shamir vault_ha must render no seal stanza, got:\n%s", all)
 	}
-	if !strings.Contains(all, `kms_key_id = "arn:aws:kms:eu-west-1:111:key/abc"`) {
-		t.Errorf("expected the configured KMS key id in the seal stanza, got:\n%s", all)
+	if strings.Contains(all, "AWS_ACCESS_KEY_ID") || strings.Contains(all, "AWS_SECRET_ACCESS_KEY") {
+		t.Errorf("shamir vault_ha must not inject any AWS creds, got:\n%s", all)
 	}
 	// do_ssh_keys must be declared (the droplet resource references var.do_ssh_keys)
 	// even though no virtual-machine-scale-group component is present.
@@ -298,7 +284,7 @@ func TestAssembleHCLVaultHADropletProducesThreeNodeCluster(t *testing.T) {
 func TestAssembleHCLVaultHADropletRejectsNonDO(t *testing.T) {
 	_, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
 		Name: "prod", Provider: "aws", Region: "Dublin",
-		VaultHADroplet: &AssembleVaultHADroplet{Seal: VaultSealAWSKMS, KMSKeyID: "k", KMSRegion: "eu-west-1"},
+		VaultHADroplet: &AssembleVaultHADroplet{Seal: VaultSealShamir},
 	})
 	if err == nil {
 		t.Errorf("expected an error for vault_ha on a non-DO provider")
@@ -312,7 +298,7 @@ func TestAssembleHCLVaultHADropletRejectsBadNodeCount(t *testing.T) {
 	_, err := AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
 		Name: "prod", Provider: "digitalocean", Region: "Frankfurt",
 		VaultHADroplet: &AssembleVaultHADroplet{
-			Seal: VaultSealAWSKMS, KMSKeyID: "k", KMSRegion: "eu-west-1", NodeCount: 5,
+			Seal: VaultSealShamir, NodeCount: 5,
 		},
 	})
 	if err == nil {
@@ -322,7 +308,7 @@ func TestAssembleHCLVaultHADropletRejectsBadNodeCount(t *testing.T) {
 	_, err = AssembleHCL(context.Background(), MustEmbedded(), AssembleInput{
 		Name: "prod2", Provider: "digitalocean", Region: "Frankfurt",
 		VaultHADroplet: &AssembleVaultHADroplet{
-			Seal: VaultSealAWSKMS, KMSKeyID: "k", KMSRegion: "eu-west-1", NodeCount: 3,
+			Seal: VaultSealShamir, NodeCount: 3,
 		},
 	})
 	if err != nil {
@@ -331,7 +317,7 @@ func TestAssembleHCLVaultHADropletRejectsBadNodeCount(t *testing.T) {
 }
 
 // TestDOBaselineVaultHAFlagGated asserts the baseline is UNCHANGED when VaultHA is
-// off, and grows the 3-node Vault cluster when on.
+// off, and grows the 3-node Vault cluster (shamir, no seal stanza) when on.
 func TestDOBaselineVaultHAFlagGated(t *testing.T) {
 	in := DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
 	secrets := testDOBaselineSecrets()
@@ -349,9 +335,7 @@ func TestDOBaselineVaultHAFlagGated(t *testing.T) {
 		PrivateDBHost: true,
 		VaultHA:       true,
 		VaultHASpec: VaultDropletSpec{
-			Seal:      VaultSealAWSKMS,
-			KMSKeyID:  "arn:aws:kms:eu-west-1:111:key/abc",
-			KMSRegion: "eu-west-1",
+			Seal: VaultSealShamir,
 		},
 	})
 	if err != nil {
@@ -365,8 +349,8 @@ func TestDOBaselineVaultHAFlagGated(t *testing.T) {
 	if !strings.Contains(onJoined, `storage "raft"`) || !strings.Contains(onJoined, "retry_join") {
 		t.Errorf("baseline vault nodes must use raft + retry_join")
 	}
-	if !strings.Contains(onJoined, `seal "awskms"`) {
-		t.Errorf("baseline vault must render the configured seal stanza")
+	if strings.Contains(onJoined, `seal "awskms"`) || strings.Contains(onJoined, `seal "transit"`) {
+		t.Errorf("baseline vault (shamir) must render no seal stanza")
 	}
 	// On must strictly extend off (baseline resources still present).
 	if len(on) <= len(off) {
