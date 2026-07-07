@@ -61,7 +61,7 @@ import (
 const (
 	// vaultDropletVersion is the latest Vault stable (checkpoint API, 2026-07-07).
 	// Bump deliberately; the install below fails loud rather than drifting.
-	vaultDropletVersion = "2.0.3"
+	vaultDropletVersion = "2.0.3-1"
 	// vaultDropletCount is the fixed Raft quorum (odd, >= 3). Not tunable in Phase 0
 	// — 3 is the migration target; a larger odd count is a later concern.
 	vaultDropletCount = 3
