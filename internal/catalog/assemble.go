@@ -1670,6 +1670,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			TransitKeyName: in.VaultHADroplet.TransitKeyName,
 			ReservedIPs:    in.VaultHADroplet.ReservedIPs,
 			NodeCount:      nodeCount,
+			VPCCIDR:        in.CIDR,
 		}
 		vaultDocs, err := RenderVaultDropletCluster(vspec)
 		if err != nil {
