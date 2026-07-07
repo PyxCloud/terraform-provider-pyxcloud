@@ -60,6 +60,13 @@ func TestVaultDropletRendersThreeRaftNodes(t *testing.T) {
 	if !strings.Contains(joined, `address       = "0.0.0.0:8200"`) {
 		t.Errorf("expected :8200 listener")
 	}
+	// disable_mlock MUST be explicit: Vault >= 1.20 refuses to start without it,
+	// and the apt pin falls back to the latest binary when the pinned version is
+	// gone from the repo (this crash-looped the whole staging estate on
+	// 2026-07-07). true is correct on raft droplets (no CAP_IPC_LOCK in the unit).
+	if !strings.Contains(joined, "disable_mlock = true") {
+		t.Errorf("expected explicit disable_mlock = true (>= 1.20 refuses to boot without it)")
+	}
 }
 
 // TestVaultDropletPrivateOnlyFirewall asserts the firewall keeps 8200/8201 on the
