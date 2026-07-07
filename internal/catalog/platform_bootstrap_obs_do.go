@@ -40,11 +40,24 @@ import (
 // component, two provider-specific boot scripts, no forked topology (SPEC §1).
 //
 // SECURITY: like platform_bootstrap_sso.go, NO secret VALUE is inlined. The
-// Spaces access/secret keys (Secrets Manager beta-DigitalOceanSpacesKeys) and the
-// mesh client secret (Secrets Manager beta/observability-env
-// OBS_MESH_CLIENT_SECRET) are referenced by Terraform variable NAME; the operator
-// wires those vars to the Secrets Manager source. The script never embeds a
-// literal credential.
+// Spaces access/secret keys (Secrets Manager beta-DigitalOceanSpacesKeys) are
+// referenced by Terraform variable NAME; the operator wires those vars to the
+// Secrets Manager source. The script never embeds a literal credential.
+//
+// BOOT-FETCH MIGRATION (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, pd-MIG-CUTOVER-F2-02
+// follow-up): the AWS user_data.sh fetches `beta/observability-env` from AWS
+// Secrets Manager at every service (re)start (not just once at render time) via
+// `aws secretsmanager get-secret-value` + jq, so a live secret rotation takes
+// effect on the next restart without a redeploy. The DO port now mirrors that
+// boot-time-fetch semantics against DO Vault instead of hardcoding the mesh
+// secret as a render-time Terraform variable: the droplet has no instance role,
+// so it logs into Vault via AppRole (VaultAddrVar/VaultRoleIDVar/
+// VaultSecretIDVar — injected the same way SastDOBootstrapSpec injects
+// RegistryTokenVar/APITokenVar) and reads the KV-v2 leaf
+// secret/infra/<env>/observability/env, key `_json` — which holds the SAME
+// JSON blob the AWS secret held — then extracts OBS_MESH_CLIENT_SECRET from it
+// exactly like the AWS bootstrap's `jq -r '.OBS_MESH_CLIENT_SECRET // empty'`.
+// See vault_bootfetch.go for the shared AppRole-login + KV-v2-read snippet.
 
 // Pinned obs deployment constants — kept identical to the hand-written AWS
 // user_data / deploy-observability.yml so the DO bootstrap is a faithful port,
@@ -81,11 +94,28 @@ type OBSDOBootstrapSpec struct {
 	// so these are injected at render.
 	SpacesAccessKeyVar string // default "do_spaces_access_key"
 	SpacesSecretKeyVar string // default "do_spaces_secret_key"
-	// MeshClientSecretVar names the Terraform variable holding the mesh poller's
-	// OIDC client secret (Secrets Manager beta/observability-env
-	// OBS_MESH_CLIENT_SECRET). Empty default -> the mesh poller env is omitted and
-	// the agents card renders a clean "NOT CONFIGURED" placeholder (matches AWS).
-	MeshClientSecretVar string // default "obs_mesh_client_secret"
+
+	// --- Vault AppRole boot-fetch (EPIC-BOOTFETCH-AWS-SM-TO-VAULT) ---
+	// The mesh poller's OIDC client secret is no longer a render-time Terraform
+	// variable: it is fetched at BOOT time from DO Vault (mirroring the AWS
+	// bootstrap's live `aws secretsmanager get-secret-value` fetch), so a secret
+	// rotation takes effect on the next service restart without a redeploy.
+	//
+	// VaultAddrVar / VaultRoleIDVar / VaultSecretIDVar name the Terraform
+	// variables holding the Vault address, and the `observability-boot` AppRole
+	// role_id/secret_id (never the values). Defaults match the platform
+	// convention: "vault_addr" / "obs_vault_role_id" / "obs_vault_secret_id".
+	VaultAddrVar     string
+	VaultRoleIDVar   string
+	VaultSecretIDVar string
+	// VaultKVPath is the KV-v2 leaf (under the `secret` mount, no `data/` infix)
+	// holding the obs env secrets. Default "infra/staging/observability/env".
+	VaultKVPath string
+	// VaultJSONKey is the key inside that leaf carrying the full JSON blob (the
+	// same shape AWS Secrets Manager beta/observability-env held), from which
+	// OBS_MESH_CLIENT_SECRET is extracted downstream exactly like the AWS
+	// bootstrap's `jq -r '.OBS_MESH_CLIENT_SECRET // empty'`. Default "_json".
+	VaultJSONKey string
 }
 
 // withDefaults fills the production-faithful defaults for any unset variable-name
@@ -99,7 +129,11 @@ func (s OBSDOBootstrapSpec) withDefaults() OBSDOBootstrapSpec {
 	}
 	s.SpacesAccessKeyVar = def(s.SpacesAccessKeyVar, "do_spaces_access_key")
 	s.SpacesSecretKeyVar = def(s.SpacesSecretKeyVar, "do_spaces_secret_key")
-	s.MeshClientSecretVar = def(s.MeshClientSecretVar, "obs_mesh_client_secret")
+	s.VaultAddrVar = def(s.VaultAddrVar, "vault_addr")
+	s.VaultRoleIDVar = def(s.VaultRoleIDVar, "obs_vault_role_id")
+	s.VaultSecretIDVar = def(s.VaultSecretIDVar, "obs_vault_secret_id")
+	s.VaultKVPath = def(s.VaultKVPath, "infra/staging/observability/env")
+	s.VaultJSONKey = def(s.VaultJSONKey, "_json")
 	return s
 }
 
@@ -109,8 +143,13 @@ func (s OBSDOBootstrapSpec) withDefaults() OBSDOBootstrapSpec {
 // (the secret ones marked sensitive) so the rendered .tf is self-contained.
 func (s OBSDOBootstrapSpec) OBSDOBootstrapVariableNames() (plain []string, sensitive []string) {
 	s = s.withDefaults()
-	// All three are credentials -> sensitive; none is plain.
-	sensitive = []string{s.SpacesAccessKeyVar, s.SpacesSecretKeyVar, s.MeshClientSecretVar}
+	// The Vault address is a URL, not a credential -> plain. The Spaces keys and
+	// the AppRole role_id/secret_id are credentials -> sensitive.
+	plain = []string{s.VaultAddrVar}
+	sensitive = []string{
+		s.SpacesAccessKeyVar, s.SpacesSecretKeyVar,
+		s.VaultRoleIDVar, s.VaultSecretIDVar,
+	}
 	return plain, sensitive
 }
 
@@ -147,7 +186,9 @@ func RenderOBSDOBootstrapUserData(spec OBSDOBootstrapSpec) (string, error) {
 	w("# the S3-compatible DO Spaces fetch) instead of the apt package.")
 	w("export DEBIAN_FRONTEND=noninteractive")
 	w("apt-get update -y")
-	w("apt-get install -y curl jq tar nginx openssl unzip")
+	w("# python3 (not jq) parses the Vault AppRole login/read JSON responses below —")
+	w("# ships on the Ubuntu droplet image, no extra apt package needed for jq.")
+	w("apt-get install -y curl python3 tar nginx openssl unzip")
 	w("curl -s \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\"")
 	w("unzip -q awscliv2.zip && ./aws/install")
 	w("# `aws` now resolves to /usr/local/bin/aws (v2). Make the rest of the pull use it.")
@@ -172,16 +213,26 @@ func RenderOBSDOBootstrapUserData(spec OBSDOBootstrapSpec) (string, error) {
 	w("tar -xzf /tmp/obs.tar.gz -C /opt/observability")
 	w("chmod +x /opt/observability/aggregator")
 	w("")
-	w("# Env bootstrap: secrets injected at render (no Secrets Manager on DO).")
+	w("# Env bootstrap: BOOT-TIME fetch from DO Vault (EPIC-BOOTFETCH-AWS-SM-TO-VAULT),")
+	w("# mirroring the AWS module's live `aws secretsmanager get-secret-value` fetch —")
+	w("# a secret rotation in Vault takes effect on the next restart, no redeploy.")
 	w("# Only the credential-free HTTP-service probes and the mesh poller are")
 	w("# enabled — the AWS CloudWatch poller is DROPPED on DigitalOcean.")
 	w("cat >/etc/observability.env.tmp <<EOF_BASE")
 	w("OBS_LISTEN_ADDR=:%s", obsAppPort)
 	w("OBS_POLL_INTERVAL_SEC=%s", obsPollIntervalSec)
 	w("EOF_BASE")
+	w("")
+	w("# Fetch the full observability-env JSON blob from Vault (KV-v2 leaf, key")
+	w("# `%s`) via AppRole login — the DO peer of `aws secretsmanager get-secret-value")
+	w("# --secret-id beta/observability-env`. Populates $OBS_ENV_JSON.", s.VaultJSONKey)
+	w("%s", VaultBootFetchSnippet(s.VaultAddrVar, s.VaultRoleIDVar, s.VaultSecretIDVar, s.VaultKVPath, s.VaultJSONKey, "OBS_ENV_JSON"))
+	w("")
 	w("# Mesh poller (agents card) — enabled when the mesh client secret is present.")
-	w("# The secret is a Terraform variable (Secrets Manager beta/observability-env).")
-	w("OBS_MESH_CLIENT_SECRET='%s'", v(s.MeshClientSecretVar))
+	w("# Extracted from the fetched JSON exactly like the AWS bootstrap's")
+	w("# `jq -r '.OBS_MESH_CLIENT_SECRET // empty'`.")
+	w("OBS_MESH_CLIENT_SECRET=$(printf '%%s' \"$OBS_ENV_JSON\" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"OBS_MESH_CLIENT_SECRET\",\"\"))' 2>/dev/null || true)")
+	w("unset OBS_ENV_JSON")
 	w("if [ -n \"$OBS_MESH_CLIENT_SECRET\" ]; then")
 	w("  cat >>/etc/observability.env.tmp <<EOF_MESH")
 	w("OBS_MESH_MCP_URL=%s", obsMeshMCPURL)

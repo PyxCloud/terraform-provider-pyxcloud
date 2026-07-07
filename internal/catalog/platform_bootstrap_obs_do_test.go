@@ -51,8 +51,8 @@ func TestRenderOBSDOBootstrapUbuntuNoCloudWatch(t *testing.T) {
 }
 
 // TestRenderOBSDOBootstrapInlinesNoSecretValues is the security invariant: the
-// Spaces keys and the mesh client secret are referenced by Terraform variable,
-// never embedded as a literal.
+// Spaces keys and the Vault AppRole role_id/secret_id are referenced by
+// Terraform variable, never embedded as a literal.
 func TestRenderOBSDOBootstrapInlinesNoSecretValues(t *testing.T) {
 	t.Parallel()
 	ud, err := RenderOBSDOBootstrapUserData(OBSDOBootstrapSpec{})
@@ -62,11 +62,48 @@ func TestRenderOBSDOBootstrapInlinesNoSecretValues(t *testing.T) {
 	for _, ref := range []string{
 		"${var.do_spaces_access_key}",
 		"${var.do_spaces_secret_key}",
-		"${var.obs_mesh_client_secret}",
+		"${var.vault_addr}",
+		"${var.obs_vault_role_id}",
+		"${var.obs_vault_secret_id}",
 	} {
 		if !strings.Contains(ud, ref) {
 			t.Errorf("obs DO bootstrap missing secret variable reference %q (secrets must be injected at render, not inlined):\n%s", ref, ud)
 		}
+	}
+}
+
+// TestRenderOBSDOBootstrapVaultBootFetch asserts the obs DO bootstrap fetches
+// the mesh client secret from DO Vault at BOOT time (AppRole login + KV-v2
+// read of the observability env leaf), mirroring the AWS module's live
+// `aws secretsmanager get-secret-value --secret-id beta/observability-env` +
+// jq extraction — instead of a render-time Terraform variable.
+func TestRenderOBSDOBootstrapVaultBootFetch(t *testing.T) {
+	t.Parallel()
+	ud, err := RenderOBSDOBootstrapUserData(OBSDOBootstrapSpec{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	mustContain := []string{
+		"auth/approle/login",
+		"/v1/secret/data/infra/staging/observability/env",
+		"python3",
+		"OBS_MESH_CLIENT_SECRET",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(ud, want) {
+			t.Errorf("obs DO bootstrap missing Vault boot-fetch %q:\n%s", want, ud)
+		}
+	}
+	// The old render-time mesh-secret Terraform variable must be gone: the
+	// secret now comes from a live Vault read, not a baked-in variable.
+	if strings.Contains(ud, "obs_mesh_client_secret") {
+		t.Errorf("obs DO bootstrap must NOT reference the retired obs_mesh_client_secret render-time variable:\n%s", ud)
+	}
+	// jq is no longer apt-installed or invoked as a command (python3 does the
+	// JSON parsing per the boot-fetch helper contract); only prose comments may
+	// still mention the word "jq" when explaining the swap.
+	if strings.Contains(ud, "apt-get install -y curl jq") || strings.Contains(ud, "| jq") {
+		t.Errorf("obs DO bootstrap must use python3, not jq, for JSON parsing:\n%s", ud)
 	}
 }
 
