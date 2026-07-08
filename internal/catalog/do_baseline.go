@@ -121,15 +121,18 @@ func edgeOriginByService(svcName string) *doEdgeOrigin {
 }
 
 // edgeOriginHealthPath is the LB healthcheck path for an edge-origin service.
-// sso/backend expose the Quarkus/Keycloak convention (/q/health); mcp exposes
-// its own /health. Health checks target the upstream service port directly —
-// never the droplet's public IP on :443, since LBTermination means there is no
-// droplet-side :443 to check.
+// sso keeps the Keycloak/Quarkus-style /q/health convention, backend is now the
+// Go monolith (/healthz), and mcp exposes its own /health. Health checks target
+// the upstream service port directly, never the droplet's public IP on :443.
 func edgeOriginHealthPath(svcName string) string {
-	if svcName == "mcp" {
+	switch svcName {
+	case "backend":
+		return "/healthz"
+	case "mcp":
 		return "/health"
+	default:
+		return "/q/health"
 	}
-	return "/q/health"
 }
 
 // edgeOriginTag resolves a service name to its firewall/LB droplet_tag via the
