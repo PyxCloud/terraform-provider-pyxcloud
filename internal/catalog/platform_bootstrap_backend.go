@@ -8,15 +8,11 @@ import (
 
 // platform_bootstrap_backend.go — pd-MIG-CUTOVER-F2-02 (EPIC-AWS-TO-DO-MIGRATION).
 //
-// platform_asgs.go already expresses the `backend` platform service (pyx-backend,
-// the Quarkus NATIVE binary) in the canonical vocabulary as a
-// `virtual-machine-scale-group` of 1. But a scale-group of a bare Ubuntu box is
-// NOT the backend: the whole substance of the hand-written
-// pyx-backend/infrastructure/main.tf is its ~220-line `local.api_user_data`
-// bootstrap (create the `main` user, write /home/main/env with the full
-// application config, pull the versioned native binary from S3, install the
-// hardened systemd unit, run the CloudWatch/X-Ray observability agents, and a
-// cron IMDS health-probe).
+// platform_asgs.go already expresses the `backend` platform service
+// (pyx-backend) in the canonical vocabulary as a `virtual-machine-scale-group`
+// of 1. But a scale-group of a bare Ubuntu box is NOT the backend: the provider
+// must render the Go binary bootstrap, environment file, systemd unit and health
+// probes that replace the retired Java/Quarkus native service.
 //
 // This file ports that bootstrap into the catalog as the DigitalOcean-specific
 // override — RenderBackendDOUserData — and wires it as the backend scale-group's
@@ -28,19 +24,15 @@ import (
 //
 // The AWS-coupling decisions FOR THE CUTOVER (documented so the diff is auditable):
 //
-//   - Native binary source: S3 `s3://pyxcloud-api-artifact/<env>/pyxcloud-<ver>`
-//     (pulled via the instance role) -> DO Spaces
-//     `s3://pyx-artifacts-fra1/beta/pyxcloud` (+ VERSION 0.4.49) fetched with the
-//     S3-compatible AWS CLI pointed at the fra1 Spaces endpoint. There is NO
-//     instance role on DO, so the Spaces access key/secret are injected at render
-//     from Secrets Manager `beta-DigitalOceanSpacesKeys` as Terraform variables
-//     (never inlined).
+//   - Go binary source: DO Spaces `<env>-pyxcloud-artifact/pyx-backend`
+//     fetched with the S3-compatible AWS CLI pointed at the fra1 Spaces
+//     endpoint. There is NO instance role on DO, so the Spaces access
+//     key/secret are injected at render as Terraform variables (never inlined).
 //
-//   - Main database: `PYX_MAIN_DATABASE_JDBC_URL` was
-//     jdbc:postgresql://<RDS>:5432/postgres (mesh via a separate creds secret) ->
-//     the DO Managed Postgres pyx-main-db, database `mesh_app`, taken from Secrets
-//     Manager `beta-DO-pyx-main-db-url` (already the jdbc form, sslmode=require)
-//     as a single Terraform variable.
+//   - Main database: Go keeps the historical Quarkus-style config keys under the
+//     PYX_ env prefix (`PYX_QUARKUS_DATASOURCE_*`). The provider accepts the
+//     existing single DB URL secret, normalizes libpq postgres:// URLs to JDBC,
+//     and derives username/password for pgx.
 //
 //   - OIDC / Vault / GitHub / Stripe / multi-cloud (Azure/GCP/DO/Linode/Ubicloud)
 //     keys are KEPT — the app still talks to the same SSO, Vault, GitHub and Stripe
@@ -71,11 +63,9 @@ import (
 //     stack (separate component). The `amazon-cloudwatch-agent` install, the
 //     cw-agent-api.json config and the put-metric-data call are removed.
 //
-//   - The health-probe cron is KEPT (it exercises /q/health so vault=/sso= are
-//     surfaced in the log) but the AWS IMDS `169.254.169.254` instance-id lookup +
-//     the `aws cloudwatch put-metric-data` publish are REPLACED with a simple local
-//     `:8080` health check (DO droplet metadata differs from EC2 IMDS and there is
-//     no CloudWatch to publish to). It logs vault=/sso= via `logger` only.
+//   - The health-probe cron is KEPT but it now exercises the Go endpoints
+//     `/healthz` and `/readyz`. AWS IMDS and CloudWatch metric publishing stay
+//     removed.
 //
 // SECURITY: like platform_bootstrap_sso.go, NO secret VALUE is inlined. Every
 // credential (DB URL, OIDC/MCP secrets, GitHub PAT, Stripe token, AWS keys, the
@@ -83,22 +73,20 @@ import (
 // referenced by Terraform variable name; the operator wires those vars to the
 // same Secrets Manager source. The script never embeds a literal credential.
 
-// Pinned artifact coordinates for the backend native binary on DO Spaces — kept
-// in one place so the cutover version bump is a single edit.
+// Pinned artifact coordinates for the backend Go binary on DO Spaces — kept in
+// one place so key naming stays consistent across renderers.
 const (
-	// backendSpacesBucket is the DO Spaces bucket (fra1 region) holding the native
-	// binary. The AWS module pulled from s3://pyxcloud-api-artifact/<env>/pyxcloud-<ver>.
-	backendSpacesBucket = "pyx-artifacts-fra1"
-	// backendSpacesKey is the stable binary key under the bucket (beta/pyxcloud).
-	backendSpacesKey = "beta/pyxcloud"
+	// backendSpacesKey is the stable Go binary key under <env>-pyxcloud-artifact.
+	backendSpacesKey = "pyx-backend"
 	// backendSpacesEndpoint is the S3-compatible fra1 Spaces endpoint the AWS CLI
 	// is pointed at (no instance role; the CLI uses the injected Spaces keys).
 	backendSpacesEndpoint = "https://fra1.digitaloceanspaces.com"
 	// backendSpacesRegion is the region token the S3-compatible client expects for
 	// fra1 Spaces.
 	backendSpacesRegion = "fra1"
-	// backendAppVersion is the native-binary VERSION pulled for the cutover.
-	backendAppVersion = "0.4.49"
+	// backendAppVersion is the Go backend VERSION pulled for a versioned rollout
+	// when available; the stable key remains the boot fallback.
+	backendAppVersion = "0.4.60"
 	// backendMainDBDatabase documents the target DO Managed Postgres database
 	// (mesh_app) — the JDBC URL var (beta-DO-pyx-main-db-url) already encodes it;
 	// kept as a constant so the assertion + comment name the same value.
@@ -106,7 +94,7 @@ const (
 )
 
 // BackendBootstrapSpec is the typed, provider-neutral input for the canonical
-// backend (pyx-backend native) DigitalOcean bootstrap. Every value the
+// backend (pyx-backend Go monolith) DigitalOcean bootstrap. Every value the
 // hand-written AWS module pulled from a Terraform interpolation is lifted to an
 // explicit field so the component is self-describing and round-trippable. The
 // secret fields name the Terraform variable that holds the secret (NOT the
@@ -118,11 +106,11 @@ type BackendBootstrapSpec struct {
 	// DomainName is the apex used for the public hostnames. Defaults to "pyxcloud.io".
 	DomainName string
 
-	// AppVersion is the native-binary VERSION to pull from Spaces. Defaults to the
-	// pinned backendAppVersion (0.4.49) so a bare spec pulls the cutover build.
+	// AppVersion is the Go backend VERSION to pull from Spaces. Defaults to the
+	// pinned backendAppVersion so a bare spec prefers the current versioned key.
 	AppVersion string
 
-	// --- DO Spaces (native-binary source; replaces the S3 instance-role pull) ---
+	// --- DO Spaces (Go binary source; replaces the S3 instance-role pull) ---
 	// SpacesKeyVar / SpacesSecretVar name the Terraform variables holding the DO
 	// Spaces access key / secret (Secrets Manager beta-DigitalOceanSpacesKeys).
 	SpacesKeyVar    string // default "do_spaces_key"
@@ -241,16 +229,13 @@ func (s BackendBootstrapSpec) BackendBootstrapVariableNames() (plain []string, s
 	return plain, sensitive
 }
 
-// RenderBackendDOUserData renders the canonical pyx-backend DigitalOcean
-// cloud-init as a bash script with `${var.<x>}` placeholders. It is an
-// ADAPTATION (not a copy) of pyx-backend/infrastructure/main.tf's
-// local.api_user_data for the AWS->DO cutover: pull the native binary from DO
-// Spaces (injected keys, no instance role), point PYX_MAIN_DATABASE at the DO
-// pyx-main-db mesh_app, keep the OIDC/Vault/GitHub/Stripe/multi-cloud keys and
-// the AWS SDK creds passthrough, DISABLE the SAST-ASG integration, DROP
-// CloudWatch/X-Ray, and replace the IMDS health-probe with a local :8080 health
-// check. The returned string is meant to be placed into the backend
-// scale-group's UserDataByProvider["digitalocean"].
+// RenderBackendDOUserData renders the canonical pyx-backend Go DigitalOcean
+// cloud-init as a bash script with `${var.<x>}` placeholders. It pulls the Go
+// binary from DO Spaces (injected keys, no instance role), maps legacy
+// Quarkus-style env names to the Go config loader, keeps the cross-cloud keys,
+// disables the old SAST-ASG integration, drops CloudWatch/X-Ray, and probes the
+// Go `/healthz` and `/readyz` endpoints. The returned string is meant to be
+// placed into the backend scale-group's UserDataByProvider["digitalocean"].
 func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	s := spec.withDefaults()
 	if strings.TrimSpace(s.Environment) == "" {
@@ -271,10 +256,9 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("#!/bin/bash")
 	w("set -euo pipefail")
 	w("export DEBIAN_FRONTEND=noninteractive")
-	w("# Canonical pyx-backend (Quarkus NATIVE) DigitalOcean bootstrap — ADAPTED from")
-	w("# pyx-backend/infrastructure/main.tf local.api_user_data by the abstract provider")
-	w("# (pd-MIG-CUTOVER-F2-02). Provider-neutral placeholders; all secrets are Terraform")
-	w("# variables, never inlined. AWS-couplings adapted for the DO cutover (see file header).")
+	w("# Canonical pyx-backend Go monolith DigitalOcean bootstrap rendered by the")
+	w("# PyxCloud provider. Provider-neutral placeholders; all secrets are Terraform")
+	w("# variables, never inlined. AWS-couplings adapted for the DO cutover.")
 	w("")
 	w("# Service user + the STABLE deploy-runner key (no per-deploy user_data churn).")
 	w("sudo useradd -m -s /bin/bash main || true")
@@ -293,19 +277,20 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("# --- /home/main/env : full application config (adapted for the DO cutover) ---")
 	w("cat > /home/main/env <<'EOV'")
 	w("# --- OIDC / Keycloak ---")
-	w("OIDC_AUTH_SERVER_URL=https://%s-auth.%s/realms/pyx", env, s.DomainName)
-	w("QUARKUS_OIDC_TOKEN_ISSUER=https://%s-auth.%s/realms/pyx", env, s.DomainName)
-	w("OIDC_VIBE_AUTH_SERVER_URL=https://%s-auth.%s/realms/passobuild", env, s.DomainName)
-	w("OIDC_CLIENT_ID=backend")
-	w("OIDC_CLIENT_SECRET=%s", v(s.OIDCClientSecretVar))
+	w("PYX_QUARKUS_OIDC_AUTH_SERVER_URL=https://%s-auth.%s/realms/pyx", env, s.DomainName)
+	w("PYX_QUARKUS_OIDC_CLIENT_ID=backend")
+	w("PYX_QUARKUS_OIDC_CREDENTIALS_SECRET=%s", v(s.OIDCClientSecretVar))
+	w("PYX_QUARKUS_OIDC_PASSOBUILD_AUTH_SERVER_URL=https://%s-auth.%s/realms/passobuild", env, s.DomainName)
+	w("PYX_QUARKUS_OIDC_PASSOBUILD_CLIENT_ID=passobuild")
+	w("PYX_QUARKUS_OIDC_PASSOBUILD_TOKEN_AUDIENCE=passobuild-mcp")
 	w("PYX_MCP_SA_CLIENT_ID=%s", v(s.MCPSAClientIDVar))
 	w("PYX_MCP_SA_CLIENT_SECRET=%s", v(s.MCPSAClientSecretVar))
 	w("# --- Vault --- (KEPT; PREREQ: beta-vault.%s must be reachable from the DO droplet)", s.DomainName)
-	w("VAULT_URL=https://%s-vault.%s", env, s.DomainName)
+	w("PYX_VAULT_ADDR=https://%s-vault.%s", env, s.DomainName)
 	w("VAULT_AUTH_ROLE=api-delegation")
 	w("# --- CORS & Frontend ---")
-	w("CORS_ORIGIN=https://pyxcloud.io,https://%s-console.%s,https://passo.build,https://www.passo.build", env, s.DomainName)
-	w("CORS_METHODS=GET,POST,PUT,DELETE,OPTIONS")
+	w("PYX_QUARKUS_HTTP_CORS_ORIGINS=https://pyxcloud.io,https://%s-console.%s,https://passo.build,https://www.passo.build", env, s.DomainName)
+	w("PYX_QUARKUS_HTTP_CORS_METHODS=GET,POST,PUT,DELETE,OPTIONS")
 	w("PYXCLOUD_FRONTEND_URL=https://%s-console.%s", env, s.DomainName)
 	w("PYXCLOUD_WEBAUTHN_RP_ID=%s-console.%s", env, s.DomainName)
 	w("# --- GitHub ---")
@@ -313,11 +298,9 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("PYX_GITHUB_PIPELINE_REPO=ddev-deploy-user-pipeline")
 	w("# --- Database (DO Managed Postgres pyx-main-db, database %s) ---", backendMainDBDatabase)
 	w("# Source secret (beta-DO-pyx-main-db-url) may be a libpq URI (postgres://user:pass@host:port/db?...)")
-	w("# OR already-jdbc form. The Quarkus datasource needs the jdbc:postgresql:// scheme AND separate")
-	w("# username/password vars (application.properties binds quarkus.datasource.username/password to")
-	w("# PYX_MAIN_DATABASE_USERNAME/PASSWORD). We write the raw value here, then normalize it below")
-	w("# (see the '# --- Normalize DB URL' block after EOV) so the app boots regardless of the stored form.")
-	w("PYX_MAIN_DATABASE_JDBC_URL=%s", v(s.MainDBURLVar))
+	w("# OR already-jdbc form. The Go loader keeps historical quarkus.datasource.* keys behind")
+	w("# the PYX_ env prefix, so normalize into PYX_QUARKUS_DATASOURCE_* below.")
+	w("PYX_QUARKUS_DATASOURCE_JDBC_URL=%s", v(s.MainDBURLVar))
 	w("# --- AWS (SDK creds passthrough: KEPT so cross-cloud AWS SDK calls work from DO) ---")
 	w("AWS_REGION=%s", v(s.AWSRegionVar))
 	w("AWS_ACCESS_KEY_ID=%s", v(s.AWSAccessKeyIDVar))
@@ -337,13 +320,6 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("UBICLOUD_ID=%s", v(s.UbicloudIDVar))
 	w("UBICLOUD_TOKEN=%s", v(s.UbicloudTokenVar))
 	w("UBICLOUD_LLM_API_KEY=%s", v(s.UbicloudLLMKeyVar))
-	w("# CRITICAL (F2-02 backend blocker): the Quarkus app config maps")
-	w("# quarkus.langchain4j.openai.api-key from UBICLOUD_LLM_API_KEY (default sk-noop) in application.properties.")
-	w("# An EMPTY UBICLOUD_LLM_API_KEY= line OVERRIDES the sk-noop fallback with \"\", which fails")
-	w("# SmallRye config validation at boot (SRCFG00040) — the native binary exits 1 in a loop.")
-	w("# Set the langchain4j openai api-key env DIRECTLY (same Fireworks/Ubicloud LLM key var) so")
-	w("# the property is always satisfied regardless of the UBICLOUD_LLM_API_KEY fallback path.")
-	w("QUARKUS_LANGCHAIN4J_OPENAI_API_KEY=%s", v(s.UbicloudLLMKeyVar))
 	w("# --- Cheap-actuator background pool (server-side board drain) ---")
 	w("PYX_ACTUATOR_BACKGROUND_ENABLED=true")
 	w("PYX_SERVER_AI_ACTUATOR_POOL_SIZE=6")
@@ -368,10 +344,9 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("EOV")
 	w("")
 	w("# --- Normalize DB URL (F2-02): the DO pyx-main-db secret is stored as a libpq URI")
-	w("# (postgres://user:pass@host:port/db?sslmode=require). Quarkus/pgjdbc rejects that scheme")
-	w("# (\"Driver does not support the provided URL\") -> Hibernate SessionFactory build fails ->")
-	w("# the native binary exits 1 in a crash-loop. Convert it in place to the jdbc:postgresql://")
-	w("# form and split out PYX_MAIN_DATABASE_USERNAME/PASSWORD (idempotent; a no-op if the value")
+	w("# (postgres://user:pass@host:port/db?sslmode=require). Convert it in place to")
+	w("# jdbc:postgresql:// form and split out PYX_QUARKUS_DATASOURCE_USERNAME/PASSWORD")
+	w("# for the Go pgx pool (idempotent; a no-op if the value")
 	w("# is already jdbc form and the username/password vars already exist).")
 	// The EONORM Python heredoc is emitted VERBATIM via wl (NOT through fmt.Fprintf):
 	// it contains literal `%s`/`%u`/`%p` and the Python `%` string-format operator,
@@ -385,18 +360,18 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	wl("lines = open(p).read().splitlines()")
 	wl("out, have_user, have_pass = [], False, False")
 	wl("for ln in lines:")
-	wl("    if ln.startswith(\"PYX_MAIN_DATABASE_USERNAME=\"): have_user = True")
-	wl("    if ln.startswith(\"PYX_MAIN_DATABASE_PASSWORD=\"): have_pass = True")
+	wl("    if ln.startswith(\"PYX_QUARKUS_DATASOURCE_USERNAME=\"): have_user = True")
+	wl("    if ln.startswith(\"PYX_QUARKUS_DATASOURCE_PASSWORD=\"): have_pass = True")
 	wl("for ln in lines:")
-	wl("    if ln.startswith(\"PYX_MAIN_DATABASE_JDBC_URL=\"):")
+	wl("    if ln.startswith(\"PYX_QUARKUS_DATASOURCE_JDBC_URL=\"):")
 	wl("        val = ln.split(\"=\", 1)[1].strip().strip(\"'\\\"\")")
 	wl("        m = re.match(r\"postgres(?:ql)?://([^:]+):([^@]+)@([^:/]+):(\\d+)/([^?]+)(\\?.*)?$\", val)")
 	wl("        if m:")
 	wl("            user, pw, host, port, db, q = m.groups()")
 	wl("            q = q or \"\"")
-	wl("            out.append(\"PYX_MAIN_DATABASE_JDBC_URL=jdbc:postgresql://%s:%s/%s%s\" % (host, port, db, q))")
-	wl("            if not have_user: out.append(\"PYX_MAIN_DATABASE_USERNAME=%s\" % user)")
-	wl("            if not have_pass: out.append(\"PYX_MAIN_DATABASE_PASSWORD=%s\" % pw)")
+	wl("            out.append(\"PYX_QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://%s:%s/%s%s\" % (host, port, db, q))")
+	wl("            if not have_user: out.append(\"PYX_QUARKUS_DATASOURCE_USERNAME=%s\" % user)")
+	wl("            if not have_pass: out.append(\"PYX_QUARKUS_DATASOURCE_PASSWORD=%s\" % pw)")
 	wl("        else:")
 	wl("            out.append(ln)  # already jdbc form (or unrecognized) -> leave as-is")
 	wl("    else:")
@@ -415,10 +390,10 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("chmod 600 /home/main/.ssh/git_deploy_key")
 	w("chown main:main /home/main/env /home/main/gcp-sa-key.json /home/main/.ssh/git_deploy_key")
 	w("")
-	w("# --- Hardened systemd unit (native binary, health :8080) ---")
-	w("cat > /etc/systemd/system/pyxcloud.service <<'EOSVC'")
+	w("# --- Hardened systemd unit (Go binary, health :8080) ---")
+	w("cat > /etc/systemd/system/pyx-backend.service <<'EOSVC'")
 	w("[Unit]")
-	w("Description=Pyxcloud API (native)")
+	w("Description=PyxCloud Go Backend")
 	w("After=network.target")
 	w("StartLimitIntervalSec=0")
 	w("[Service]")
@@ -426,17 +401,17 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("Group=main")
 	w("EnvironmentFile=/home/main/env")
 	w("WorkingDirectory=/home/main")
-	w("ExecStart=/home/main/pyxcloud -Xmx1g")
-	w("StandardOutput=append:/var/log/pyxcloud-app.log")
-	w("StandardError=append:/var/log/pyxcloud-app.log")
+	w("ExecStart=/home/main/pyx-backend")
+	w("StandardOutput=append:/var/log/pyx-backend.log")
+	w("StandardError=append:/var/log/pyx-backend.log")
 	w("Restart=always")
-	w("RestartSec=10")
+	w("RestartSec=3")
 	w("MemoryMax=1500M")
 	w("[Install]")
 	w("WantedBy=multi-user.target")
 	w("EOSVC")
-	w("sudo touch /var/log/pyxcloud-app.log && sudo chown main:main /var/log/pyxcloud-app.log")
-	w("sudo systemctl daemon-reload && sudo systemctl enable pyxcloud")
+	w("sudo touch /var/log/pyx-backend.log && sudo chown main:main /var/log/pyx-backend.log")
+	w("sudo systemctl daemon-reload && sudo systemctl enable pyx-backend")
 	w("")
 	w("# --- Local :8080 health-probe (replaces the AWS metadata + CloudWatch metric probe) ---")
 	w("# DROPPED for the DO cutover: the CloudWatch agent + X-Ray, the EC2 link-local")
@@ -446,13 +421,9 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("cat > /home/main/health-probe.sh <<'EOHP'")
 	w("#!/bin/bash")
 	w("set -uo pipefail")
-	w("HEALTH=$(curl -sf --max-time 5 \"http://localhost:8080/q/health/live\" 2>/dev/null || echo '{}')")
-	w("VAULT_STATUS=$(echo \"$HEALTH\" | jq -r '.checks[]? | select(.name==\"Vault Connectivity\") | .status // \"DOWN\"' 2>/dev/null)")
-	w("SSO_STATUS=$(echo \"$HEALTH\" | jq -r '.checks[]? | select(.name==\"SSO Connectivity\") | .status // \"DOWN\"' 2>/dev/null)")
-	// Bash parameter expansions must be Terraform-escaped ($${...}) because the DO
-	// scale-group renderer bakes user_data into an UNQUOTED HCL heredoc that
-	// Terraform interpolates; only the ${var.x} refs are meant for Terraform.
-	w("logger -t pyxcloud-health \"vault=$${VAULT_STATUS:-DOWN} sso=$${SSO_STATUS:-DOWN}\"")
+	w("LIVE=$(curl -sf -o /dev/null -w '%%%%{http_code}' --max-time 5 \"http://localhost:8080/healthz\" 2>/dev/null || echo 000)")
+	w("READY=$(curl -sf -o /dev/null -w '%%%%{http_code}' --max-time 5 \"http://localhost:8080/readyz\" 2>/dev/null || echo 000)")
+	w("logger -t pyx-backend-health \"healthz=$LIVE readyz=$READY\"")
 	w("EOHP")
 	w("chown main:main /home/main/health-probe.sh && chmod +x /home/main/health-probe.sh")
 	w("# Install the health-probe cron. On a fresh box the root crontab is EMPTY, so")
@@ -462,37 +433,35 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("CRON_EXISTING=$(sudo crontab -l -u root 2>/dev/null | grep -v 'health-probe.sh' || true)")
 	w("printf '%%s\\n%%s\\n' \"$CRON_EXISTING\" \"* * * * * /home/main/health-probe.sh\" | sed '/^$/d' | sudo crontab -u root -")
 	w("")
-	w("# --- Pull the native binary from DO Spaces (S3-compatible; injected keys, NO instance role) ---")
-	w("# ROBUST pull: the native binary is ~660 MiB and the earlier boot timed out mid-")
-	w("# transfer, leaving a partial/empty /home/main/pyxcloud and a crash-looping service.")
-	w("# Fix: (1) disable the aws CLI read timeout + bound the connect timeout, (2) retry")
-	w("# with backoff, (3) VERIFY the download is non-trivially large AND matches the")
-	w("# Spaces object size before starting, (4) only enable+start the service AFTER a")
+	w("# --- Pull the Go binary from DO Spaces (S3-compatible; injected keys, NO instance role) ---")
+	w("# Robust pull: retry with backoff, verify the download is non-trivially large")
+	w("# and matches the Spaces object size before starting, and only start AFTER a")
 	w("# verified fetch (never start on a partial binary).")
 	w("export AWS_ACCESS_KEY_ID=\"%s\"", v(s.SpacesKeyVar))
 	w("export AWS_SECRET_ACCESS_KEY=\"%s\"", v(s.SpacesSecretVar))
 	w("PYX_VERSION=\"%s\"", s.AppVersion)
 	w("SPACES_ENDPOINT=\"%s\"", backendSpacesEndpoint)
-	w("MIN_BYTES=100000000  # sanity floor: the native binary is hundreds of MiB, never <100MB")
+	w("MIN_BYTES=10000000  # sanity floor: Go backend binary should never be tiny/empty")
 	w("# Resolve the object key to pull: prefer the versioned key, fall back to the stable key.")
 	w("BIN_KEY=\"%s\"", backendSpacesKey)
-	w("if [ -n \"$PYX_VERSION\" ] && /usr/local/bin/aws s3api head-object --bucket %s --key \"%s-$PYX_VERSION\" --endpoint-url \"$SPACES_ENDPOINT\" --region %s >/dev/null 2>&1; then", backendSpacesBucket, backendSpacesKey, backendSpacesRegion)
+	w("BUCKET=\"%s-pyxcloud-artifact\"", env)
+	w("if [ -n \"$PYX_VERSION\" ] && /usr/local/bin/aws s3api head-object --bucket \"$BUCKET\" --key \"%s-$PYX_VERSION\" --endpoint-url \"$SPACES_ENDPOINT\" --region %s >/dev/null 2>&1; then", backendSpacesKey, backendSpacesRegion)
 	w("  BIN_KEY=\"%s-$PYX_VERSION\"", backendSpacesKey)
 	w("  echo \"Using versioned key $BIN_KEY.\"")
 	w("else")
 	w("  echo \"Versioned key missing/unset; using the stable '%s' key.\"", backendSpacesKey)
 	w("fi")
 	w("# Expected size from the Spaces object metadata (used to verify a complete pull).")
-	w("EXPECTED_BYTES=$(/usr/local/bin/aws s3api head-object --bucket %s --key \"$BIN_KEY\" --endpoint-url \"$SPACES_ENDPOINT\" --region %s --query ContentLength --output text 2>/dev/null || echo 0)", backendSpacesBucket, backendSpacesRegion)
-	w("# Base object is s3://%s/%s (stable key); $BIN_KEY may carry the -$PYX_VERSION suffix.", backendSpacesBucket, backendSpacesKey)
-	w("echo \"Pulling backend native binary s3://%s/$BIN_KEY (expected $EXPECTED_BYTES bytes) ...\"", backendSpacesBucket)
+	w("EXPECTED_BYTES=$(/usr/local/bin/aws s3api head-object --bucket \"$BUCKET\" --key \"$BIN_KEY\" --endpoint-url \"$SPACES_ENDPOINT\" --region %s --query ContentLength --output text 2>/dev/null || echo 0)", backendSpacesRegion)
+	w("# Base object is s3://$BUCKET/%s (stable key); $BIN_KEY may carry the -$PYX_VERSION suffix.", backendSpacesKey)
+	w("echo \"Pulling backend Go binary s3://$BUCKET/$BIN_KEY (expected $EXPECTED_BYTES bytes) ...\"")
 	w("PULL_OK=0")
 	w("for attempt in 1 2 3 4 5; do")
-	w("  rm -f /home/main/pyxcloud")
-	w("  if /usr/local/bin/aws s3 cp \"s3://%s/$BIN_KEY\" /home/main/pyxcloud --endpoint-url \"$SPACES_ENDPOINT\" --region %s --cli-read-timeout 0 --cli-connect-timeout 30; then", backendSpacesBucket, backendSpacesRegion)
-	w("    GOT_BYTES=$(stat -c%%s /home/main/pyxcloud 2>/dev/null || echo 0)")
+	w("  rm -f /home/main/pyx-backend")
+	w("  if /usr/local/bin/aws s3 cp \"s3://$BUCKET/$BIN_KEY\" /home/main/pyx-backend --endpoint-url \"$SPACES_ENDPOINT\" --region %s --cli-read-timeout 0 --cli-connect-timeout 30; then", backendSpacesRegion)
+	w("    GOT_BYTES=$(stat -c%%s /home/main/pyx-backend 2>/dev/null || echo 0)")
 	w("    if [ \"$GOT_BYTES\" -ge \"$MIN_BYTES\" ] && { [ \"$EXPECTED_BYTES\" = \"0\" ] || [ \"$GOT_BYTES\" = \"$EXPECTED_BYTES\" ]; }; then")
-	w("      echo \"Verified native binary: $GOT_BYTES bytes (expected $EXPECTED_BYTES).\"; PULL_OK=1; break")
+	w("      echo \"Verified Go binary: $GOT_BYTES bytes (expected $EXPECTED_BYTES).\"; PULL_OK=1; break")
 	w("    fi")
 	w("    echo \"Pull incomplete: got $GOT_BYTES bytes, expected $EXPECTED_BYTES (>= $MIN_BYTES); retrying...\" >&2")
 	w("  else")
@@ -504,12 +473,12 @@ func RenderBackendDOUserData(spec BackendBootstrapSpec) (string, error) {
 	w("# AWS_* creds from /home/main/env (loaded by the systemd EnvironmentFile), not these.")
 	w("unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY")
 	w("if [ \"$PULL_OK\" != \"1\" ]; then")
-	w("  echo \"FATAL: could not fetch a complete backend native binary after retries; NOT starting the service.\" >&2")
+	w("  echo \"FATAL: could not fetch a complete backend Go binary after retries; NOT starting the service.\" >&2")
 	w("  exit 1")
 	w("fi")
-	w("chown main:main /home/main/pyxcloud && chmod 755 /home/main/pyxcloud")
+	w("chown main:main /home/main/pyx-backend && chmod 755 /home/main/pyx-backend")
 	w("# Only now (verified binary present) start the service.")
-	w("sudo systemctl daemon-reload && sudo systemctl restart pyxcloud")
+	w("sudo systemctl daemon-reload && sudo systemctl restart pyx-backend")
 
 	return b.String(), nil
 }
