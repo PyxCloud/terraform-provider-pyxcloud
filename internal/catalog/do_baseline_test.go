@@ -204,7 +204,7 @@ func TestDOBaselineFullServiceBootstraps(t *testing.T) {
 	// 1. Every service carries a non-empty full bootstrap with its service marker.
 	markers := map[string][]string{
 		"sso":     {"keycloak", "KC_HOSTNAME=staging-auth.pyxcloud.io", "KC_PROXY_HEADERS=xforwarded"},
-		"backend": {"quarkus", "pyxcloud -Xmx1g"},
+		"backend": {"pyx-backend", "ExecStart=/home/main/pyx-backend", "/readyz"},
 		"mcp":     {"passobuild-mcp", "PYXCLOUD_MCP_HTTP_PORT=8787"},
 		"obs":     {"observability"},
 		"sast":    {"semgrep"},
