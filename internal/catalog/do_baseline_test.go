@@ -419,7 +419,7 @@ func TestDOBaselineLBTerminationPerServiceLB(t *testing.T) {
 		healthPath string
 	}{
 		{"sso-lb", "pyx-sso", 8080, "/q/health"},
-		{"backend-lb", "pyx-backend", 8080, "/q/health"},
+		{"backend-lb", "pyx-backend", 8080, "/healthz"},
 		{"mcp-lb", "pyx-mcp", 8787, "/health"},
 	}
 	for _, w := range wantLBs {
@@ -579,7 +579,7 @@ func TestDOBaselineLBTerminationNoNginxTerminator(t *testing.T) {
 	}
 	// The real per-service bootstraps must still be present (LBTermination only
 	// changes the edge, not the service itself).
-	for _, want := range []string{"keycloak", "quarkus", "passobuild-mcp"} {
+	for _, want := range []string{"keycloak", "pyx-backend", "passobuild-mcp"} {
 		found := false
 		for _, ud := range svc {
 			if strings.Contains(ud, want) {
