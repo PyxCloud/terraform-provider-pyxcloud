@@ -34,8 +34,8 @@ import (
 //   - 1 firewall (passo-do-baseline-sg): inbound 443, egress icmp/tcp/udp all
 //   - 2 managed PG clusters (pyx-main-db, keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes
 //   - 6 droplet-autoscale groups: backend / mcp / obs / sast / sso / vpn
-//   - 3 regional load-balancers (lb-sso / lb-backend / lb-mcp) fronting the
-//     sso / backend / mcp droplet tags on 443 (stable IPs for Cloudflare DNS)
+//   - no per-service public load balancers or platform certificate resources;
+//     the private VPC edge SNI-routes VPN traffic to origin tags
 //   - 1 Spaces bucket (pyx-artifacts-fra1) — the mcp/backend artifact store
 //     (INCLUDED now that beta-DigitalOceanSpacesKeys exists)
 
@@ -57,7 +57,7 @@ const doBaselineEnv = "staging"
 type DOBaselineService struct {
 	// Name is the autoscale-group name and matches the deployed state.
 	Name string
-	// Tag is the droplet tag the firewall and load-balancer select on.
+	// Tag is the droplet tag the firewall and private edge select on.
 	Tag string
 	// CPU / RAM are the requested sizing, resolved to a concrete droplet SKU by
 	// the catalog (the SAME ResolveSKU path every VM uses) — never hand-picked.
@@ -68,8 +68,14 @@ type DOBaselineService struct {
 	Durable bool
 }
 
-// DOBaselineServices is the canonical ordered list of the 6 cutover droplet
-// groups. Deterministic (slice, not map) so the emitted HCL is stable.
+const (
+	stagingFEServiceName = "staging-fe"
+	stagingFEServiceTag  = "pyx-staging-fe"
+)
+
+// DOBaselineServices is the canonical ordered list of the six original cutover
+// groups plus the private staging-fe standalone runtime. Deterministic (slice,
+// not map) so the emitted HCL is stable.
 func DOBaselineServices() []DOBaselineService {
 	return []DOBaselineService{
 		{Name: "backend", Tag: "pyx-backend", CPU: 2, RAM: 4},
@@ -78,20 +84,21 @@ func DOBaselineServices() []DOBaselineService {
 		{Name: "sast", Tag: "pyx-sast", CPU: 2, RAM: 4},
 		{Name: "sso", Tag: "pyx-sso", CPU: 2, RAM: 4},
 		{Name: "vpn", Tag: "pyx-vpn", CPU: 2, RAM: 2},
+		{Name: stagingFEServiceName, Tag: stagingFEServiceTag, CPU: 2, RAM: 2},
 	}
 }
 
-// doEdgeOrigins is the per-hostname -> DO service origin map for the Cloudflare
-// cutover (pd-MIG-CUTOVER-F4-PREP), derived from the AWS shared-ALB host-header
+// doEdgeOrigins is the per-hostname -> DO service origin map for private VPC
+// edge routing, derived from the AWS shared-ALB host-header
 // rules (beta-pyx-shared-alb): beta-auth -> keycloak_tg:8080 (sso),
 // beta-api -> api_tg:8080 (backend), mcp.passo.build -> mcp_tg:8787 (mcp). The
 // obs origin already carries its own nginx :443 (VPN-only) so it is NOT here.
 // When DOBaselineOptions.EdgeTLSOrigins is set, each service below gets an nginx
-// :443 terminator appended to its user_data so it can serve as a Cloudflare-Full
-// origin. Deterministic slice.
+// :443 terminator appended to its user_data so it can serve the VPC edge's SNI
+// route. Deterministic slice.
 type doEdgeOrigin struct {
 	Service      string // matches DOBaselineService.Name
-	Hostname     string // public FQDN Cloudflare routes to this origin
+	Hostname     string // private-DNS FQDN the VPC edge routes to this origin
 	UpstreamPort int    // local plain-HTTP service port
 }
 
@@ -109,7 +116,7 @@ func doEdgeOrigins() []doEdgeOrigin {
 }
 
 // edgeOriginByService returns the doEdgeOrigin for a service name, or nil if the
-// service is not a public Cloudflare-routed origin (obs/sast/vpn).
+// service is not an edge-routed origin (obs/sast/vpn).
 func edgeOriginByService(svcName string) *doEdgeOrigin {
 	for _, o := range doEdgeOrigins() {
 		if o.Service == svcName {
@@ -120,37 +127,8 @@ func edgeOriginByService(svcName string) *doEdgeOrigin {
 	return nil
 }
 
-// edgeOriginHealthPath is the LB healthcheck path for an edge-origin service.
-// sso keeps the Keycloak/Quarkus-style /q/health convention, backend is now the
-// Go monolith (/healthz), and mcp exposes its own /health. Health checks target
-// the upstream service port directly, never the droplet's public IP on :443.
-func edgeOriginHealthPath(svcName string) string {
-	switch svcName {
-	case "backend":
-		return "/healthz"
-	case "mcp":
-		return "/health"
-	default:
-		return "/q/health"
-	}
-}
-
-// edgeOriginTag resolves a service name to its firewall/LB droplet_tag via the
-// canonical DOBaselineServices list (never hand-picked, matches the droplet
-// resource's own tag).
-func edgeOriginTag(svcName string) string {
-	for _, s := range DOBaselineServices() {
-		if s.Name == svcName {
-			return s.Tag
-		}
-	}
-	return ""
-}
-
 // doBaselineEgressRules is the shared outbound rule set (icmp/tcp/udp all) every
-// baseline firewall carries, regardless of LBTermination. Extracted so both the
-// legacy single-firewall path and the LBTermination per-service firewalls stay
-// byte-identical on egress.
+// baseline firewall carries.
 func doBaselineEgressRules() string {
 	return `
   outbound_rule {
@@ -168,19 +146,6 @@ func doBaselineEgressRules() string {
     destination_addresses = ["0.0.0.0/0", "::/0"]
   }`
 }
-
-// doBaselineOriginCertVarName is the Terraform variable name for the shared
-// Cloudflare Origin certificate private key / leaf certificate, used by the
-// LBTermination load balancers' `certificate_name` (via a digitalocean_certificate
-// of type "custom"). One shared cert covers all three origin FQDNs (SAN cert);
-// if the live Cloudflare Origin cert is NOT a SAN cert covering
-// staging-auth/staging-api/staging-mcp, split these into per-service cert vars
-// (doOriginCertKeyVar/doOriginCertLeafVar taking a service arg) before apply —
-// see the PR description for this call-out.
-const (
-	doOriginCertKeyVar  = "origin_tls_key"
-	doOriginCertLeafVar = "origin_tls_cert"
-)
 
 // DOBaselineInput is the catalog-native descriptor for the cutover baseline.
 // It mirrors the AssembleInput surface (name/provider/region/components) so the
@@ -293,9 +258,8 @@ type DOBaselineOptions struct {
 	// VPC as the droplets). The harness sets this true.
 	PrivateDBHost bool
 	// EdgeTLSOrigins, when true, appends an nginx :443 TLS terminator (the obs
-	// pattern, see edge_tls_terminator.go) to each Cloudflare-routed origin
-	// service (sso/backend/mcp per doEdgeOrigins) so the DNS flip can move each
-	// hostname onto its DO origin over Cloudflare "Full". pd-MIG-CUTOVER-F4-PREP.
+	// pattern, see edge_tls_terminator.go) to each private edge-routed origin
+	// service (sso/backend/mcp per doEdgeOrigins).
 	// A service that had no user_data (backend/sso in the base harness) gets a
 	// standalone terminator script; mcp gets the terminator appended after its
 	// durable bootstrap. Off by default (0 change to the base estate).
@@ -313,32 +277,9 @@ type DOBaselineOptions struct {
 	// to their full bootstrap). Off by default so the legacy mcp-only render is
 	// unchanged.
 	FullServiceBootstraps bool
-	// LBTermination is the DURABLE FIX for the staging outage where each origin
-	// droplet self-terminated TLS on a PUBLIC :443 (see edge_tls_terminator.go /
-	// EdgeTLSOrigins): a droplet with a nginx :443 listener open to 0.0.0.0/0 is a
-	// direct-to-origin path that bypasses Cloudflare and the LB entirely, and (as
-	// happened) can crash-loop or drift independently of the fleet.
-	//
-	// THE MODEL, when true:
-	//   - The load balancer terminates TLS. Each public origin (sso/backend/mcp,
-	//     per doEdgeOrigins) gets its OWN regional LB (`<service>-lb`) with an
-	//     `https:443 -> http:<UpstreamPort>` forwarding rule and a
-	//     `certificate_name` (NOT tls_passthrough).
-	//   - The droplet's service port is reachable ONLY from that LB: the firewall's
-	//     inbound rule for the port is scoped with `source_load_balancer_uids`, and
-	//     there is NO public (0.0.0.0/0) inbound rule on any app port.
-	//   - Health checks target the upstream service port/path directly (the LB
-	//     health-checks the droplet's plain-HTTP port, not the droplet's public IP
-	//     on :443 — there is no droplet-side :443 to check).
-	//   - The nginx :443 terminator (EdgeTLSOrigins / edgeTerminatorFor) is NOT
-	//     appended to any service's user_data: the LB is now the TLS edge, so a
-	//     droplet-side terminator would be redundant and reintroduce the public
-	//     :443 exposure this flag exists to close.
-	//
-	// Off by default: the base estate (single public :443 firewall rule + the
-	// legacy L4 tls_passthrough edge-lb) is rendered byte-for-byte unchanged.
-	// pd-INFRA-SSO-ASG (durable DO edge roll) opts the deploy path in once the
-	// origin cert vars are wired.
+	// LBTermination is retained for input compatibility only. Staging no longer
+	// renders any service load balancer/certificate, regardless of this value.
+	// TLS terminates at the private origins reached through the VPC edge.
 	LBTermination bool
 	// VaultHA, when true, appends the 3-node Raft Vault droplet cluster
 	// (vaultha_droplet_do.go) to the baseline: 3 fixed digitalocean_droplet nodes
@@ -398,83 +339,57 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
   ip_range = %q
 }`, doBaselineName+"-net", doBaselineName+"-net", region, in.CIDR))
 
-	// 2. Firewall (matches passo-do-baseline-sg): egress icmp/tcp/udp always; the
-	// inbound app-port rule(s) depend on LBTermination (see below).
+	// 2. Firewall (matches passo-do-baseline-sg): staging has no public service
+	// ingress. The private VPC edge is the only caller allowed onto origin TLS.
 	tags := make([]string, 0, len(DOBaselineServices()))
 	for _, s := range DOBaselineServices() {
-		tags = append(tags, s.Tag)
-	}
-	if opts.LBTermination {
-		// LB TERMINATES TLS; DROPLET APP PORT REACHABLE ONLY VIA THE LB
-		// -----------------------------------------------------------------
-		// One firewall per public-origin service (sso/backend/mcp), each scoping
-		// its app-port inbound rule to `source_load_balancer_uids = [<that
-		// service's LB>]`. This is the durable fix for the staging outage: no
-		// service app port is EVER reachable from 0.0.0.0/0 — only from its own
-		// regional LB, which is the sole :443 TLS terminator. Non-origin services
-		// (obs/sast/vpn) keep the shared baseline firewall with no public app-port
-		// inbound rule (they are VPN/internal-only in this estate).
-		nonOrigin := make([]string, 0, len(DOBaselineServices()))
-		for _, s := range DOBaselineServices() {
-			if edgeOriginByService(s.Name) == nil {
-				nonOrigin = append(nonOrigin, s.Tag)
-			}
+		if s.Name != stagingFEServiceName {
+			tags = append(tags, s.Tag)
 		}
-		var chunk []string
-		for i, tag := range nonOrigin {
-			chunk = append(chunk, tag)
-			if len(chunk) == 5 || i == len(nonOrigin)-1 {
-				suffix := ""
-				if len(nonOrigin) > 5 && i >= 5 {
-					suffix = fmt.Sprintf("-%d", (i/5)+1)
-				}
-				docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
+	}
+	var chunk []string
+	for i, tag := range tags {
+		chunk = append(chunk, tag)
+		if len(chunk) == 5 || i == len(tags)-1 {
+			suffix := ""
+			if len(tags) > 5 && i >= 5 {
+				suffix = fmt.Sprintf("-%d", (i/5)+1)
+			}
+			docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
   name = %q
   tags = %s
+
+  inbound_rule {
+	protocol    = "tcp"
+	port_range  = "443"
+	source_tags = ["pyx-edge"]
+  }
 %s
 }`, doBaselineName+"-sg"+suffix, doBaselineName+"-sg"+suffix, hclStringList(chunk), doBaselineEgressRules()))
-				chunk = nil
-			}
+			chunk = nil
 		}
+	}
 
-		for _, o := range doEdgeOrigins() {
-			docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
+	// staging-fe is a private origin: only the VPC edge routers may reach its
+	// TLS listener. It must never inherit the shared public :443 rule.
+	docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
   name = %q
   tags = [%q]
 
   inbound_rule {
-    protocol                  = "tcp"
-    port_range                = %q
-    source_load_balancer_uids = [digitalocean_loadbalancer.%s.id]
+    protocol    = "tcp"
+    port_range  = "443"
+    source_tags = ["pyx-edge"]
   }
-%s
-}`, doBaselineName+"-"+o.Service+"-sg", doBaselineName+"-"+o.Service+"-sg", edgeOriginTag(o.Service),
-				itoa(o.UpstreamPort), o.Service+"-lb", doBaselineEgressRules()))
-		}
-	} else {
-		var chunk []string
-		for i, tag := range tags {
-			chunk = append(chunk, tag)
-			if len(chunk) == 5 || i == len(tags)-1 {
-				suffix := ""
-				if len(tags) > 5 && i >= 5 {
-					suffix = fmt.Sprintf("-%d", (i/5)+1)
-				}
-				docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
-  name = %q
-  tags = %s
 
   inbound_rule {
     protocol         = "tcp"
-    port_range       = "443"
-    source_addresses = ["0.0.0.0/0", "::/0"]
+    port_range       = "22"
+    source_addresses = [%q]
   }
 %s
-}`, doBaselineName+"-sg"+suffix, doBaselineName+"-sg"+suffix, hclStringList(chunk), doBaselineEgressRules()))
-				chunk = nil
-			}
-		}
-	}
+}`, doBaselineName+"-"+stagingFEServiceName+"-sg", doBaselineName+"-"+stagingFEServiceName+"-sg",
+		stagingFEServiceTag, in.CIDR, doBaselineEgressRules()))
 
 	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, node_count = 1.
 	for _, db := range []string{"pyx-main-db", "keycloak-db"} {
@@ -521,10 +436,9 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 			// Legacy mcp-only durable render (literal mesh_app URL, reserved-IP claim,
 			// re-fetch-on-restart). Kept for the base harness path (FullServiceBootstraps off).
 			userData = renderMCPUserData(secrets, opts)
-			// pd-MIG-CUTOVER-F4-PREP: append the Cloudflare-Full :443 terminator.
-			// NOT when LBTermination is set — the LB is the TLS edge, so a droplet-
-			// side :443 terminator would reintroduce the public-origin exposure.
-			if opts.EdgeTLSOrigins && !opts.LBTermination {
+			// Append the origin :443 terminator when requested. The VPC edge is an
+			// SNI router, so TLS always terminates on the private origin.
+			if opts.EdgeTLSOrigins {
 				snip, terr := edgeTerminatorFor(svc.Name)
 				if terr != nil {
 					return nil, terr
@@ -533,7 +447,7 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 					userData = userData + "\n\n" + snip
 				}
 			}
-		case opts.EdgeTLSOrigins && !opts.LBTermination:
+		case opts.EdgeTLSOrigins:
 			// Base harness (no full bootstrap): standalone terminator for sso/backend.
 			snip, terr := edgeTerminatorFor(svc.Name)
 			if terr != nil {
@@ -576,112 +490,9 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 }`, svc.Name, svc.Name, row.Name, region, img.Image, doBaselineName+"-net", svc.Tag, udBlock))
 	}
 
-	// 5. Load balancer(s). LBTermination flips the edge model:
-	//
-	//   LB TERMINATES TLS; DROPLET APP PORT REACHABLE ONLY VIA THE LB.
-	//   Health checks target the upstream service port/path directly — never the
-	//   droplet's public IP on :443 (there is no droplet-side :443 anymore).
-	//
-	// Off (legacy, default): three per-service L4 tls_passthrough LBs
-	// (lb-sso/lb-backend/lb-mcp) fronting the sso/backend/mcp droplet tags on 443
-	// — matching the deployed/reconciled state byte-for-byte (see pd-MIG-CUTOVER
-	// state reconciliation; the old single "edge-lb" was renamed to "lb-backend"
-	// and converted to this uniform TCP config live).
-	if opts.LBTermination {
-		// One digitalocean_certificate (Cloudflare Origin cert, custom type) shared
-		// across the three origin FQDNs — sourced from TF vars, never inlined.
-		docs = append(docs, fmt.Sprintf(`resource "digitalocean_certificate" %q {
-  name              = %q
-  type              = "custom"
-  private_key       = var.%s
-  leaf_certificate  = var.%s
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}`, doBaselineName+"-origin-cert", doBaselineName+"-origin-cert", doOriginCertKeyVar, doOriginCertLeafVar))
-
-		// One regional LB PER public origin (sso/backend/mcp), each terminating
-		// TLS and forwarding plain HTTP to that service's upstream port.
-		for _, o := range doEdgeOrigins() {
-			lbName := o.Service + "-lb"
-			docs = append(docs, fmt.Sprintf(`resource "digitalocean_loadbalancer" %q {
-  name        = %q
-  region      = %q
-  size_unit   = 1
-  droplet_tag = %q
-  vpc_uuid    = digitalocean_vpc.%s.id
-
-  forwarding_rule {
-    entry_port       = 443
-    entry_protocol   = "https"
-    target_port      = %d
-    target_protocol  = "http"
-    certificate_name = digitalocean_certificate.%s.name
-  }
-
-  healthcheck {
-    protocol                 = "http"
-    port                     = %d
-    path                     = %q
-    check_interval_seconds   = 30
-    response_timeout_seconds = 5
-    healthy_threshold        = 3
-    unhealthy_threshold      = 3
-  }
-}`, lbName, lbName, region, edgeOriginTag(o.Service), doBaselineName+"-net",
-				o.UpstreamPort, doBaselineName+"-origin-cert",
-				o.UpstreamPort, edgeOriginHealthPath(o.Service)))
-		}
-	} else {
-		// Per-service regional load-balancers fronting each Cloudflare-routed edge
-		// origin on 443. One LB per edge service (sso/backend/mcp) so Cloudflare DNS
-		// can point at a STABLE LB IP that forwards by droplet TAG — surviving a
-		// droplet self-heal/roll (new droplet IP) with zero DNS change. This is the
-		// last edge durability gap closed before decommission.
-		//
-		// All three use TCP:443 -> TCP:443 passthrough (the LB never touches TLS; the
-		// origin nginx terminator serves its own cert) with a TCP:443 health check.
-		// The legacy single "edge-lb" (backend, https-passthrough + http:8080
-		// healthcheck) was renamed to "lb-backend" and converted to this uniform TCP
-		// config live; the catalog now models the reconciled shape.
-		//
-		// NOTE: doEdgeOrigins() is the canonical sso/backend/mcp edge set, kept in
-		// order so the emitted HCL is deterministic.
-		for _, origin := range doEdgeOrigins() {
-			svc := DOBaselineServices()[0]
-			for _, s := range DOBaselineServices() {
-				if s.Name == origin.Service {
-					svc = s
-					break
-				}
-			}
-			docs = append(docs, fmt.Sprintf(`resource "digitalocean_loadbalancer" "lb-%s" {
-  name        = "lb-%s"
-  region      = %q
-  size_unit   = 1
-  droplet_tag = %q
-  vpc_uuid    = digitalocean_vpc.%s.id
-
-  forwarding_rule {
-    entry_port      = 443
-    entry_protocol  = "tcp"
-    target_port     = 443
-    target_protocol = "tcp"
-    tls_passthrough = false
-  }
-
-  healthcheck {
-    protocol                 = "tcp"
-    port                     = 443
-    check_interval_seconds   = 10
-    response_timeout_seconds = 5
-    healthy_threshold        = 3
-    unhealthy_threshold      = 3
-  }
-}`, origin.Service, origin.Service, region, svc.Tag, doBaselineName+"-net"))
-		}
-	}
+	// 5. No per-service load balancers or platform certificates are rendered for
+	// staging. Private DNS sends VPN clients to the VPC edge, which SNI-routes to
+	// these origins; origin firewalls admit only the pyx-edge tag.
 
 	// 6. Spaces bucket (pyx-artifacts-fra1) — the release-artifact store. INCLUDED
 	//    now that beta-DigitalOceanSpacesKeys exists; the spaces provider creds come
@@ -906,8 +717,8 @@ func indentUserData(s string) string {
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
 
-// edgeTerminatorFor returns the nginx :443 Cloudflare-Full TLS terminator snippet
-// for a service that fronts a public origin (sso/backend/mcp per doEdgeOrigins), or
+// edgeTerminatorFor returns the nginx :443 TLS terminator snippet for a service
+// reached through the private VPC edge (sso/backend/mcp per doEdgeOrigins), or
 // "" if the service is not an edge origin.
 func edgeTerminatorFor(svcName string) (string, error) {
 	for _, o := range doEdgeOrigins() {
@@ -953,7 +764,7 @@ func doBaselineSSOSpec(secrets DOBaselineSecrets) SSODOBootstrapSpec {
 // secrets from Vault `data "vault_kv_secret_v2"` blocks (EPIC-BOOTFETCH-AWS-SM-
 // TO-VAULT); sso does too EXCEPT its two unmigrated fields (VaultOIDCSecret,
 // RunnerPublicKey), still inlined from DOBaselineSecrets. For the three
-// Cloudflare-Full origins (sso/backend/mcp) the nginx :443 terminator is appended
+// private edge origins (sso/backend/mcp) the nginx :443 terminator is appended
 // so the droplet template carries BOTH the service and its edge in one boot.
 func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts DOBaselineOptions) (string, error) {
 	var ud string
@@ -971,23 +782,21 @@ func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts 
 		ud, err = RenderBackendDOUserData(doBaselineBackendSpec())
 	case "vpn":
 		ud, err = RenderVPNBootstrapUserData(VPNBootstrapSpec{Environment: doBaselineEnv})
+	case stagingFEServiceName:
+		ud, err = RenderStagingFEDOBootstrapUserData(StagingFEDOBootstrapSpec{})
 	default:
 		return "", fmt.Errorf("do-baseline: no full bootstrap for service %q", svcName)
 	}
 	if err != nil {
 		return "", fmt.Errorf("do-baseline: render %s bootstrap: %w", svcName, err)
 	}
-	// Append the Cloudflare-Full :443 terminator for the public origins — UNLESS
-	// LBTermination is set, in which case the LB (not the droplet) terminates TLS
-	// and no droplet-side :443 listener should exist at all.
-	if !opts.LBTermination {
-		snip, terr := edgeTerminatorFor(svcName)
-		if terr != nil {
-			return "", terr
-		}
-		if snip != "" {
-			ud = ud + "\n\n" + snip
-		}
+	// Private staging TLS terminates on the origin after the VPC edge SNI route.
+	snip, terr := edgeTerminatorFor(svcName)
+	if terr != nil {
+		return "", terr
+	}
+	if snip != "" {
+		ud = ud + "\n\n" + snip
 	}
 	return ud, nil
 }
@@ -1022,12 +831,8 @@ func DOBaselineVariableNames() []string {
 	op, os_ := (OBSDOBootstrapSpec{}).OBSDOBootstrapVariableNames()
 	bp, bs := doBaselineBackendSpec().BackendBootstrapVariableNames()
 	vp, vs := (VPNBootstrapSpec{Environment: doBaselineEnv}).VPNBootstrapVariableNames()
-	// origin_tls_key / origin_tls_cert: the Cloudflare Origin cert material the
-	// LBTermination load balancers serve via digitalocean_certificate. Declared
-	// unconditionally (like every other var here) so the harness always emits a
-	// matching `variable` block; they are only REFERENCED in the rendered HCL
-	// when DOBaselineOptions.LBTermination is set.
-	add(mp, ms, op, os_, bp, bs, vp, vs, []string{doOriginCertKeyVar, doOriginCertLeafVar})
+	fp, fs := (StagingFEDOBootstrapSpec{}).StagingFEDOBootstrapVariableNames()
+	add(mp, ms, op, os_, bp, bs, vp, vs, fp, fs)
 	return out
 }
 
