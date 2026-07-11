@@ -9,66 +9,89 @@ import (
 	"testing"
 )
 
-func TestRenderStagingFENextStandaloneRunsServerRoutesInsideVPC(t *testing.T) {
+func TestRenderStagingFEConvergesFromWrappedTokenAndDeliveredArtifact(t *testing.T) {
 	ud, err := RenderStagingFEDOBootstrapUserData(StagingFEDOBootstrapSpec{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	for _, want := range []string{
-		"s3://pyx-artifacts-fra1/$STAGING_FE_ARTIFACT_KEY",
-		"/opt/staging-fe/current/server.js",
+		"/usr/local/sbin/staging-fe-converge",
+		"IFS= read -r WRAPPED_TOKEN",
+		"/v1/sys/wrapping/unwrap",
+		"/v1/auth/approle/login",
+		"/var/lib/staging-fe/inbox/standalone.tar.gz",
+		"sha256sum --check",
+		"/v1/secret/data/infra/staging/staging-fe/runtime",
 		"ExecStart=/usr/bin/node server.js",
-		"WorkingDirectory=/opt/staging-fe/current",
 		"proxy_pass http://127.0.0.1:3000",
 		"INTERNAL_AUTH_URL=https://staging-auth.pyxcloud.io/realms/passobuild/",
-		"NEXT_PUBLIC_API_URL=https://staging-api.pyxcloud.io",
 		"PYX_MCP_URL=https://staging-mcp.passo.build/mcp",
 	} {
 		if !strings.Contains(ud, want) {
-			t.Errorf("standalone bootstrap missing %q", want)
+			t.Errorf("secure bootstrap missing %q", want)
 		}
-	}
-	for _, forbidden := range []string{"amplifyapp.com", "AMPLIFY_BASIC_AUTH", "next build", "npm install"} {
-		if strings.Contains(ud, forbidden) {
-			t.Errorf("standalone bootstrap retains forbidden runtime dependency %q", forbidden)
-		}
-	}
-	if strings.Contains(ud, "openssl req -x509") {
-		t.Fatal("private staging FE must not fall back to a self-signed certificate")
-	}
-	if !strings.Contains(ud, "/etc/letsencrypt/live/staging.passo.build/fullchain.pem") ||
-		!strings.Contains(ud, "--dns-cloudflare") {
-		t.Fatal("private staging FE must provision and use its DNS-01 certificate")
 	}
 }
 
-func TestRenderStagingFENextStandaloneUsesPinnedArtifactAndVaultEnv(t *testing.T) {
+func TestRenderStagingFEUserDataContainsNoBootstrapSecrets(t *testing.T) {
+	ud, err := RenderStagingFEDOBootstrapUserData(StagingFEDOBootstrapSpec{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, forbidden := range []string{
+		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "aws s3 cp", "do_spaces_access_key",
+		"do_spaces_secret_key", "staging_fe_vault_secret_id", "VAULT_SECRET_ID='${var.",
+		"amplifyapp.com", "next build", "npm install",
+	} {
+		if strings.Contains(ud, forbidden) {
+			t.Errorf("user_data must not contain %q", forbidden)
+		}
+	}
+	plain, sensitive := (StagingFEDOBootstrapSpec{}).StagingFEDOBootstrapVariableNames()
+	if strings.Join(sensitive, ",") != "" {
+		t.Fatalf("staging FE must declare no sensitive Terraform bootstrap vars, got %v", sensitive)
+	}
+	wantPlain := map[string]bool{
+		"staging_fe_artifact_key": true, "staging_fe_artifact_sha256": true,
+		"vault_addr": true, "staging_fe_vault_role_id": true,
+	}
+	for _, name := range plain {
+		delete(wantPlain, name)
+	}
+	if len(wantPlain) != 0 {
+		t.Fatalf("missing non-secret bootstrap vars: %v", wantPlain)
+	}
+}
+
+func TestRenderStagingFEIsFailClosedUntilConverged(t *testing.T) {
 	ud, err := RenderStagingFEDOBootstrapUserData(StagingFEDOBootstrapSpec{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	for _, want := range []string{
-		"staging_fe_artifact_key",
-		"vibe-frontend/[0-9a-f]{40}/standalone.tar.gz",
-		"auth/approle/login",
-		"/v1/secret/data/infra/staging/staging-fe/runtime",
-		"STAGING_FE_ENV",
-		"/etc/staging-fe.env",
-		"chmod 0600 /etc/staging-fe.env",
+		"systemctl disable staging-fe.service nginx",
+		"systemctl stop staging-fe.service nginx",
+		"systemctl enable staging-fe.service nginx",
+		"systemctl restart staging-fe.service",
+		"systemctl restart nginx",
+		"rm -f /var/lib/staging-fe/inbox/standalone.tar.gz",
 	} {
 		if !strings.Contains(ud, want) {
-			t.Errorf("secure artifact/env bootstrap missing %q", want)
+			t.Errorf("fail-closed bootstrap missing %q", want)
 		}
+	}
+	if strings.Contains(ud, "systemctl enable --now staging-fe.service nginx") {
+		t.Fatal("cloud-init must not start staging before out-of-band convergence")
 	}
 }
 
-func TestRenderStagingFENextStandaloneBashParses(t *testing.T) {
+func TestRenderStagingFEBashParses(t *testing.T) {
 	ud, err := RenderStagingFEDOBootstrapUserData(StagingFEDOBootstrapSpec{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if strings.Contains(ud, "%!") {
-		t.Fatalf("render contains fmt error marker")
+		t.Fatal("render contains fmt marker")
 	}
 	path := filepath.Join(t.TempDir(), "user-data.sh")
 	if err := os.WriteFile(path, []byte(ud), 0o600); err != nil {
@@ -79,24 +102,10 @@ func TestRenderStagingFENextStandaloneBashParses(t *testing.T) {
 	}
 }
 
-func TestStagingFENextStandaloneIsPrivateBaselineService(t *testing.T) {
-	found := false
-	for _, service := range DOBaselineServices() {
-		if service.Name == "staging-fe" && service.Tag == "pyx-staging-fe" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("staging-fe service missing from DO baseline")
-	}
-
+func TestStagingFESecureBootstrapIsWiredIntoPrivateBaseline(t *testing.T) {
 	secrets := DOBaselineSecrets{
-		SpacesAccessKey:    "ak",
-		SpacesSecretKey:    "sk",
-		BoardDatabaseURL:   "postgres://db",
-		EmbedTokenSecret:   "embed",
-		SSOVaultOIDCSecret: "oidc-secret",
-		SSORunnerPublicKey: "runner-public-key",
+		SpacesAccessKey: "ak", SpacesSecretKey: "sk", BoardDatabaseURL: "postgres://db",
+		EmbedTokenSecret: "embed", SSOVaultOIDCSecret: "oidc", SSORunnerPublicKey: "runner",
 	}
 	docs, err := AssembleDOBaseline(context.Background(), MustEmbedded(), DOBaselineInput("Frankfurt", "", "", ""), secrets, DOBaselineOptions{FullServiceBootstraps: true})
 	if err != nil {
@@ -107,16 +116,16 @@ func TestStagingFENextStandaloneIsPrivateBaselineService(t *testing.T) {
 		`resource "digitalocean_droplet_autoscale" "staging-fe"`,
 		`resource "digitalocean_firewall" "passo-do-baseline-staging-fe-sg"`,
 		`source_tags = ["pyx-edge"]`,
-		"ExecStart=/usr/bin/node server.js",
-		`${var.staging_fe_artifact_key}`,
+		`${var.staging_fe_artifact_sha256}`,
+		"/usr/local/sbin/staging-fe-converge",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("baseline missing %q", want)
 		}
 	}
-	for _, doc := range docs {
-		if strings.Contains(doc, `resource "digitalocean_firewall" "passo-do-baseline-sg"`) && strings.Contains(doc, "pyx-staging-fe") {
-			t.Error("staging-fe must not inherit the public shared firewall")
+	for _, forbidden := range []string{"${var.staging_fe_vault_secret_id}"} {
+		if strings.Contains(all, forbidden) {
+			t.Errorf("baseline leaks retired bootstrap variable %q", forbidden)
 		}
 	}
 }
