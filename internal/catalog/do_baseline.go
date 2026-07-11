@@ -68,8 +68,14 @@ type DOBaselineService struct {
 	Durable bool
 }
 
-// DOBaselineServices is the canonical ordered list of the 6 cutover droplet
-// groups. Deterministic (slice, not map) so the emitted HCL is stable.
+const (
+	stagingFEServiceName = "staging-fe"
+	stagingFEServiceTag  = "pyx-staging-fe"
+)
+
+// DOBaselineServices is the canonical ordered list of the six original cutover
+// groups plus the private staging-fe standalone runtime. Deterministic (slice,
+// not map) so the emitted HCL is stable.
 func DOBaselineServices() []DOBaselineService {
 	return []DOBaselineService{
 		{Name: "backend", Tag: "pyx-backend", CPU: 2, RAM: 4},
@@ -78,6 +84,7 @@ func DOBaselineServices() []DOBaselineService {
 		{Name: "sast", Tag: "pyx-sast", CPU: 2, RAM: 4},
 		{Name: "sso", Tag: "pyx-sso", CPU: 2, RAM: 4},
 		{Name: "vpn", Tag: "pyx-vpn", CPU: 2, RAM: 2},
+		{Name: stagingFEServiceName, Tag: stagingFEServiceTag, CPU: 2, RAM: 2},
 	}
 }
 
@@ -402,7 +409,9 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 	// inbound app-port rule(s) depend on LBTermination (see below).
 	tags := make([]string, 0, len(DOBaselineServices()))
 	for _, s := range DOBaselineServices() {
-		tags = append(tags, s.Tag)
+		if s.Name != stagingFEServiceName {
+			tags = append(tags, s.Tag)
+		}
 	}
 	if opts.LBTermination {
 		// LB TERMINATES TLS; DROPLET APP PORT REACHABLE ONLY VIA THE LB
@@ -416,6 +425,9 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 		// inbound rule (they are VPN/internal-only in this estate).
 		nonOrigin := make([]string, 0, len(DOBaselineServices()))
 		for _, s := range DOBaselineServices() {
+			if s.Name == stagingFEServiceName {
+				continue
+			}
 			if edgeOriginByService(s.Name) == nil {
 				nonOrigin = append(nonOrigin, s.Tag)
 			}
@@ -475,6 +487,27 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 			}
 		}
 	}
+
+	// staging-fe is a private origin: only the VPC edge routers may reach its
+	// TLS listener. It must never inherit the shared public :443 rule.
+	docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
+  name = %q
+  tags = [%q]
+
+  inbound_rule {
+    protocol    = "tcp"
+    port_range  = "443"
+    source_tags = ["pyx-edge"]
+  }
+
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "22"
+    source_addresses = [%q]
+  }
+%s
+}`, doBaselineName+"-"+stagingFEServiceName+"-sg", doBaselineName+"-"+stagingFEServiceName+"-sg",
+		stagingFEServiceTag, in.CIDR, doBaselineEgressRules()))
 
 	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, node_count = 1.
 	for _, db := range []string{"pyx-main-db", "keycloak-db"} {
@@ -971,6 +1004,8 @@ func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts 
 		ud, err = RenderBackendDOUserData(doBaselineBackendSpec())
 	case "vpn":
 		ud, err = RenderVPNBootstrapUserData(VPNBootstrapSpec{Environment: doBaselineEnv})
+	case stagingFEServiceName:
+		ud, err = RenderStagingFEDOBootstrapUserData(StagingFEDOBootstrapSpec{})
 	default:
 		return "", fmt.Errorf("do-baseline: no full bootstrap for service %q", svcName)
 	}
@@ -1022,12 +1057,13 @@ func DOBaselineVariableNames() []string {
 	op, os_ := (OBSDOBootstrapSpec{}).OBSDOBootstrapVariableNames()
 	bp, bs := doBaselineBackendSpec().BackendBootstrapVariableNames()
 	vp, vs := (VPNBootstrapSpec{Environment: doBaselineEnv}).VPNBootstrapVariableNames()
+	fp, fs := (StagingFEDOBootstrapSpec{}).StagingFEDOBootstrapVariableNames()
 	// origin_tls_key / origin_tls_cert: the Cloudflare Origin cert material the
 	// LBTermination load balancers serve via digitalocean_certificate. Declared
 	// unconditionally (like every other var here) so the harness always emits a
 	// matching `variable` block; they are only REFERENCED in the rendered HCL
 	// when DOBaselineOptions.LBTermination is set.
-	add(mp, ms, op, os_, bp, bs, vp, vs, []string{doOriginCertKeyVar, doOriginCertLeafVar})
+	add(mp, ms, op, os_, bp, bs, vp, vs, fp, fs, []string{doOriginCertKeyVar, doOriginCertLeafVar})
 	return out
 }
 
