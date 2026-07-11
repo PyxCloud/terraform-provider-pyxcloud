@@ -33,6 +33,13 @@ func TestRenderStagingFENextStandaloneRunsServerRoutesInsideVPC(t *testing.T) {
 			t.Errorf("standalone bootstrap retains forbidden runtime dependency %q", forbidden)
 		}
 	}
+	if strings.Contains(ud, "openssl req -x509") {
+		t.Fatal("private staging FE must not fall back to a self-signed certificate")
+	}
+	if !strings.Contains(ud, "/etc/letsencrypt/live/staging.passo.build/fullchain.pem") ||
+		!strings.Contains(ud, "--dns-cloudflare") {
+		t.Fatal("private staging FE must provision and use its DNS-01 certificate")
+	}
 }
 
 func TestRenderStagingFENextStandaloneUsesPinnedArtifactAndVaultEnv(t *testing.T) {

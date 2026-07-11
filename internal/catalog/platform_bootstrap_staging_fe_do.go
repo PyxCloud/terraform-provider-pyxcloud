@@ -55,6 +55,15 @@ func (s StagingFEDOBootstrapSpec) StagingFEDOBootstrapVariableNames() (plain, se
 // backend/MCP proxies execute here inside the VPC rather than on Amplify.
 func RenderStagingFEDOBootstrapUserData(spec StagingFEDOBootstrapSpec) (string, error) {
 	s := spec.withDefaults()
+	tlsBootstrap, err := RenderStagingTLSBootstrap(StagingTLSBootstrapSpec{
+		Domains:          []string{stagingFEPublicHostname, stagingFEConsoleHostname},
+		VaultAddrVar:     s.VaultAddrVar,
+		VaultRoleIDVar:   s.VaultRoleIDVar,
+		VaultSecretIDVar: s.VaultSecretIDVar,
+	})
+	if err != nil {
+		return "", fmt.Errorf("render staging FE TLS: %w", err)
+	}
 	v := func(name string) string { return "${var." + name + "}" }
 
 	var b strings.Builder
@@ -129,18 +138,13 @@ func RenderStagingFEDOBootstrapUserData(spec StagingFEDOBootstrapSpec) (string, 
 	w("WantedBy=multi-user.target")
 	w("UNIT")
 	w("")
-	w("mkdir -p /etc/nginx/certs")
-	w("if [ ! -f /etc/nginx/certs/staging-fe.crt ]; then")
-	w("  openssl req -x509 -nodes -newkey rsa:2048 -days 30 \\")
-	w("    -keyout /etc/nginx/certs/staging-fe.key -out /etc/nginx/certs/staging-fe.crt \\")
-	w("    -subj '/CN=%s' -addext 'subjectAltName=DNS:%s,DNS:%s'", stagingFEPublicHostname, stagingFEPublicHostname, stagingFEConsoleHostname)
-	w("fi")
+	w("%s", tlsBootstrap)
 	w("cat >/etc/nginx/conf.d/staging-fe.conf <<'NGINX'")
 	w("server {")
 	w("  listen 443 ssl;")
 	w("  server_name %s %s;", stagingFEPublicHostname, stagingFEConsoleHostname)
-	w("  ssl_certificate /etc/nginx/certs/staging-fe.crt;")
-	w("  ssl_certificate_key /etc/nginx/certs/staging-fe.key;")
+	w("  ssl_certificate /etc/letsencrypt/live/%s/fullchain.pem;", stagingFEPublicHostname)
+	w("  ssl_certificate_key /etc/letsencrypt/live/%s/privkey.pem;", stagingFEPublicHostname)
 	w("  proxy_buffer_size 16k;")
 	w("  proxy_buffers 8 16k;")
 	w("  client_max_body_size 25m;")
