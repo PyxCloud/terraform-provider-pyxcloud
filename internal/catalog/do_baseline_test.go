@@ -61,6 +61,20 @@ func TestDOBaselineResourceSet(t *testing.T) {
 	}
 }
 
+// TestDOBaselineStagingOriginsArePrivate is the staging network-boundary
+// contract: API, auth, MCP and FE origins are reachable only through the VPC
+// edge. Authentication remains an independent application-layer requirement;
+// a private source must never create an auth bypass or a public origin rule.
+func TestDOBaselineStagingOriginsArePrivate(t *testing.T) {
+	joined := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
+	if strings.Contains(joined, `source_addresses = ["0.0.0.0/0", "::/0"]`) {
+		t.Fatal("staging baseline must not expose TLS origins to the public internet")
+	}
+	if !strings.Contains(joined, `source_tags = ["pyx-edge"]`) {
+		t.Fatal("staging TLS origins must only accept traffic from the VPC edge")
+	}
+}
+
 // TestDOBaselineMCPDurable is the durability contract: BOARD_DATABASE_URL is the
 // mesh_app URL, injected at render time, and doadmin/defaultdb are gone.
 func TestDOBaselineMCPDurable(t *testing.T) {

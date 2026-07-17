@@ -470,6 +470,11 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 				itoa(o.UpstreamPort), o.Service+"-lb", doBaselineEgressRules()))
 		}
 	} else {
+		// Staging has no public origins. The edge is the single ingress point and
+		// itself is reachable through private VPN DNS; every service TLS listener
+		// therefore accepts traffic only from droplets carrying the pyx-edge tag.
+		// This network boundary is deliberately independent from OIDC: private
+		// traffic is still authenticated by each application.
 		var chunk []string
 		for i, tag := range tags {
 			chunk = append(chunk, tag)
@@ -483,9 +488,9 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
   tags = %s
 
   inbound_rule {
-    protocol         = "tcp"
-    port_range       = "443"
-    source_addresses = ["0.0.0.0/0", "::/0"]
+	protocol    = "tcp"
+	port_range  = "443"
+	source_tags = ["pyx-edge"]
   }
 %s
 }`, doBaselineName+"-sg"+suffix, doBaselineName+"-sg"+suffix, hclStringList(chunk), doBaselineEgressRules()))
