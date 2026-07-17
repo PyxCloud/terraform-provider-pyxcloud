@@ -18,10 +18,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on:
-      - self-hosted
-      - pyxflow
-      - linux-x64
+    runs-on: ubuntu-latest
     steps:
       - name: Resolve release ref
         id: ref
