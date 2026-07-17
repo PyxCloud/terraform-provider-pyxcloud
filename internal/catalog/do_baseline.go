@@ -68,24 +68,14 @@ type DOBaselineService struct {
 	Durable bool
 }
 
-// stagingFEServiceName / stagingFEServiceTag identify the staging-fe shim
-// service (pd-STAGING-FE-SHIM) so AssembleDOBaseline can carve it out of the
-// shared baseline firewall (see doBaselineStagingFEFirewall) instead of
-// opening its :443 to 0.0.0.0/0 like every other baseline service.
 const (
 	stagingFEServiceName = "staging-fe"
 	stagingFEServiceTag  = "pyx-staging-fe"
 )
 
-// DOBaselineServices is the canonical ordered list of the cutover droplet
-// groups. Deterministic (slice, not map) so the emitted HCL is stable.
-//
-// staging-fe (pd-STAGING-FE-SHIM) is a DELIBERATE ADDITION, not part of the
-// original 6-service cutover reproduction described in this file's header
-// comment: it is a NEW, dedicated, stateless nginx reverse-proxy droplet
-// (-> the Amplify staging branch) that replaces the fragile, hand-managed FE
-// shim currently hand-SSH'd onto the `obs` droplet. See
-// platform_bootstrap_staging_fe_do.go for the full rationale and bootstrap.
+// DOBaselineServices is the canonical ordered list of the six original cutover
+// groups plus the private staging-fe standalone runtime. Deterministic (slice,
+// not map) so the emitted HCL is stable.
 func DOBaselineServices() []DOBaselineService {
 	return []DOBaselineService{
 		{Name: "backend", Tag: "pyx-backend", CPU: 2, RAM: 4},
@@ -94,7 +84,7 @@ func DOBaselineServices() []DOBaselineService {
 		{Name: "sast", Tag: "pyx-sast", CPU: 2, RAM: 4},
 		{Name: "sso", Tag: "pyx-sso", CPU: 2, RAM: 4},
 		{Name: "vpn", Tag: "pyx-vpn", CPU: 2, RAM: 2},
-		{Name: stagingFEServiceName, Tag: stagingFEServiceTag, CPU: 1, RAM: 2},
+		{Name: stagingFEServiceName, Tag: stagingFEServiceTag, CPU: 2, RAM: 2},
 	}
 }
 
@@ -138,15 +128,18 @@ func edgeOriginByService(svcName string) *doEdgeOrigin {
 }
 
 // edgeOriginHealthPath is the LB healthcheck path for an edge-origin service.
-// sso/backend expose the Quarkus/Keycloak convention (/q/health); mcp exposes
-// its own /health. Health checks target the upstream service port directly —
-// never the droplet's public IP on :443, since LBTermination means there is no
-// droplet-side :443 to check.
+// sso keeps the Keycloak/Quarkus-style /q/health convention, backend is now the
+// Go monolith (/healthz), and mcp exposes its own /health. Health checks target
+// the upstream service port directly, never the droplet's public IP on :443.
 func edgeOriginHealthPath(svcName string) string {
-	if svcName == "mcp" {
+	switch svcName {
+	case "backend":
+		return "/healthz"
+	case "mcp":
 		return "/health"
+	default:
+		return "/q/health"
 	}
-	return "/q/health"
 }
 
 // edgeOriginTag resolves a service name to its firewall/LB droplet_tag via the
@@ -421,10 +414,9 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 	// tag instead of 0.0.0.0/0 — see platform_bootstrap_staging_fe_do.go for why.
 	tags := make([]string, 0, len(DOBaselineServices()))
 	for _, s := range DOBaselineServices() {
-		if s.Name == stagingFEServiceName {
-			continue
+		if s.Name != stagingFEServiceName {
+			tags = append(tags, s.Tag)
 		}
-		tags = append(tags, s.Tag)
 	}
 	if opts.LBTermination {
 		// LB TERMINATES TLS; DROPLET APP PORT REACHABLE ONLY VIA THE LB
@@ -502,29 +494,26 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 		}
 	}
 
-	// 2b. staging-fe dedicated firewall (pd-STAGING-FE-SHIM) — ALWAYS emitted,
-	// independent of LBTermination: :443 is reachable ONLY from the `pyx-edge`
-	// SNI-router tag (never 0.0.0.0/0, never the shared baseline firewall), and
-	// :22 is VPC-only. This is the durable fix for the exact posture gap that
-	// made the obs-box-hosted shim risky to depend on: no app port on this
-	// droplet is ever internet-reachable.
+	// staging-fe is a private origin: only the VPC edge routers may reach its
+	// TLS listener. It must never inherit the shared public :443 rule.
 	docs = append(docs, fmt.Sprintf(`resource "digitalocean_firewall" %q {
   name = %q
   tags = [%q]
+
+  inbound_rule {
+    protocol    = "tcp"
+    port_range  = "443"
+    source_tags = ["pyx-edge"]
+  }
 
   inbound_rule {
     protocol         = "tcp"
     port_range       = "22"
     source_addresses = [%q]
   }
-  inbound_rule {
-    protocol    = "tcp"
-    port_range  = "443"
-    source_tags = [%q]
-  }
 %s
 }`, doBaselineName+"-"+stagingFEServiceName+"-sg", doBaselineName+"-"+stagingFEServiceName+"-sg",
-		stagingFEServiceTag, in.CIDR, "pyx-edge", doBaselineEgressRules()))
+		stagingFEServiceTag, in.CIDR, doBaselineEgressRules()))
 
 	// 3. Managed PG clusters (pyx-main-db + keycloak-db), pg 17, node_count = 1.
 	for _, db := range []string{"pyx-main-db", "keycloak-db"} {
@@ -1022,12 +1011,6 @@ func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts 
 	case "vpn":
 		ud, err = RenderVPNBootstrapUserData(VPNBootstrapSpec{Environment: doBaselineEnv})
 	case stagingFEServiceName:
-		// staging-fe (pd-STAGING-FE-SHIM) already carries its OWN nginx :443
-		// terminator (proxying to the Amplify staging branch, not a local service
-		// port) — it must NOT also receive edgeTerminatorFor's generic
-		// local-service terminator below (it isn't an edgeOrigin anyway, so that
-		// call is a no-op, but this case exists for symmetry/clarity with its
-		// siblings and to make the "no double nginx setup" invariant explicit).
 		ud, err = RenderStagingFEDOBootstrapUserData(StagingFEDOBootstrapSpec{})
 	default:
 		return "", fmt.Errorf("do-baseline: no full bootstrap for service %q", svcName)
@@ -1080,13 +1063,13 @@ func DOBaselineVariableNames() []string {
 	op, os_ := (OBSDOBootstrapSpec{}).OBSDOBootstrapVariableNames()
 	bp, bs := doBaselineBackendSpec().BackendBootstrapVariableNames()
 	vp, vs := (VPNBootstrapSpec{Environment: doBaselineEnv}).VPNBootstrapVariableNames()
-	sfp, sfs := (StagingFEDOBootstrapSpec{}).StagingFEDOBootstrapVariableNames()
+	fp, fs := (StagingFEDOBootstrapSpec{}).StagingFEDOBootstrapVariableNames()
 	// origin_tls_key / origin_tls_cert: the Cloudflare Origin cert material the
 	// LBTermination load balancers serve via digitalocean_certificate. Declared
 	// unconditionally (like every other var here) so the harness always emits a
 	// matching `variable` block; they are only REFERENCED in the rendered HCL
 	// when DOBaselineOptions.LBTermination is set.
-	add(mp, ms, op, os_, bp, bs, vp, vs, sfp, sfs, []string{doOriginCertKeyVar, doOriginCertLeafVar})
+	add(mp, ms, op, os_, bp, bs, vp, vs, fp, fs, []string{doOriginCertKeyVar, doOriginCertLeafVar})
 	return out
 }
 

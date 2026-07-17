@@ -21,53 +21,52 @@ func TestRenderBackendDORequiresEnvironment(t *testing.T) {
 	}
 }
 
-// TestRenderBackendDOUsesDOMainDBAndNoIMDS is the core cutover assertion: the
-// rendered DO backend bootstrap points PYX_MAIN_DATABASE_JDBC_URL at the DO
-// pyx-main-db (mesh_app) URL variable (NOT an RDS/AWS host), and it carries NO
-// AWS IMDS (169.254.169.254) health-probe / CloudWatch publish — the DO health
-// check is a plain local :8080 curl.
-func TestRenderBackendDOUsesDOMainDBAndNoIMDS(t *testing.T) {
+// TestRenderBackendDOUsesGoDBEnvAndNoIMDS is the core cutover assertion: the
+// rendered DO backend bootstrap points PYX_QUARKUS_DATASOURCE_JDBC_URL at the
+// DO pyx-main-db URL variable (NOT an RDS/AWS host), and it carries NO AWS IMDS
+// health-probe / CloudWatch publish. The DO health checks are the Go /healthz
+// and /readyz endpoints.
+func TestRenderBackendDOUsesGoDBEnvAndNoIMDS(t *testing.T) {
 	t.Parallel()
 	ud, err := RenderBackendDOUserData(BackendBootstrapSpec{Environment: "beta"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 
-	// PYX_MAIN_DATABASE points at the DO pyx-main-db (mesh_app) URL variable.
-	if !strings.Contains(ud, "PYX_MAIN_DATABASE_JDBC_URL=${var.do_main_db_url}") {
-		t.Error("PYX_MAIN_DATABASE_JDBC_URL must be sourced from the DO pyx-main-db URL variable ${var.do_main_db_url}")
+	// The Go loader reads quarkus.datasource.* through PYX_QUARKUS_DATASOURCE_*.
+	if !strings.Contains(ud, "PYX_QUARKUS_DATASOURCE_JDBC_URL=${var.do_main_db_url}") {
+		t.Error("PYX_QUARKUS_DATASOURCE_JDBC_URL must be sourced from the DO pyx-main-db URL variable ${var.do_main_db_url}")
 	}
 	if !strings.Contains(ud, "mesh_app") {
 		t.Error("bootstrap should name the DO pyx-main-db target database (mesh_app)")
 	}
 
-	// F2-02 root-cause fix: the DO pyx-main-db secret is a libpq URI (postgres://...),
-	// which pgjdbc rejects. The bootstrap MUST normalize it in place to jdbc:postgresql://
-	// and split out the username/password vars, or the native binary crash-loops at boot
-	// ("Driver does not support the provided URL" -> Hibernate SessionFactory build fails).
+	// The DB secret may be a libpq URI (postgres://...). The bootstrap MUST
+	// normalize it in place to jdbc:postgresql:// and split username/password for
+	// the Go pgx pool.
 	if !strings.Contains(ud, "jdbc:postgresql://") {
-		t.Error("bootstrap must normalize the DB URL to the jdbc:postgresql:// scheme (pgjdbc rejects postgres://)")
+		t.Error("bootstrap must normalize the DB URL to the jdbc:postgresql:// scheme")
 	}
-	if !strings.Contains(ud, "PYX_MAIN_DATABASE_USERNAME=") {
-		t.Error("bootstrap must derive PYX_MAIN_DATABASE_USERNAME from the libpq URI (Quarkus binds it separately)")
+	if !strings.Contains(ud, "PYX_QUARKUS_DATASOURCE_USERNAME=") {
+		t.Error("bootstrap must derive PYX_QUARKUS_DATASOURCE_USERNAME from the libpq URI")
 	}
-	if !strings.Contains(ud, "PYX_MAIN_DATABASE_PASSWORD=") {
-		t.Error("bootstrap must derive PYX_MAIN_DATABASE_PASSWORD from the libpq URI (Quarkus binds it separately)")
+	if !strings.Contains(ud, "PYX_QUARKUS_DATASOURCE_PASSWORD=") {
+		t.Error("bootstrap must derive PYX_QUARKUS_DATASOURCE_PASSWORD from the libpq URI")
 	}
 
 	// NO AWS IMDS health-probe: the 169.254.169.254 metadata lookup must be gone.
 	if strings.Contains(ud, "169.254.169.254") {
 		t.Error("DO bootstrap must NOT contain the AWS IMDS 169.254.169.254 health-probe (DO metadata differs)")
 	}
-	// The local :8080 health check must be present.
-	if !strings.Contains(ud, "http://localhost:8080/q/health/live") {
-		t.Error("DO bootstrap must use a local :8080 health check")
+	// The local :8080 Go health checks must be present.
+	if !strings.Contains(ud, "http://localhost:8080/healthz") || !strings.Contains(ud, "http://localhost:8080/readyz") {
+		t.Error("DO bootstrap must use local Go /healthz and /readyz checks")
 	}
 }
 
 // TestRenderBackendDOAWSCouplingsAdapted asserts the specific AWS-coupling
 // decisions for the cutover: CloudWatch/X-Ray dropped, SAST-ASG disabled, AWS SDK
-// creds KEPT as a passthrough, native binary pulled from DO Spaces, Vault URL kept.
+// creds KEPT as a passthrough, Go binary pulled from DO Spaces, Vault URL kept.
 func TestRenderBackendDOAWSCouplingsAdapted(t *testing.T) {
 	t.Parallel()
 	ud, err := RenderBackendDOUserData(BackendBootstrapSpec{Environment: "beta"})
@@ -97,41 +96,44 @@ func TestRenderBackendDOAWSCouplingsAdapted(t *testing.T) {
 		}
 	}
 
-	// Native binary from DO Spaces (fra1 S3-compatible endpoint), version 0.4.49.
+	// Go binary from DO Spaces (fra1 S3-compatible endpoint), version 0.4.60.
 	for _, want := range []string{
-		"s3://pyx-artifacts-fra1/beta/pyxcloud",
+		"BUCKET=\"beta-pyxcloud-artifact\"",
+		"pyx-backend",
 		"fra1.digitaloceanspaces.com",
 		"--endpoint-url",
-		"0.4.49",
+		"0.4.60",
 	} {
 		if !strings.Contains(ud, want) {
-			t.Errorf("DO Spaces native-binary pull missing %q", want)
+			t.Errorf("DO Spaces Go binary pull missing %q", want)
 		}
 	}
 
 	// Vault URL KEPT.
-	if !strings.Contains(ud, "VAULT_URL=https://beta-vault.pyxcloud.io") {
-		t.Error("Vault URL (beta-vault.pyxcloud.io) must be KEPT")
+	if !strings.Contains(ud, "PYX_VAULT_ADDR=https://beta-vault.pyxcloud.io") {
+		t.Error("Vault URL (beta-vault.pyxcloud.io) must be kept through PYX_VAULT_ADDR")
 	}
 }
 
-// TestRenderBackendDOSetsLangchain4jOpenAIKey is the F2-02 backend blocker
-// regression: the app config maps quarkus.langchain4j.openai.api-key from the LLM
-// key with an sk-noop default, but an EMPTY UBICLOUD_LLM_API_KEY= line overrides
-// that default with "" and fails SmallRye config validation (SRCFG00040) at boot.
-// The bootstrap MUST set QUARKUS_LANGCHAIN4J_OPENAI_API_KEY directly from the same
-// (sensitive) LLM key variable so the property is always satisfied.
-func TestRenderBackendDOSetsLangchain4jOpenAIKey(t *testing.T) {
+// TestRenderBackendDONoJavaRuntimeRegressions asserts the provider-owned
+// bootstrap no longer carries Java/Quarkus native runtime scaffolding.
+func TestRenderBackendDONoJavaRuntimeRegressions(t *testing.T) {
 	t.Parallel()
 	ud, err := RenderBackendDOUserData(BackendBootstrapSpec{Environment: "beta"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if !strings.Contains(ud, "QUARKUS_LANGCHAIN4J_OPENAI_API_KEY=${var.ubicloud_llm_api_key}") {
-		t.Error("backend bootstrap must set QUARKUS_LANGCHAIN4J_OPENAI_API_KEY from the LLM key var (F2-02 SRCFG00040 blocker)")
-	}
-	if !strings.Contains(ud, "UBICLOUD_LLM_API_KEY=${var.ubicloud_llm_api_key}") {
-		t.Error("backend bootstrap must keep UBICLOUD_LLM_API_KEY wired from the LLM key var")
+	for _, banned := range []string{
+		"QUARKUS_LANGCHAIN4J_OPENAI_API_KEY",
+		"/q/health",
+		"/home/main/pyxcloud",
+		"pyxcloud.service",
+		"-Xmx",
+		"SmallRye",
+	} {
+		if strings.Contains(ud, banned) {
+			t.Errorf("Go backend bootstrap must not contain Java/Quarkus artifact %q", banned)
+		}
 	}
 }
 
@@ -198,7 +200,7 @@ func TestBackendDOScaleGroupComponentWiresDOUserData(t *testing.T) {
 		t.Fatalf("unexpected component shape: %+v", comp)
 	}
 	do := comp.ScaleGroup.UserDataByProvider[ProviderDigitalOcean]
-	if !strings.Contains(do, "PYX_MAIN_DATABASE_JDBC_URL=${var.do_main_db_url}") {
+	if !strings.Contains(do, "PYX_QUARKUS_DATASOURCE_JDBC_URL=${var.do_main_db_url}") {
 		t.Fatal("backend scale-group did not receive the DO bootstrap on UserDataByProvider[\"digitalocean\"]")
 	}
 	if comp.ScaleGroup.UserData != "" {
@@ -227,9 +229,9 @@ func TestRenderBackendDONoFormatSentinels(t *testing.T) {
 	}
 	// The normalizer's format lines must survive VERBATIM.
 	for _, want := range []string{
-		`out.append("PYX_MAIN_DATABASE_JDBC_URL=jdbc:postgresql://%s:%s/%s%s" % (host, port, db, q))`,
-		`out.append("PYX_MAIN_DATABASE_USERNAME=%s" % user)`,
-		`out.append("PYX_MAIN_DATABASE_PASSWORD=%s" % pw)`,
+		`out.append("PYX_QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://%s:%s/%s%s" % (host, port, db, q))`,
+		`out.append("PYX_QUARKUS_DATASOURCE_USERNAME=%s" % user)`,
+		`out.append("PYX_QUARKUS_DATASOURCE_PASSWORD=%s" % pw)`,
 	} {
 		if !strings.Contains(ud, want) {
 			t.Errorf("EONORM normalizer line not emitted verbatim; missing:\n%s", want)
@@ -271,7 +273,7 @@ func TestRenderBackendDOEONORMExecutesUnderPython3(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "env")
 	const sample = "postgres://user:pass@host:25060/mesh_app?sslmode=require"
-	if werr := os.WriteFile(envPath, []byte("PYX_MAIN_DATABASE_JDBC_URL="+sample+"\n"), 0o644); werr != nil {
+	if werr := os.WriteFile(envPath, []byte("PYX_QUARKUS_DATASOURCE_JDBC_URL="+sample+"\n"), 0o644); werr != nil {
 		t.Fatalf("write sample env: %v", werr)
 	}
 	// The script hardcodes p = "/home/main/env"; retarget it to our temp file.
@@ -288,9 +290,9 @@ func TestRenderBackendDOEONORMExecutesUnderPython3(t *testing.T) {
 	}
 	result := string(got)
 	for _, want := range []string{
-		"PYX_MAIN_DATABASE_JDBC_URL=jdbc:postgresql://host:25060/mesh_app?sslmode=require",
-		"PYX_MAIN_DATABASE_USERNAME=user",
-		"PYX_MAIN_DATABASE_PASSWORD=pass",
+		"PYX_QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://host:25060/mesh_app?sslmode=require",
+		"PYX_QUARKUS_DATASOURCE_USERNAME=user",
+		"PYX_QUARKUS_DATASOURCE_PASSWORD=pass",
 	} {
 		if !strings.Contains(result, want) {
 			t.Errorf("normalizer output missing %q\ngot:\n%s", want, result)
