@@ -33,11 +33,28 @@ import (
 //   - 1 VPC (passo-do-baseline-net, 10.0.1.0/24, fra1)
 //   - 1 firewall (passo-do-baseline-sg): inbound 443, egress icmp/tcp/udp all
 //   - 2 managed PG clusters (pyx-main-db, keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes
-//   - 6 droplet-autoscale groups: backend / mcp / obs / sast / sso / vpn
+//   - 2 droplet-autoscale groups: sso / staging-fe
 //   - no per-service public load balancers or platform certificate resources;
 //     the private VPC edge SNI-routes VPN traffic to origin tags
 //   - 1 Spaces bucket (pyx-artifacts-fra1) — the mcp/backend artifact store
 //     (INCLUDED now that beta-DigitalOceanSpacesKeys exists)
+//
+// RECONCILED AGAINST LIVE (2026-07-20, doctl droplet/droplet-autoscale/apps
+// list): backend, obs, sast and vpn were deleted live in the 2026-07-10 cost
+// purge (see chore/staging-baseline-post-purge-20260710) — none of the four
+// exist as a droplet or an autoscale group. mcp is ALSO gone live as of this
+// reconciliation: no autoscale group (its old ID 64928e1f 404s), no droplet
+// tagged pyx-mcp anywhere; staging-mcp.passo.build / mcp.passo.build resolve
+// to Cloudflare-fronted DO App Platform IPs (the shared "pyxcloud-mcp-and-
+// inaudito" app, id 55c57217), not to the private pyx-edge SNI router
+// (188.166.192.241) — mcp now runs off this baseline entirely. sso (bdc52815)
+// and staging-fe (67e5ecc7, added by PR #157) are the only two droplet-
+// autoscale groups this baseline still owns live. The `vpn` (tag pyx-vpn)
+// service some tooling assumed was reused as the #157 SNI router is a
+// DIFFERENT, unrelated resource: the SNI router is the `pyx-edge` tagged
+// droplet pair (pyx-edge-1/2, rendered by the separate edge-ingress/ root);
+// `pyx-vpn` only still exists live on the standalone beta-headscale droplet
+// (Headscale control plane, not an AssembleDOBaseline-managed resource).
 
 // doBaselineName is the estate prefix used for the VPC/firewall names, matching
 // the deployed state resource names so the plan is import-clean.
@@ -73,29 +90,30 @@ const (
 	stagingFEServiceTag  = "pyx-staging-fe"
 )
 
-// DOBaselineServices is the canonical ordered list of the six original cutover
-// groups plus the private staging-fe standalone runtime. Deterministic (slice,
-// not map) so the emitted HCL is stable.
+// DOBaselineServices is the canonical ordered list of the droplet-autoscale
+// groups this baseline still owns live: sso plus the private staging-fe
+// standalone runtime added by PR #157. backend/mcp/obs/sast/vpn are DROPPED —
+// see the file-header "RECONCILED AGAINST LIVE" note for the evidence (obs/
+// sast/backend/vpn purged 2026-07-10; mcp confirmed gone in this 2026-07-20
+// reconciliation, now served off-baseline by DO App Platform). Deterministic
+// (slice, not map) so the emitted HCL is stable.
 func DOBaselineServices() []DOBaselineService {
 	return []DOBaselineService{
-		{Name: "backend", Tag: "pyx-backend", CPU: 2, RAM: 4},
-		{Name: "mcp", Tag: "pyx-mcp", CPU: 2, RAM: 4, Durable: true},
-		{Name: "obs", Tag: "pyx-obs", CPU: 4, RAM: 8},
-		{Name: "sast", Tag: "pyx-sast", CPU: 2, RAM: 4},
 		{Name: "sso", Tag: "pyx-sso", CPU: 2, RAM: 4},
-		{Name: "vpn", Tag: "pyx-vpn", CPU: 2, RAM: 2},
-		{Name: stagingFEServiceName, Tag: stagingFEServiceTag, CPU: 2, RAM: 2},
+		{Name: stagingFEServiceName, Tag: stagingFEServiceTag, CPU: 1, RAM: 2},
 	}
 }
 
 // doEdgeOrigins is the per-hostname -> DO service origin map for private VPC
-// edge routing, derived from the AWS shared-ALB host-header
-// rules (beta-pyx-shared-alb): beta-auth -> keycloak_tg:8080 (sso),
-// beta-api -> api_tg:8080 (backend), mcp.passo.build -> mcp_tg:8787 (mcp). The
-// obs origin already carries its own nginx :443 (VPN-only) so it is NOT here.
-// When DOBaselineOptions.EdgeTLSOrigins is set, each service below gets an nginx
-// :443 terminator appended to its user_data so it can serve the VPC edge's SNI
-// route. Deterministic slice.
+// edge routing. Historically derived from the AWS shared-ALB host-header rules
+// (beta-pyx-shared-alb): beta-auth -> keycloak_tg:8080 (sso), beta-api ->
+// api_tg:8080 (backend), mcp.passo.build -> mcp_tg:8787 (mcp). backend and mcp
+// are dropped here along with their DOBaselineServices() entries (backend has
+// no live droplet; mcp is now served by DO App Platform, reached via
+// Cloudflare, not the private pyx-edge SNI router — see the file-header note).
+// sso is the only entry left. When DOBaselineOptions.EdgeTLSOrigins is set,
+// the service below gets an nginx :443 terminator appended to its user_data so
+// it can serve the VPC edge's SNI route. Deterministic slice.
 type doEdgeOrigin struct {
 	Service      string // matches DOBaselineService.Name
 	Hostname     string // private-DNS FQDN the VPC edge routes to this origin
@@ -103,20 +121,18 @@ type doEdgeOrigin struct {
 }
 
 func doEdgeOrigins() []doEdgeOrigin {
-	// staging estate canonical hostnames (beta-* is retired). Deleting the beta-*
-	// DNS while these still said beta- is what broke the running staging edge
-	// (auth/api origins + the frontend backend-proxy UPSTREAM_BASE) — keep these
-	// in lockstep with the staging DNS. Prod uses the un-prefixed names via the
+	// staging estate canonical hostname (beta-* is retired). Deleting the beta-*
+	// DNS while this still said beta- is what broke the running staging edge
+	// (auth origin + the frontend backend-proxy UPSTREAM_BASE) — keep this in
+	// lockstep with the staging DNS. Prod uses the un-prefixed names via the
 	// native pyxcloud_environment path (pyxcloud-production), not this harness.
 	return []doEdgeOrigin{
 		{Service: "sso", Hostname: "staging-auth.pyxcloud.io", UpstreamPort: 8080},
-		{Service: "backend", Hostname: "staging-api.pyxcloud.io", UpstreamPort: 8080},
-		{Service: "mcp", Hostname: "staging-mcp.passo.build", UpstreamPort: 8787},
 	}
 }
 
 // edgeOriginByService returns the doEdgeOrigin for a service name, or nil if the
-// service is not an edge-routed origin (obs/sast/vpn).
+// service is not an edge-routed origin (anything other than sso).
 func edgeOriginByService(svcName string) *doEdgeOrigin {
 	for _, o := range doEdgeOrigins() {
 		if o.Service == svcName {
@@ -258,24 +274,21 @@ type DOBaselineOptions struct {
 	// VPC as the droplets). The harness sets this true.
 	PrivateDBHost bool
 	// EdgeTLSOrigins, when true, appends an nginx :443 TLS terminator (the obs
-	// pattern, see edge_tls_terminator.go) to each private edge-routed origin
-	// service (sso/backend/mcp per doEdgeOrigins).
-	// A service that had no user_data (backend/sso in the base harness) gets a
-	// standalone terminator script; mcp gets the terminator appended after its
-	// durable bootstrap. Off by default (0 change to the base estate).
+	// pattern, see edge_tls_terminator.go) to the private edge-routed origin
+	// service (sso, the sole doEdgeOrigins entry — see the file-header note for
+	// why backend/mcp were dropped from this list). Off by default (0 change to
+	// the base estate).
 	EdgeTLSOrigins bool
 	// FullServiceBootstraps, when true, renders the COMPLETE per-service DO
-	// bootstrap for EVERY service (mcp/sso/obs/sast/backend/vpn) via the catalog
-	// Render*DO* functions, so a droplet self-heal/roll boots the real service
-	// rather than a bare box. This is the DURABLE render (pd-MIG-CUTOVER-F5): the
-	// committed source of truth for what each droplet template must contain.
+	// bootstrap for every service this baseline still owns (sso/staging-fe) via
+	// the catalog Render*DO* functions, so a droplet self-heal/roll boots the
+	// real service rather than a bare box. This is the DURABLE render
+	// (pd-MIG-CUTOVER-F5): the committed source of truth for what each droplet
+	// template must contain.
 	//
-	// When set, the var-model services (mcp/obs/sast/backend/vpn) reference their
-	// secrets as ${var.<x>} (resolved by terraform at apply from -var, sourced from
-	// Secrets Manager), while sso inlines its secret values from DOBaselineSecrets.
-	// EdgeTLSOrigins is implied for sso/backend/mcp (the :443 terminator is appended
-	// to their full bootstrap). Off by default so the legacy mcp-only render is
-	// unchanged.
+	// sso inlines its secret values from DOBaselineSecrets. EdgeTLSOrigins is
+	// implied for sso (the :443 terminator is appended to its full bootstrap).
+	// Off by default so the legacy render is unchanged.
 	FullServiceBootstraps bool
 	// LBTermination is retained for input compatibility only. Staging no longer
 	// renders any service load balancer/certificate, regardless of this value.
@@ -409,7 +422,8 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 }`, db, db, size, region, doBaselineName+"-net"))
 	}
 
-	// 4. Droplet-autoscale groups (6 services), sized via the catalog SKU resolver.
+	// 4. Droplet-autoscale groups (2 services: sso, staging-fe), sized via the
+	//    catalog SKU resolver.
 	for _, svc := range DOBaselineServices() {
 		row, err := cat.ResolveSKU(ctx, csp, cspRegion, "x86_64", svc.CPU, svc.RAM)
 		if err != nil {
@@ -734,12 +748,6 @@ func edgeTerminatorFor(svcName string) (string, error) {
 	return "", nil
 }
 
-// doBaselineBackendSpec is the deterministic backend bootstrap spec (all-default
-// variable names) so the DURABLE render is byte-stable and self-documenting.
-func doBaselineBackendSpec() BackendBootstrapSpec {
-	return (BackendBootstrapSpec{Environment: doBaselineEnv}).withDefaults()
-}
-
 // doBaselineSSOSpec is the ONE deterministic sso bootstrap spec for the DURABLE
 // render, shared by renderFullServiceBootstrap (which renders the user_data)
 // and DOBaselineVaultDataSources (which must declare the exact same set of
@@ -760,28 +768,20 @@ func doBaselineSSOSpec(secrets DOBaselineSecrets) SSODOBootstrapSpec {
 }
 
 // renderFullServiceBootstrap renders the COMPLETE DigitalOcean bootstrap for one
-// service (pd-MIG-CUTOVER-F5 durable render). mcp/obs/sast now source their
-// secrets from Vault `data "vault_kv_secret_v2"` blocks (EPIC-BOOTFETCH-AWS-SM-
-// TO-VAULT); sso does too EXCEPT its two unmigrated fields (VaultOIDCSecret,
-// RunnerPublicKey), still inlined from DOBaselineSecrets. For the three
-// private edge origins (sso/backend/mcp) the nginx :443 terminator is appended
-// so the droplet template carries BOTH the service and its edge in one boot.
+// service (pd-MIG-CUTOVER-F5 durable render), scoped to the two services this
+// baseline still owns live: sso (secrets inlined from DOBaselineSecrets, except
+// its two unmigrated fields VaultOIDCSecret/RunnerPublicKey which come from
+// Vault via `data "vault_kv_secret_v2"`) and staging-fe. mcp/obs/sast/backend/
+// vpn cases were removed along with their DOBaselineServices() entries — see
+// the file-header "RECONCILED AGAINST LIVE" note. For the sso private edge
+// origin the nginx :443 terminator is appended so the droplet template carries
+// BOTH the service and its edge in one boot.
 func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts DOBaselineOptions) (string, error) {
 	var ud string
 	var err error
 	switch svcName {
-	case "mcp":
-		ud, err = RenderMcpDOUserData(McpDOBootstrapSpec{Environment: doBaselineEnv})
 	case "sso":
 		ud, err = RenderSSODOBootstrapUserData(doBaselineSSOSpec(secrets))
-	case "obs":
-		ud, err = RenderOBSDOBootstrapUserData(OBSDOBootstrapSpec{})
-	case "sast":
-		ud, err = RenderSastDOBootstrapUserData(SastDOBootstrapSpec{Environment: doBaselineEnv})
-	case "backend":
-		ud, err = RenderBackendDOUserData(doBaselineBackendSpec())
-	case "vpn":
-		ud, err = RenderVPNBootstrapUserData(VPNBootstrapSpec{Environment: doBaselineEnv})
 	case stagingFEServiceName:
 		ud, err = RenderStagingFEDOBootstrapUserData(StagingFEDOBootstrapSpec{})
 	default:
@@ -803,16 +803,14 @@ func renderFullServiceBootstrap(svcName string, secrets DOBaselineSecrets, opts 
 
 // DOBaselineVariableNames returns the deterministic, deduplicated set of Terraform
 // variable names the DURABLE render (FullServiceBootstraps) still references via
-// ${var.<x>} across the var-model services (mcp/obs/backend/vpn — the board DB
-// URL for mcp has no Vault leaf yet; obs/backend/vpn secrets are unmigrated).
-// The harness (cutover/render.go) emits a `variable "<x>" {}` declaration for
-// each so the rendered estate.tf is self-contained and `terraform validate`s;
-// the values are supplied at apply time via -var from Secrets Manager. sso is
-// excluded (it inlines its two unmigrated secret values, not variable refs).
-//
-// sast is EXCLUDED here (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2): its secrets
-// are now Vault `data "vault_kv_secret_v2"` references — see
-// DOBaselineVaultDataSources.
+// ${var.<x>} — now just the staging-fe var-model group. mcp/obs/backend/vpn
+// were removed along with their DOBaselineServices() entries (see the
+// file-header "RECONCILED AGAINST LIVE" note); sso is excluded (it inlines its
+// two unmigrated secret values, not variable refs) and sast never had a var
+// group (its secrets are Vault `data "vault_kv_secret_v2"` references — see
+// DOBaselineVaultDataSources). The harness (cutover/render.go) emits a
+// `variable "<x>" {}` declaration for each so the rendered estate.tf is
+// self-contained and `terraform validate`s.
 func DOBaselineVariableNames() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -827,22 +825,22 @@ func DOBaselineVariableNames() []string {
 			}
 		}
 	}
-	mp, ms := (McpDOBootstrapSpec{Environment: doBaselineEnv}).McpDOBootstrapVariableNames()
-	op, os_ := (OBSDOBootstrapSpec{}).OBSDOBootstrapVariableNames()
-	bp, bs := doBaselineBackendSpec().BackendBootstrapVariableNames()
-	vp, vs := (VPNBootstrapSpec{Environment: doBaselineEnv}).VPNBootstrapVariableNames()
 	fp, fs := (StagingFEDOBootstrapSpec{}).StagingFEDOBootstrapVariableNames()
-	add(mp, ms, op, os_, bp, bs, vp, vs, fp, fs)
+	add(fp, fs)
 	return out
 }
 
 // DOBaselineVaultDataSources returns the deterministic, deduplicated set of
 // `data "vault_kv_secret_v2"` HCL blocks (+ the shared vault provider block)
-// the DURABLE render (FullServiceBootstraps) needs across sast/mcp/sso
-// (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2). The harness (cutover/render.go)
-// appends these to the rendered estate.tf so it is self-contained and
-// `terraform validate`s — no operator-populated -var for these leaves anymore;
-// Terraform reads Vault directly at apply time.
+// the DURABLE render (FullServiceBootstraps) needs — now just sso
+// (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2). sast and mcp were dropped along
+// with their DOBaselineServices() entries (see the file-header "RECONCILED
+// AGAINST LIVE" note) — emitting their Vault data sources here would produce
+// orphaned `data` blocks that Terraform eagerly reads at plan time for
+// services no droplet renders. The harness (cutover/render.go) appends these
+// to the rendered estate.tf so it is self-contained and `terraform validate`s
+// — no operator-populated -var for these leaves anymore; Terraform reads Vault
+// directly at apply time.
 //
 // Uses doBaselineSSOSpec(DOBaselineSecrets{}) — a zero-value secrets struct —
 // because NONE of the KV path fields SSODOVaultDataSources reads (KCDBURLKVPath
@@ -865,8 +863,6 @@ func DOBaselineVaultDataSources() []string {
 		}
 	}
 	add(
-		(SastDOBootstrapSpec{Environment: doBaselineEnv}).SastDOVaultDataSources(),
-		(McpDOBootstrapSpec{Environment: doBaselineEnv}).McpDOVaultDataSources(),
 		doBaselineSSOSpec(DOBaselineSecrets{}).SSODOVaultDataSources(),
 	)
 	// NOTE: no `required_providers`/`provider "vault"` block is emitted here — a
