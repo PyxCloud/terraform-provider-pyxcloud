@@ -97,9 +97,15 @@ const (
 // sast/backend/vpn purged 2026-07-10; mcp confirmed gone in this 2026-07-20
 // reconciliation, now served off-baseline by DO App Platform). Deterministic
 // (slice, not map) so the emitted HCL is stable.
+//
+// sso is right-sized 2vCPU/4GiB -> 1vCPU/2GiB (cost/staging-rightsize-v2,
+// -$12/mo): Keycloak 26 / Java 21 with no pinned -Xmx (adaptive heap); a
+// single-realm staging deployment fits comfortably in 2GiB. staging-fe is
+// left at 1vCPU/2GiB, already matching its live droplet size (582920441) —
+// no further right-size proposed for it.
 func DOBaselineServices() []DOBaselineService {
 	return []DOBaselineService{
-		{Name: "sso", Tag: "pyx-sso", CPU: 2, RAM: 4},
+		{Name: "sso", Tag: "pyx-sso", CPU: 1, RAM: 2},
 		{Name: stagingFEServiceName, Tag: stagingFEServiceTag, CPU: 1, RAM: 2},
 	}
 }
