@@ -34,12 +34,8 @@ func TestDOBaselineResourceSet(t *testing.T) {
 		`resource "digitalocean_firewall" "passo-do-baseline-sg"`,
 		`resource "digitalocean_database_cluster" "pyx-main-db"`,
 		`resource "digitalocean_database_cluster" "keycloak-db"`,
-		`resource "digitalocean_droplet_autoscale" "backend"`,
-		`resource "digitalocean_droplet_autoscale" "mcp"`,
-		`resource "digitalocean_droplet_autoscale" "obs"`,
-		`resource "digitalocean_droplet_autoscale" "sast"`,
 		`resource "digitalocean_droplet_autoscale" "sso"`,
-		`resource "digitalocean_droplet_autoscale" "vpn"`,
+		`resource "digitalocean_droplet_autoscale" "staging-fe"`,
 		`resource "digitalocean_spaces_bucket" "artifacts"`,
 	}
 	for _, w := range want {
@@ -56,9 +52,34 @@ func TestDOBaselineResourceSet(t *testing.T) {
 			t.Errorf("private staging baseline must not emit %q", forbidden)
 		}
 	}
-	// The mcp size must match state (2vCPU/4GiB) and sso too.
+	// backend/mcp/obs/sast/vpn are gone live (obs/sast/backend/vpn purged
+	// 2026-07-10; mcp confirmed gone in the 2026-07-20 live reconciliation, now
+	// served by DO App Platform off this baseline) — see do_baseline.go's
+	// file-header "RECONCILED AGAINST LIVE" note.
+	for _, unwanted := range []string{
+		`resource "digitalocean_droplet_autoscale" "backend"`,
+		`resource "digitalocean_droplet_autoscale" "mcp"`,
+		`resource "digitalocean_droplet_autoscale" "obs"`,
+		`resource "digitalocean_droplet_autoscale" "sast"`,
+		`resource "digitalocean_droplet_autoscale" "vpn"`,
+	} {
+		if strings.Contains(joined, unwanted) {
+			t.Errorf("live-reconciled render must not contain %q", unwanted)
+		}
+	}
+	// No suffixed firewall chunk (only the sso tag now, one chunk; staging-fe
+	// gets its own dedicated firewall, excluded from this tag list).
+	if strings.Contains(joined, `"passo-do-baseline-sg-2"`) {
+		t.Errorf("live-reconciled render must not emit a second firewall chunk")
+	}
+	// sso must match live state (2vCPU/4GiB); staging-fe must match its live
+	// droplet size (1vCPU/2GiB, not the 2vCPU/2GiB #157 rendered before this
+	// reconciliation — doctl droplet list shows 582920441 at 1 VCPU / 2048MB).
 	if !strings.Contains(joined, `s-2vcpu-4gb`) {
-		t.Errorf("expected s-2vcpu-4gb droplet size")
+		t.Errorf("expected s-2vcpu-4gb droplet size (sso)")
+	}
+	if !strings.Contains(joined, `s-1vcpu-2gb`) {
+		t.Errorf("expected s-1vcpu-2gb droplet size (staging-fe, matches live)")
 	}
 }
 
@@ -87,50 +108,46 @@ func TestDOBaselineStagingOriginsArePrivate(t *testing.T) {
 	}
 }
 
-// TestDOBaselineMCPDurable is the durability contract: BOARD_DATABASE_URL is the
-// mesh_app URL, injected at render time, and doadmin/defaultdb are gone.
-func TestDOBaselineMCPDurable(t *testing.T) {
-	joined := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
-	if !strings.Contains(joined, "BOARD_DATABASE_URL=postgres://mesh_app:") {
-		t.Errorf("mcp user_data must source BOARD_DATABASE_URL from mesh_app")
+// TestDOBaselinePrivateURLHelper covers the DOBaselineSecrets.privateURL
+// rewrite logic directly. It used to be exercised end-to-end through the mcp
+// durable render (TestDOBaselineMCPDurable / TestDOBaselinePrivateHostVerbatim),
+// but mcp is no longer part of DOBaselineServices() (confirmed gone live in the
+// 2026-07-20 reconciliation — see do_baseline.go's file-header note), so
+// BoardDatabaseURL is never interpolated into any rendered user_data anymore.
+// The field/method are kept (cutover/render.go still wires DO_BOARD_DATABASE_URL
+// unconditionally) so this test keeps their behavior covered directly.
+func TestDOBaselinePrivateURLHelper(t *testing.T) {
+	s := DOBaselineSecrets{BoardDatabaseURL: "postgres://mesh_app:TESTPW@pyx-main-db-do-user-1-0.k.db.ondigitalocean.com:25060/postgres?sslmode=require"}
+	if got := s.privateURL(false); got != s.BoardDatabaseURL {
+		t.Errorf("privateURL(false) must be verbatim, got %q", got)
 	}
-	// No doadmin/defaultdb in the actual DB URL (a comment mentioning them is fine,
-	// but the credential URL must not use them).
-	if strings.Contains(joined, "BOARD_DATABASE_URL=postgres://doadmin") {
-		t.Errorf("mcp BOARD_DATABASE_URL must not use doadmin")
+	got := s.privateURL(true)
+	if !strings.Contains(got, "private-pyx-main-db-do-user") {
+		t.Errorf("privateURL(true) must rewrite the host to the private endpoint, got %q", got)
 	}
-	if strings.Contains(joined, "mesh_app:TESTPW@pyx-main-db-do-user") && !strings.Contains(joined, "private-pyx-main-db-do-user") {
-		t.Errorf("PrivateDBHost should rewrite the DB host to the private endpoint")
-	}
-	// Durable substrate preserved.
-	for _, want := range []string{"PYXCLOUD_MCP_HTTP_PORT=8787", "passobuild-mcp.service", "fra1.digitaloceanspaces.com", "EMBED_TOKEN_SECRET=TEST_EMBED_TOKEN"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("mcp user_data lost durable element %q", want)
-		}
-	}
-	// Only mcp carries a bootstrap; other groups have no user_data heredoc.
-	if n := strings.Count(joined, "USERDATA"); n != 2 { // one open + one close marker
-		t.Errorf("expected exactly one user_data heredoc (mcp only), got %d USERDATA markers", n)
+	// Idempotent: already-private host is untouched.
+	if again := (DOBaselineSecrets{BoardDatabaseURL: got}).privateURL(true); again != got {
+		t.Errorf("privateURL(true) must be idempotent on an already-private host, got %q want %q", again, got)
 	}
 }
 
 // TestDOBaselineEdgeTLSOrigins asserts the F4-prep option adds an nginx :443
-// terminator to each Cloudflare-routed origin (sso/backend/mcp) with the correct
-// hostname and upstream port, and leaves the base estate untouched when off.
+// terminator to the sole remaining Cloudflare-routed origin (sso) with the
+// correct hostname and upstream port, and leaves the base estate untouched
+// when off. backend/mcp were dropped from doEdgeOrigins() along with their
+// DOBaselineServices() entries — see do_baseline.go's file-header note.
 func TestDOBaselineEdgeTLSOrigins(t *testing.T) {
 	off := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true}), "\n")
 	if strings.Contains(off, "listen 443 ssl") {
 		t.Errorf("EdgeTLSOrigins off must not emit any :443 terminator")
 	}
 	on := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: true, EdgeTLSOrigins: true}), "\n")
-	// One terminator per origin (sso, backend, mcp) = 3 `listen 443 ssl`.
-	if n := strings.Count(on, "listen 443 ssl"); n != 3 {
-		t.Errorf("expected 3 :443 terminators (sso/backend/mcp), got %d", n)
+	// One terminator for the sole remaining origin (sso) = 1 `listen 443 ssl`.
+	if n := strings.Count(on, "listen 443 ssl"); n != 1 {
+		t.Errorf("expected 1 :443 terminator (sso), got %d", n)
 	}
 	wantPairs := []struct{ host, port string }{
 		{"staging-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		{"staging-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		{"staging-mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
 	}
 	for _, p := range wantPairs {
 		if !strings.Contains(on, "server_name "+p.host+";") {
@@ -144,9 +161,10 @@ func TestDOBaselineEdgeTLSOrigins(t *testing.T) {
 	if !strings.Contains(on, "proxy_set_header X-Forwarded-Proto https;") {
 		t.Errorf("edge terminator must set X-Forwarded-Proto https")
 	}
-	// mcp keeps its durable bootstrap AND gets the terminator appended.
-	if !strings.Contains(on, "PYXCLOUD_MCP_HTTP_PORT=8787") {
-		t.Errorf("mcp durable bootstrap must survive terminator append")
+	for _, gone := range []string{"staging-api.pyxcloud.io", "staging-mcp.passo.build"} {
+		if strings.Contains(on, gone) {
+			t.Errorf("dropped origin %q must not appear in the render", gone)
+		}
 	}
 }
 
@@ -220,21 +238,19 @@ func perServiceUserData(t *testing.T, docs []string) map[string]string {
 
 // TestDOBaselineFullServiceBootstraps is the DURABILITY contract (pd-MIG-CUTOVER-F5):
 // with FullServiceBootstraps set, EVERY service droplet template carries its complete
-// service bootstrap, and the three Cloudflare-Full origins (sso/backend/mcp) also
-// carry the nginx :443 terminator to the correct local port. A self-heal/roll from
-// this render boots the real service + edge, not a bare box.
+// service bootstrap, and the sole remaining Cloudflare-Full origin (sso) also
+// carries the nginx :443 terminator to the correct local port. A self-heal/roll from
+// this render boots the real service + edge, not a bare box. backend/mcp/obs/sast/vpn
+// markers were removed along with their DOBaselineServices() entries — see
+// do_baseline.go's file-header "RECONCILED AGAINST LIVE" note.
 func TestDOBaselineFullServiceBootstraps(t *testing.T) {
 	docs := renderFullBaseline(t)
 	svc := perServiceUserData(t, docs)
 
 	// 1. Every service carries a non-empty full bootstrap with its service marker.
 	markers := map[string][]string{
-		"sso":     {"keycloak", "KC_HOSTNAME=staging-auth.pyxcloud.io", "KC_PROXY_HEADERS=xforwarded"},
-		"backend": {"pyx-backend", "ExecStart=/home/main/pyx-backend", "/readyz"},
-		"mcp":     {"passobuild-mcp", "PYXCLOUD_MCP_HTTP_PORT=8787"},
-		"obs":     {"observability"},
-		"sast":    {"semgrep"},
-		"vpn":     {"wireguard", "wg0"},
+		"sso":        {"keycloak", "KC_HOSTNAME=staging-auth.pyxcloud.io", "KC_PROXY_HEADERS=xforwarded"},
+		"staging-fe": {"staging-fe"},
 	}
 	for name, wants := range markers {
 		ud, ok := svc[name]
@@ -247,14 +263,17 @@ func TestDOBaselineFullServiceBootstraps(t *testing.T) {
 			}
 		}
 	}
+	for _, name := range []string{"backend", "mcp", "obs", "sast", "vpn"} {
+		if _, ok := svc[name]; ok {
+			t.Errorf("live-reconciled render must not emit a %q droplet_autoscale group", name)
+		}
+	}
 
-	// 2. Exactly the three edge origins (sso/backend/mcp) carry a :443 terminator to
-	//    the correct upstream port. sast/vpn must NOT. obs has its own :443 (checked
-	//    separately) but must NOT carry an sso/backend/mcp public server_name.
+	// 2. The sole remaining edge origin (sso) carries a :443 terminator to the
+	//    correct upstream port. staging-fe must NOT (it is a private origin
+	//    reached directly by the VPC edge, not through this terminator path).
 	edge := map[string]struct{ host, upstream string }{
-		"sso":     {"staging-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		"backend": {"staging-api.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
-		"mcp":     {"staging-mcp.passo.build", "proxy_pass http://127.0.0.1:8787"},
+		"sso": {"staging-auth.pyxcloud.io", "proxy_pass http://127.0.0.1:8080"},
 	}
 	for name, e := range edge {
 		ud := svc[name]
@@ -268,10 +287,11 @@ func TestDOBaselineFullServiceBootstraps(t *testing.T) {
 			t.Errorf("edge origin %q missing upstream %q", name, e.upstream)
 		}
 	}
-	for _, name := range []string{"sast", "vpn"} {
-		if strings.Contains(svc[name], "listen 443 ssl") {
-			t.Errorf("service %q must NOT carry a :443 edge terminator", name)
-		}
+	// staging-fe is not in doEdgeOrigins() (only sso is), so it must not get a
+	// SECOND nginx :443 block appended by edgeTerminatorFor on top of its own
+	// self-terminated TLS listener (platform_bootstrap_staging_fe_do.go).
+	if n := strings.Count(svc["staging-fe"], "listen 443 ssl"); n != 1 {
+		t.Errorf("staging-fe must carry exactly its own :443 listener, not an appended edge terminator (got %d)", n)
 	}
 
 	// 3. ${var.<x>} references survive un-escaped (terraform must interpolate the
@@ -354,17 +374,13 @@ func TestDOBaselineDeterministic(t *testing.T) {
 	}
 }
 
-// TestDOBaselinePrivateHostVerbatim asserts the public host is used verbatim when
-// PrivateDBHost is off.
-func TestDOBaselinePrivateHostVerbatim(t *testing.T) {
-	joined := strings.Join(renderTestBaseline(t, DOBaselineOptions{PrivateDBHost: false}), "\n")
-	if strings.Contains(joined, "private-pyx-main-db-do-user") {
-		t.Errorf("without PrivateDBHost the URL host must be verbatim (public)")
-	}
-	if !strings.Contains(joined, "mesh_app:TESTPW@pyx-main-db-do-user") {
-		t.Errorf("expected verbatim mesh_app public host")
-	}
-}
+// NOTE: TestDOBaselinePrivateHostVerbatim (public-host-verbatim-when-off) was
+// removed here — it asserted on BoardDatabaseURL appearing in the rendered
+// user_data, which only ever happened via the mcp durable bootstrap. mcp is no
+// longer part of DOBaselineServices() (see the file-header "RECONCILED AGAINST
+// LIVE" note), so BoardDatabaseURL is never interpolated into any render
+// output anymore. The underlying privateURL/verbatim behavior is still covered
+// directly by TestDOBaselinePrivateURLHelper above.
 
 // TestDOBaselineRequiresSecrets asserts missing secrets are rejected.
 func TestDOBaselineRequiresSecrets(t *testing.T) {

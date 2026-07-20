@@ -26,13 +26,27 @@ func TestSastDOScaleGroupTerraformValidate(t *testing.T) {
 		t.Fatalf("render sast do: %v", err)
 	}
 	in := DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30")
-	// Inject the DO bootstrap onto the existing sast scale-group (the baseline
-	// already contains all 6 platform services — don't duplicate them).
-	for i := range in.Components {
-		if in.Components[i].Name == "sast" && in.Components[i].ScaleGroup != nil {
-			in.Components[i].ScaleGroup.UserDataByProvider = map[string]string{"digitalocean": doUD}
-		}
-	}
+	// POST-PURGE (2026-07-10): sast is no longer one of the baseline services
+	// (DOBaselineServices() dropped it along with the live sast pool — see
+	// do_baseline.go's file-header note), so this test synthesizes its own
+	// standalone sast scale-group component, shaped like DOBaselineInput used to
+	// emit it, to prove the generic AssembleHCL path still renders valid DO HCL
+	// for the sast DO bootstrap independent of the baseline's service set.
+	in.Components = append(in.Components, AssembleComponent{
+		Name: "sast",
+		Type: "virtual-machine-scale-group",
+		ScaleGroup: &AssembleScaleGroup{
+			Architecture:       "x86_64",
+			CPU:                "2",
+			RAM:                "4",
+			OS:                 "ubuntu",
+			Min:                1,
+			Max:                1,
+			Desired:            1,
+			Health:             HealthEC2,
+			UserDataByProvider: map[string]string{"digitalocean": doUD},
+		},
+	})
 	docs, err := AssembleHCL(context.Background(), MustEmbedded(), in)
 	if err != nil {
 		t.Fatalf("AssembleHCL: %v", err)
