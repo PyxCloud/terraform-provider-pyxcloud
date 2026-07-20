@@ -72,14 +72,18 @@ func TestDOBaselineResourceSet(t *testing.T) {
 	if strings.Contains(joined, `"passo-do-baseline-sg-2"`) {
 		t.Errorf("live-reconciled render must not emit a second firewall chunk")
 	}
-	// sso must match live state (2vCPU/4GiB); staging-fe must match its live
-	// droplet size (1vCPU/2GiB, not the 2vCPU/2GiB #157 rendered before this
-	// reconciliation — doctl droplet list shows 582920441 at 1 VCPU / 2048MB).
-	if !strings.Contains(joined, `s-2vcpu-4gb`) {
-		t.Errorf("expected s-2vcpu-4gb droplet size (sso)")
+	// Both remaining droplets are right-sized to 1vCPU/2GiB: sso (cost/
+	// staging-rightsize-v2, -$12/mo — down from the live 2vCPU/4GiB) and
+	// staging-fe (matches its live droplet size, doctl 582920441 at
+	// 1 VCPU / 2048MB). Match on the droplet_template size line specifically —
+	// `db-s-2vcpu-4gb` (the managed PG clusters, unaffected by this PR) also
+	// contains the substring "s-2vcpu-4gb", so a bare Contains check on that
+	// string would pass for the wrong reason.
+	if n := strings.Count(joined, `size               = "s-1vcpu-2gb"`); n != 2 {
+		t.Errorf("expected 2 droplets at s-1vcpu-2gb (sso + staging-fe), got %d", n)
 	}
-	if !strings.Contains(joined, `s-1vcpu-2gb`) {
-		t.Errorf("expected s-1vcpu-2gb droplet size (staging-fe, matches live)")
+	if strings.Contains(joined, `size               = "s-2vcpu-4gb"`) {
+		t.Errorf("no droplet should still be s-2vcpu-4gb after the sso right-size")
 	}
 }
 
