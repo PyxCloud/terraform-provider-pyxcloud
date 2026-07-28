@@ -20,6 +20,12 @@ examples/**/generated.tf
 examples/**/function.zip
 examples/**/plan-only/
 
+# Graphify output (knowledge graph build artifacts)
+graphify-out/
+
 # Worktrees
 .worktrees/
+
+# Temp
+/tmp/
 
