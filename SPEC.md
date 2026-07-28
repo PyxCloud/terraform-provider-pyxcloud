@@ -289,6 +289,12 @@ are absent, the job logs the skip explicitly.
   object plans a cutover + data migration (DB dump/restore, blob sync, secrets re‑seal, queue
   drain), masking CRIU + rsync; idempotent, resumable, with a data‑safety interlock.
 
+## Tech debt
+
+**KNOWN TECH DEBT:** `map[string]any` pervasivo (2269 righe in resource_topology.go,
+114 occorrenze totali). Da tipizzare con struct forti non appena il modello canonico
+si stabilizza (vedi §3).
+
 ## 8. Open questions (resolve during `pd-TF-REGION-VPC`)
 
 - Final shape of `POST /api/translate` (does it return rendered `.tf`, or a structured resource

@@ -15,6 +15,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
+// KNOWN TECH DEBT: map[string]any pervasivo in questo file.
+// La canonical topology arriva dal BE come JSON generico.
+// map[string]any e il path of least resistance col TF SDK,
+// ma nasconde i tipi. Da tipizzare con struct forti quando
+// il modello canonico si stabilizza (pd-TF-SPEC §3).
+
 // topologyResource manages a PyxCloud canonical topology.
 type topologyResource struct {
 	client  client.Client
