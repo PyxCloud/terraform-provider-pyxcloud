@@ -16,9 +16,9 @@ func TestExternalModuleRendersDOEnvironment(t *testing.T) {
 		Provider: "digitalocean",
 		Region:   "Frankfurt",
 		Components: []engine.AssembleComponent{{
-			Name:  "web",
-			Type:  "virtual-machine-scale-group",
-			Count: 1,
+			Name:       "web",
+			Type:       "virtual-machine-scale-group",
+			Count:      1,
 			ScaleGroup: &engine.AssembleScaleGroup{CPU: "2", RAM: "4", Min: 1, Max: 1, Desired: 1},
 		}},
 	})
