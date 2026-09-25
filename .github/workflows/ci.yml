@@ -3,6 +3,13 @@ on:
   # Local-devops mode: automatic GitHub Actions triggers are disabled.
   # Run pyxflow locally, or dispatch this workflow manually if explicitly approved.
   workflow_dispatch:
+env:
+  # DEP-01.1: pinned terraform so the internal/catalog validate tests execute
+  # instead of skipping (they t.Skip when `terraform` is not on PATH).
+  # Bump = change both values together. Checksum is the linux_amd64 entry from
+  # https://releases.hashicorp.com/terraform/<ver>/terraform_<ver>_SHA256SUMS
+  TERRAFORM_VERSION: "1.16.4"
+  TERRAFORM_SHA256: "dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df"
 jobs:
   check-and-test:
     runs-on:
@@ -16,6 +23,15 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      - name: install pinned terraform (DEP-01.1)
+        run: |
+          set -euo pipefail
+          curl -sSfL -o "${RUNNER_TEMP}/terraform.zip" \
+            "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          echo "${TERRAFORM_SHA256}  ${RUNNER_TEMP}/terraform.zip" | sha256sum --check --strict -
+          unzip -o "${RUNNER_TEMP}/terraform.zip" -d "${RUNNER_TEMP}/terraform-bin"
+          "${RUNNER_TEMP}/terraform-bin/terraform" version
+          echo "${RUNNER_TEMP}/terraform-bin" >> "$GITHUB_PATH"
       - name: build/vet/test
         run: go vet ./... && go test ./...
       - name: build billing signal scanner
