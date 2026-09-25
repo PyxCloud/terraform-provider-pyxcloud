@@ -99,10 +99,16 @@ type AssembleIAM struct {
 
 // AssembleComponent is one canonical component in the environment.
 type AssembleComponent struct {
-	Path                 string
-	Name                 string
-	Type                 string
-	Count                int
+	Path  string
+	Name  string
+	Type  string
+	Count int
+	// Placement, when "vm", forces a managed service component (currently
+	// managed-database and cache only — DEP-01.10) to be self-hosted on a VM
+	// (the mitigation path) EVEN on providers that have a native managed
+	// service. Empty (default) keeps the native managed path. Any other value
+	// is rejected at assemble time.
+	Placement            string
 	VM                   *AssembleVM
 	ScaleGroup           *AssembleScaleGroup
 	AttachToExistingALB  *AssembleAttachToExistingALB
@@ -664,8 +670,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		hasVM, hasNetworked = true, true
 	}
 	for _, c := range in.Components {
-		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
-			// Mitigation runs the service on a VM, which needs network placement and
+		if (Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider)) || ForcesVMPlacement(c) {
+			// Mitigation runs the service on a VM (either because the provider lacks
+			// the managed service, or because the author explicitly opted into VM
+			// placement — DEP-01.10), which needs network placement and
 			// should receive the environment security group when expose rules exist.
 			hasVM, hasNetworked = true, true
 			continue
@@ -787,8 +795,16 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 
 	// 3. Components.
 	for _, c := range in.Components {
+		if c.Placement != "" && c.Placement != "vm" {
+			return nil, fmt.Errorf("component %q: unknown placement %q (supported: \"vm\")", c.Name, c.Placement)
+		}
+		if c.Placement == "vm" && !ExplicitVMPlacement(c.Type) {
+			return nil, fmt.Errorf("component %q (%s): placement=\"vm\" is not supported for this component type (supported: managed-database, cache)", c.Name, c.Type)
+		}
 		// Mitigation: provider lacks the managed service -> self-host it on a VM.
-		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
+		// DEP-01.10: an explicit placement="vm" on managed-database/cache takes the
+		// SAME path even on providers that have a native managed service.
+		if (Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider)) || ForcesVMPlacement(c) {
 			mdocs, err := mitigateComponent(ctx, cat, in.Provider, in.Region, c, netName, subnetName, vmSG)
 			if err != nil {
 				return nil, err
@@ -1640,7 +1656,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		nodeCount := 3
 		if n := in.VaultHADroplet.NodeCount; n != 0 {
 			if n != 1 && n != 3 {
-				return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — only 1 or 3 nodes are supported; " +
+				return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — only 1 or 3 nodes are supported; "+
 					"omit node_count or set it to 1 or 3", n)
 			}
 			nodeCount = n
