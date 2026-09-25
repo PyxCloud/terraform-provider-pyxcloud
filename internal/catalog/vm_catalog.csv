@@ -44,6 +44,7 @@ e2-standard-2,e2,gcp,europe-west3,x86_64,2,8,0,true
 e2-standard-4,e2,gcp,europe-west3,x86_64,4,16,0,true
 n2-standard-2,n2,gcp,europe-west3,x86_64,2,8,0,true
 n2-standard-4,n2,gcp,europe-west3,x86_64,4,16,0,true
+s-1vcpu-512mb-10gb,Droplet,do,fra1,x86_64,1,0,0,false
 s-1vcpu-1gb,Droplet,do,fra1,x86_64,1,1,0,false
 s-1vcpu-2gb,Droplet,do,fra1,x86_64,1,2,0,false
 s-2vcpu-2gb,Droplet,do,fra1,x86_64,2,2,0,false
@@ -54,6 +55,18 @@ s-1vcpu-2gb,Droplet,do,ams3,x86_64,1,2,0,false
 s-2vcpu-2gb,Droplet,do,ams3,x86_64,2,2,0,false
 s-2vcpu-4gb,Droplet,do,ams3,x86_64,2,4,0,false
 s-4vcpu-8gb,Droplet,do,ams3,x86_64,4,8,0,false
+s-1vcpu-512mb-10gb,Droplet,do,nyc3,x86_64,1,0,0,false
+s-1vcpu-1gb,Droplet,do,nyc3,x86_64,1,1,0,false
+s-1vcpu-2gb,Droplet,do,nyc3,x86_64,1,2,0,false
+s-2vcpu-2gb,Droplet,do,nyc3,x86_64,2,2,0,false
+s-2vcpu-4gb,Droplet,do,nyc3,x86_64,2,4,0,false
+s-4vcpu-8gb,Droplet,do,nyc3,x86_64,4,8,0,false
+s-1vcpu-512mb-10gb,Droplet,do,sgp1,x86_64,1,0,0,false
+s-1vcpu-1gb,Droplet,do,sgp1,x86_64,1,1,0,false
+s-1vcpu-2gb,Droplet,do,sgp1,x86_64,1,2,0,false
+s-2vcpu-2gb,Droplet,do,sgp1,x86_64,2,2,0,false
+s-2vcpu-4gb,Droplet,do,sgp1,x86_64,2,4,0,false
+s-4vcpu-8gb,Droplet,do,sgp1,x86_64,4,8,0,false
 ecs.t6-c1m1.large,ecs.t6,alicloud,eu-central-1,x86_64,2,1,0,true
 ecs.t6-c1m2.large,ecs.t6,alicloud,eu-central-1,x86_64,2,2,0,true
 ecs.g7.large,ecs.g7,alicloud,eu-central-1,x86_64,2,8,0,true
