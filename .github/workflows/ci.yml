@@ -16,6 +16,17 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      - name: install pinned terraform
+        # DEP-01.1: the full-estate validate test skips without a terraform
+        # binary on PATH; install a pinned version (checksum-verified) so the
+        # test actually runs in CI instead of skipping.
+        run: |
+          TF_VERSION=1.13.4
+          TF_ZIP="terraform_${TF_VERSION}_linux_amd64.zip"
+          curl -fsSLo "/tmp/${TF_ZIP}"             "https://releases.hashicorp.com/terraform/${TF_VERSION}/${TF_ZIP}"
+          echo "98aa516201e948306698efd9954ab4cc0d1227c2578ba56245898b5f679e590b  /tmp/${TF_ZIP}" | sha256sum -c -
+          unzip -o -q "/tmp/${TF_ZIP}" -d /tmp/tf-bin
+          echo "/tmp/tf-bin" >> "$GITHUB_PATH"
       - name: build/vet/test
         run: go vet ./... && go test ./...
       - name: build billing signal scanner
