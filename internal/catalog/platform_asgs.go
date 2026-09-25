@@ -193,13 +193,14 @@ func PlatformScaleGroupComponentsWithProviderBootstrap(arch, os, kubernetesVersi
 				// Scale-group of 1: min=desired=1 (self-heal floor), max=1 (a single
 				// canonical platform member; scale the fleet by editing the abstract
 				// topology, not by forking a per-cloud ASG).
-				Min:                s.MinDesired,
-				Max:                s.MinDesired,
-				Desired:            s.MinDesired,
-				Health:             s.Health,
-				KubernetesVersion:  kubernetesVersion,
-				UserData:           bootstraps[s.Name],
-				UserDataByProvider: udbp,
+				Min:                    s.MinDesired,
+				Max:                    s.MinDesired,
+				Desired:                s.MinDesired,
+				Health:                 s.Health,
+				KubernetesVersion:      kubernetesVersion,
+				EngineAuthoredUserData: true,
+				UserData:               bootstraps[s.Name],
+				UserDataByProvider:     udbp,
 			},
 		})
 	}

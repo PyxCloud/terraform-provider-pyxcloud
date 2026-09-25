@@ -60,8 +60,13 @@ type AssembleScaleGroup struct {
 	// falls back to UserData. This lets one canonical scale-group carry a
 	// provider-specific bootstrap without forking the topology.
 	UserDataByProvider map[string]string
-	InstanceProfile    string
-	RootDiskGB         int
+	// EngineAuthoredUserData marks the bootstrap(s) as engine-authored (the
+	// canonical platform bootstraps): their deliberate ${var.<x>} /
+	// ${data.<x>...} Terraform references must survive rendering (DEP-01.4).
+	// Zero value false = user-derived, fully escaped by the renderer (fail-closed).
+	EngineAuthoredUserData bool
+	InstanceProfile        string
+	RootDiskGB             int
 	// KubernetesVersion pins the DOKS control-plane version when the scale-group
 	// is placed on DigitalOcean (mapped to a digitalocean_kubernetes_cluster
 	// node_pool). Empty -> "latest". Other providers ignore it.
@@ -829,7 +834,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				OS: sg.OS, OSVersion: sg.OSVersion,
 				Min: sg.Min, Max: sg.Max, Desired: sg.Desired, Health: sg.Health,
 				UserData: sg.UserData, UserDataByProvider: sg.UserDataByProvider,
-				InstanceProfile: sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
+				EngineAuthoredUserData: sg.EngineAuthoredUserData,
+				InstanceProfile:        sg.InstanceProfile, RootDiskGB: sg.RootDiskGB,
 				KubernetesVersion: sg.KubernetesVersion, Tag: sg.Tag, SSHKeys: sg.SSHKeys,
 				Network: netName, SecurityGroup: vmSG, Subnets: subnetNames,
 			})
@@ -1640,7 +1646,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		nodeCount := 3
 		if n := in.VaultHADroplet.NodeCount; n != 0 {
 			if n != 1 && n != 3 {
-				return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — only 1 or 3 nodes are supported; " +
+				return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — only 1 or 3 nodes are supported; "+
 					"omit node_count or set it to 1 or 3", n)
 			}
 			nodeCount = n

@@ -1,6 +1,8 @@
 package catalog
 
 import (
+	crand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -436,13 +438,135 @@ func renderVMAWS(p VMPlan) string {
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
-// vmHeredoc renders s as an HCL indented heredoc for VM user_data (no escaping).
+// vmHeredoc renders user-derived VM user_data (cloud-init / scripts / user
+// values) as an HCL indented heredoc. The body is USER-DERIVED, so it is fully
+// escaped to render LITERALLY (DEP-01.4, post-execution-v1 spec Appendix D.3):
+// `${`→`$${` and `%{`→`%%{` (an injection payload like "${var.leak}" can no
+// longer interpolate Terraform state), and the heredoc terminator is made
+// unique when the body itself contains a terminator line. Engine-authored
+// content that deliberately interpolates Terraform references (${var.<x>} /
+// ${data.<x>...}) must go through engineHeredoc instead.
 func vmHeredoc(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	if !strings.HasSuffix(s, "\n") {
 		s += "\n"
 	}
-	return "<<-PYXUSERDATA\n" + s + "PYXUSERDATA\n  "
+	return heredocBlock("PYXUSERDATA", escapeAllHCLTemplate(s))
+}
+
+// engineHeredoc renders ENGINE-AUTHORED user_data (the platform bootstrap
+// scripts from internal/catalog/platform_bootstrap_*.go) as an HCL indented
+// heredoc. Unlike vmHeredoc it PRESERVES the deliberate Terraform references
+// the engine emits — `${var.<x>}` variable references (the var-model: secrets
+// resolved by Terraform, never inlined) and `${data.<x>...}` data-source
+// references (Vault KV reads) — and already-escaped `$${` sequences, while
+// escaping every other bare `${` (bash parameter expansions) and every `%{`.
+// User-derived content must NOT use this seam: it is fail-closed via vmHeredoc,
+// which escapes everything (DEP-01.4).
+func engineHeredoc(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return heredocBlock("PYXUSERDATA", escapeHCLTemplatePreservingVars(s))
+}
+
+// heredocBlock renders s as an HCL indented heredoc with the given base
+// terminator token, switching to a UNIQUE token (random hex suffix) when the
+// body contains a line that would collide with it — `<<-` strips leading
+// whitespace, so any line whose trimmed text equals the token would terminate
+// the heredoc early and splice attacker-controlled HCL after it (DEP-01.4).
+func heredocBlock(token, s string) string {
+	t := uniqueHeredocToken(s, token)
+	return "<<-" + t + "\n" + s + t + "\n  "
+}
+
+// heredocLineCollides reports whether any line of s would terminate an `<<-`
+// heredoc with terminator t (leading whitespace is stripped by `<<-`).
+func heredocLineCollides(s, t string) bool {
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) == t {
+			return true
+		}
+	}
+	return false
+}
+
+// uniqueHeredocToken returns token, or token with a random hex suffix, until no
+// line of s collides with it. crypto/rand failure is never expected and is loud
+// rather than silent.
+func uniqueHeredocToken(s, token string) string {
+	t := token
+	for heredocLineCollides(s, t) {
+		b := make([]byte, 4)
+		if _, err := crand.Read(b); err != nil {
+			panic("render: crypto/rand unavailable for heredoc terminator: " + err.Error())
+		}
+		t = token + "-" + hex.EncodeToString(b)
+	}
+	return t
+}
+
+// escapeAllHCLTemplate escapes every HCL template sequence in s so the text
+// renders literally inside an unquoted heredoc: `${`→`$${`, `%{`→`%%{`.
+// Idempotent: sequences that are ALREADY escaped (`$${`, `%%{`) are left as-is.
+func escapeAllHCLTemplate(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '$' && i+1 < len(s) && s[i+1] == '{' {
+			if i > 0 && s[i-1] == '$' {
+				out.WriteByte(s[i]) // already escaped ($${) — keep verbatim
+				continue
+			}
+			out.WriteString("$$")
+			continue
+		}
+		if s[i] == '%' && i+1 < len(s) && s[i+1] == '{' {
+			if i > 0 && s[i-1] == '%' {
+				out.WriteByte(s[i]) // already escaped (%%{) — keep verbatim
+				continue
+			}
+			out.WriteString("%%")
+			continue
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
+}
+
+// escapeHCLTemplatePreservingVars escapes bare `${` (via
+// escapeBashExpansionsForHeredoc, which preserves the engine's deliberate
+// `${var.<x>}` / `${data.<x>...}` Terraform references and already-escaped
+// `$${`) plus every `%{`→`%%{`. For ENGINE-AUTHORED user_data only.
+func escapeHCLTemplatePreservingVars(s string) string {
+	s = escapeBashExpansionsForHeredoc(s)
+	var out strings.Builder
+	out.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+1 < len(s) && s[i+1] == '{' {
+			if i > 0 && s[i-1] == '%' {
+				out.WriteByte(s[i]) // already escaped (%%{) — keep verbatim
+				continue
+			}
+			out.WriteString("%%")
+			continue
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
+}
+
+// scaleGroupHeredoc picks the heredoc escaping for a scale-group bootstrap.
+// Engine-authored plans (EngineAuthoredUserData — the canonical platform
+// bootstrap scripts, which deliberately interpolate ${var.<x>} /
+// ${data.<x>...}) keep those references via engineHeredoc; everything else is
+// user-derived and fully escaped via vmHeredoc (DEP-01.4, fail-closed default).
+func scaleGroupHeredoc(p ScaleGroupPlan, s string) string {
+	if p.EngineAuthoredUserData {
+		return engineHeredoc(s)
+	}
+	return vmHeredoc(s)
 }
 
 func renderVMGCP(p VMPlan) string {
@@ -604,7 +728,7 @@ func renderASGAWS(p ScaleGroupPlan) string {
 		b.WriteString("  }\n")
 	}
 	if p.UserData != "" {
-		fmt.Fprintf(&b, "  user_data = base64encode(%s)\n", vmHeredoc(p.UserData))
+		fmt.Fprintf(&b, "  user_data = base64encode(%s)\n", scaleGroupHeredoc(p, p.UserData))
 	}
 	b.WriteString("  tag_specifications {\n")
 	b.WriteString("    resource_type = \"instance\"\n")
@@ -740,7 +864,7 @@ func renderScaleGroupDO(p ScaleGroupPlan) string {
 	fmt.Fprintf(&b, "    ssh_keys           = [%s]\n", strings.Join(keys, ", "))
 	b.WriteString("    with_droplet_agent = true\n")
 	if p.UserData != "" {
-		fmt.Fprintf(&b, "    user_data          = %s\n", vmHeredoc(p.UserData))
+		fmt.Fprintf(&b, "    user_data          = %s\n", scaleGroupHeredoc(p, p.UserData))
 	}
 	b.WriteString("  }\n")
 	b.WriteString("}\n")

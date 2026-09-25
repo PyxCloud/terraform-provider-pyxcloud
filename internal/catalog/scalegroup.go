@@ -52,6 +52,14 @@ type ScaleGroupSpec struct {
 	// the topology or inventing a second component. Keys are matched
 	// case-insensitively.
 	UserDataByProvider map[string]string
+	// EngineAuthoredUserData marks the bootstrap(s) as ENGINE-AUTHORED (the
+	// canonical platform bootstraps from platform_bootstrap_*.go). Those scripts
+	// deliberately interpolate Terraform references — ${var.<x>} secret
+	// references (the var-model) and ${data.<x>...} Vault data sources — that
+	// must SURVIVE rendering (engineHeredoc). Zero value false = user-derived
+	// content, which the renderer fully escapes (vmHeredoc, DEP-01.4):
+	// fail-closed by default.
+	EngineAuthoredUserData bool
 	// InstanceProfile is the IAM instance-profile/service-account name to attach
 	// (wired from a sibling iam component).
 	InstanceProfile string
@@ -104,7 +112,12 @@ type ScaleGroupPlan struct {
 	Desired int    `json:"desired"` // desired instances
 	Health  string `json:"health"`  // ec2 | elb
 
-	UserData               string `json:"user_data"`        // cloud-init/bootstrap (provider-neutral plaintext)
+	UserData string `json:"user_data"` // cloud-init/bootstrap (provider-neutral plaintext)
+	// EngineAuthoredUserData is true when UserData carries engine-authored
+	// bootstrap script(s) (platform_bootstrap_*.go) whose deliberate
+	// ${var.<x>} / ${data.<x>...} Terraform references must survive rendering
+	// (DEP-01.4). False (zero value) = user-derived: fully escaped, fail-closed.
+	EngineAuthoredUserData bool   `json:"engine_authored_user_data"`
 	InstanceProfile        string `json:"instance_profile"` // IAM instance-profile/service-account name (optional)
 	InstanceProfileManaged bool   `json:"instance_profile_managed"`
 	RootDiskGB             int    `json:"root_disk_gb"` // root volume size GiB (0 = provider default)
@@ -284,32 +297,33 @@ func TranslateScaleGroup(ctx context.Context, cat VMCatalog, spec ScaleGroupSpec
 	zones := deriveZones(provider, row.CSPRegion, nSubnets)
 
 	plan := ScaleGroupPlan{
-		Provider:          provider,
-		CSP:               row.CSP,
-		RegionName:        row.RegionName,
-		CSPRegion:         row.CSPRegion,
-		GroupName:         name,
-		InstanceType:      sku.Name,
-		Architecture:      arch,
-		CPU:               sku.CPU,
-		RAM:               sku.RAM,
-		OSName:            osName,
-		OSVersion:         osVersion,
-		Image:             img.Image,
-		Min:               min,
-		Max:               max,
-		Desired:           desired,
-		Health:            health,
-		UserData:          userData,
-		InstanceProfile:   spec.InstanceProfile,
-		RootDiskGB:        spec.RootDiskGB,
-		Zones:             zones,
-		NetworkName:       spec.Network,
-		SubnetNames:       subnets,
-		SecurityGroup:     spec.SecurityGroup,
-		KubernetesVersion: strings.TrimSpace(spec.KubernetesVersion),
-		Tag:               strings.TrimSpace(spec.Tag),
-		SSHKeys:           spec.SSHKeys,
+		Provider:               provider,
+		CSP:                    row.CSP,
+		RegionName:             row.RegionName,
+		CSPRegion:              row.CSPRegion,
+		GroupName:              name,
+		InstanceType:           sku.Name,
+		Architecture:           arch,
+		CPU:                    sku.CPU,
+		RAM:                    sku.RAM,
+		OSName:                 osName,
+		OSVersion:              osVersion,
+		Image:                  img.Image,
+		Min:                    min,
+		Max:                    max,
+		Desired:                desired,
+		Health:                 health,
+		UserData:               userData,
+		EngineAuthoredUserData: spec.EngineAuthoredUserData,
+		InstanceProfile:        spec.InstanceProfile,
+		RootDiskGB:             spec.RootDiskGB,
+		Zones:                  zones,
+		NetworkName:            spec.Network,
+		SubnetNames:            subnets,
+		SecurityGroup:          spec.SecurityGroup,
+		KubernetesVersion:      strings.TrimSpace(spec.KubernetesVersion),
+		Tag:                    strings.TrimSpace(spec.Tag),
+		SSHKeys:                spec.SSHKeys,
 	}
 
 	switch provider {
