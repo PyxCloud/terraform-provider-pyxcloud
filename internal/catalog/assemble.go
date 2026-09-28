@@ -1918,7 +1918,10 @@ func requiredProvidersBlock(provider string, needsCloudflare, needsKubernetes, n
 		fmt.Fprintf(&b, "    %s = {\n      source = %q\n    }\n", src[0], src[1])
 	}
 	if needsCloudflare {
-		b.WriteString("    cloudflare = {\n      source = \"cloudflare/cloudflare\"\n    }\n")
+		// Version pinned to the same 4.x line the ephemeral do-runner mirror
+		// bakes (4.52.1): v5 requires a state/schema migration review (boardos
+		// I02 — incidental upgrade forbidden), so 4.x stays until that lands.
+		b.WriteString("    cloudflare = {\n      source  = \"cloudflare/cloudflare\"\n      version = \"~> 4.52\"\n    }\n")
 	}
 	if needsKubernetes {
 		b.WriteString("    kubernetes = {\n      source = \"hashicorp/kubernetes\"\n    }\n")

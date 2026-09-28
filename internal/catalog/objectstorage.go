@@ -179,6 +179,12 @@ func TranslateObjectStorage(ctx context.Context, cat ObjectStorageCatalog, spec 
 		return ObjectStoragePlan{}, err
 	}
 
+	// Hostinger S3-compatible storage has no official source (unverified [G]):
+	// fail closed before catalog resolution instead of inventing a resource.
+	if strings.ToLower(strings.TrimSpace(spec.Provider)) == ProviderHostinger {
+		return ObjectStoragePlan{}, TranslateObjectStorageHostingerGuard()
+	}
+
 	row, err := cat.ResolveRegion(ctx, spec.Region, spec.Provider)
 	if err != nil {
 		return ObjectStoragePlan{}, err

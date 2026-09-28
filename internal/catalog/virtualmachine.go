@@ -282,6 +282,12 @@ func validateVMSpec(spec VMSpec) error {
 	if strings.TrimSpace(spec.Provider) == "" {
 		return fmt.Errorf("virtual-machine: provider is required (aws | gcp | digitalocean)")
 	}
+	// Hostinger has an official Terraform provider but no catalog-resolvable
+	// sizing API and a billing-connected lifecycle: fail closed with the typed
+	// refusal (lane 196) instead of the generic unknown-provider error.
+	if lc(spec.Provider) == ProviderHostinger {
+		return TranslateVMHostingerGuard()
+	}
 	if _, ok := ProviderToCSP(spec.Provider); !ok {
 		return fmt.Errorf("virtual-machine: unknown provider %q (aws | gcp | digitalocean)", spec.Provider)
 	}

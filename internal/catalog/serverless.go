@@ -94,6 +94,12 @@ func TranslateServerless(ctx context.Context, cat RegionCatalog, spec Serverless
 	if err := validateServerlessSpec(spec); err != nil {
 		return ServerlessPlan{}, err
 	}
+	// Hostinger has no FaaS primitive in its official Terraform provider:
+	// fail closed before catalog resolution (lane 196).
+	if lc(spec.Provider) == ProviderHostinger {
+		return ServerlessPlan{}, TranslateServerlessHostingerGuard()
+	}
+
 	row, err := cat.ResolveRegion(ctx, spec.Region, spec.Provider)
 	if err != nil {
 		return ServerlessPlan{}, err

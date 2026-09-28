@@ -103,7 +103,8 @@ func RenderCloudflareDNSHCL(p CloudflareDNSPlan) (string, error) {
 const cloudflareRequiredProviders = `terraform {
   required_providers {
     cloudflare = {
-      source = "cloudflare/cloudflare"
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.52"
     }
   }
 }
