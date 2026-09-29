@@ -436,13 +436,31 @@ func renderVMAWS(p VMPlan) string {
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
-// vmHeredoc renders s as an HCL indented heredoc for VM user_data (no escaping).
+// vmHeredoc renders s as an HCL indented heredoc for VM user_data.
+//
+// user_data is user-derived and must render literally: template directives
+// (${...} and %{...}) are escaped, and any line that could collide with the
+// heredoc terminator PYXUSERDATA (e.g. from injected content) is indented so
+// it cannot terminate the heredoc early. Indentation is stripped by the
+// `<<-` marker, so a single leading space is invisible to the user.
 func vmHeredoc(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	if !strings.HasSuffix(s, "\n") {
 		s += "\n"
 	}
-	return "<<-PYXUSERDATA\n" + s + "PYXUSERDATA\n  "
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = strings.ReplaceAll(line, "${", "$${")
+		line = strings.ReplaceAll(line, "%{", "%%{")
+		if strings.TrimSpace(line) == "PYXUSERDATA" {
+			// Indent so the line can never be mistaken for the heredoc
+			// terminator, even for a custom-delimiter heredoc where leading
+			// whitespace would not be stripped.
+			line = " " + line
+		}
+		lines[i] = line
+	}
+	return "<<-PYXUSERDATA\n" + strings.Join(lines, "\n") + "PYXUSERDATA\n  "
 }
 
 func renderVMGCP(p VMPlan) string {
