@@ -96,12 +96,10 @@ func renderGCP(p NetworkPlan) string {
 func renderDO(p NetworkPlan) string {
 	name := tfName(p.VPCName)
 	var b strings.Builder
-	// DO VPCs are region-scoped; subnets are not separate resources. The first
-	// declared subnet CIDR (or the VPC CIDR) is the VPC ip_range.
+	// DO VPCs are region-scoped; subnets are not separate resources. The VPC
+	// ip_range is the plan-level CIDR; per-subnet ranges live in the network
+	// plan and are not expressible in a DO VPC resource.
 	ipRange := p.CIDR
-	if len(p.Subnets) > 0 {
-		ipRange = p.Subnets[0].CIDR
-	}
 	fmt.Fprintf(&b, "resource \"digitalocean_vpc\" %q {\n", name)
 	fmt.Fprintf(&b, "  name     = %q\n", tfName(p.VPCName))
 	fmt.Fprintf(&b, "  region   = %q\n", p.CSPRegion)
