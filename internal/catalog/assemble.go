@@ -1640,7 +1640,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		nodeCount := 3
 		if n := in.VaultHADroplet.NodeCount; n != 0 {
 			if n != 1 && n != 3 {
-				return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — only 1 or 3 nodes are supported; " +
+				return nil, fmt.Errorf("vault_ha: node_count=%d is not supported — only 1 or 3 nodes are supported; "+
 					"omit node_count or set it to 1 or 3", n)
 			}
 			nodeCount = n
@@ -1868,6 +1868,14 @@ var cloudProviderSource = map[string][2]string{
 	ProviderAlibaba:      {"alicloud", "aliyun/alicloud"},
 	ProviderOVH:          {"ovh", "ovh/ovh"},
 	ProviderStackIt:      {"stackit", "stackitcloud/stackit"},
+	// Tier-2 adapter providers (roadmap P6): tencent/hetzner/vultr/scaleway via
+	// their native terraform providers, rackspace via the openstack provider
+	// against Rackspace OpenStack-compatible endpoints.
+	ProviderTencent:   {"tencentcloud", "tencentstack/tencentcloud"},
+	ProviderHetzner:   {"hcloud", "hetznercloud/hcloud"},
+	ProviderVultr:     {"vultr", "vultr/vultr"},
+	ProviderScaleway:  {"scaleway", "scaleway/scaleway"},
+	ProviderRackspace: {"openstack", "terraform-provider-openstack/openstack"},
 }
 
 // cloudflareZoneIDVarDecl is the inline variable declaration the Cloudflare

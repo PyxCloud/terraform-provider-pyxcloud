@@ -91,6 +91,10 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,
 		ProviderLinode: true, ProviderUbicloud: true, ProviderOracle: true, ProviderIBM: true,
 		ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true,
+		// Tier-2 adapters with a native MDB template (roadmap P6). hetzner and
+		// rackspace have NO native managed DB — absent on purpose, so the
+		// standard self-host mitigation applies.
+		ProviderTencent: true, ProviderVultr: true, ProviderScaleway: true,
 	},
 	"cache": {
 		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,
@@ -159,8 +163,8 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,
 		ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderStackIt: true,
 	},
-	"cdn-service":   {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
-	"cdn":           {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
+	"cdn-service": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
+	"cdn":         {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
 	// email on DO has no managed transactional-email primitive, but F1-05
 	// (pd-MIG-CUTOVER-F1-05, BESPOKE GAP-2) routes it through the native catalog
 	// SMTP-relay render (AWS SES SMTP cross-cloud by default, or a 3rd-party relay)

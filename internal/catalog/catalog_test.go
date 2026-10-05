@@ -19,7 +19,8 @@ func TestProviderToCSP(t *testing.T) {
 		"  aws  ":      {"aws", true},
 		"azure":        {"azure", true}, // wave-2: now enabled (pd-TF-W2-AZURE)
 		"oracle":       {"oci", true},   // wave-2: now enabled (pd-TF-W2-ORACLE)
-		"vultr":        {"", false},     // a genuinely-unsupported provider sentinel
+		"vultr":        {"vultr", true}, // tier-2 adapter (roadmap P6)
+		"wopr":         {"", false},     // genuinely-unsupported provider sentinel
 		"":             {"", false},
 	}
 	for in, exp := range cases {
@@ -100,7 +101,8 @@ func TestEmbeddedSnapshotWellFormed(t *testing.T) {
 			t.Errorf("malformed row: %+v", r)
 		}
 		switch r.CSP {
-		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci", "ibm", "alicloud", "ovh", "stackit":
+		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci", "ibm", "alicloud", "ovh", "stackit",
+			"tencent", "hetzner", "vultr", "scaleway", "rackspace": // tier-2 adapters (roadmap P6)
 		default:
 			t.Errorf("unexpected csp %q in catalog snapshot (row %+v)", r.CSP, r)
 		}

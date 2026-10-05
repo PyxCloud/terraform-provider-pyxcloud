@@ -38,6 +38,10 @@ var providers = []string{
 	catalog.ProviderAzure, catalog.ProviderLinode, catalog.ProviderUbicloud,
 	catalog.ProviderOracle, catalog.ProviderIBM, catalog.ProviderAlibaba,
 	catalog.ProviderOVH, catalog.ProviderStackIt,
+	// Tier-2 adapter providers (roadmap P6): tencent/hetzner/vultr/scaleway
+	// native TF providers, rackspace via openstack against Rackspace endpoints.
+	catalog.ProviderTencent, catalog.ProviderHetzner, catalog.ProviderVultr,
+	catalog.ProviderScaleway, catalog.ProviderRackspace,
 }
 
 type cell struct {

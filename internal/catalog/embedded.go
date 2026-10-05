@@ -163,6 +163,7 @@ func key(csp, regionName string) string {
 
 // NewEmbedded parses the embedded snapshot into an EmbeddedCatalog.
 func NewEmbedded() (*EmbeddedCatalog, error) {
+	ctx := context.Background()
 	rows, err := parseRegionCSV(regionCatalogCSV)
 	if err != nil {
 		return nil, err
@@ -271,6 +272,36 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 	// (it documents that the alicloud rows mirrored into the loader CSVs are
 	// authored from the public catalog, not yet a live ETL). An empty embed is a
 	// packaging error, not a runtime condition.
+	// Tier-2 adapter providers (roadmap P6): manifest-driven registration.
+	// Each manifest folds its snapshot CSV into the SAME shared indexes, so
+	// adapter providers resolve through the identical Translate* path; rendering
+	// goes through the per-component adapter templates (render.go hooks).
+	for _, am := range []*AdapterManifest{
+		AdapterManifests[ProviderTencent],
+		AdapterManifests[ProviderHetzner],
+		AdapterManifests[ProviderVultr],
+		AdapterManifests[ProviderScaleway],
+		AdapterManifests[ProviderRackspace],
+	} {
+		var csv string
+		switch am.Provider {
+		case ProviderTencent:
+			csv = tencentAdapterCSV
+		case ProviderHetzner:
+			csv = hetznerAdapterCSV
+		case ProviderVultr:
+			csv = vultrAdapterCSV
+		case ProviderScaleway:
+			csv = scalewayAdapterCSV
+		case ProviderRackspace:
+			csv = rackspaceAdapterCSV
+		default:
+			return nil, fmt.Errorf("adapter %q: no embedded snapshot registered", am.Provider)
+		}
+		if err := c.registerAdapter(ctx, am, csv); err != nil {
+			return nil, fmt.Errorf("register adapter %q: %w", am.Provider, err)
+		}
+	}
 	if strings.TrimSpace(alibabaCatalogCSV) == "" {
 		return nil, fmt.Errorf("parse alibaba catalog: embedded provenance snapshot is empty")
 	}

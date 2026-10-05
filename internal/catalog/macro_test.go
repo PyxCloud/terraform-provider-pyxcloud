@@ -671,17 +671,20 @@ func TestCanonicalMacroTypes(t *testing.T) {
 }
 
 // TestMacroUnknownProviderRejected asserts every translate rejects an unknown
-// provider with a clear error (defence in depth).
+// provider with a clear error (defence in depth). Tier-2 adapter providers are
+// NOT unknown: cache/serverless/kubernetes resolve through the standard self-host
+// mitigation for them (they have no native template) — covered in adapter_test.go.
 func TestMacroUnknownProviderRejected(t *testing.T) {
 	t.Parallel()
 	cat := MustEmbedded()
-	if _, err := TranslateCache(ctx(), cat, CacheSpec{Region: "Frankfurt", Provider: "vultr", MemoryGB: 1}); err == nil {
+	const unknown = "wopr"
+	if _, err := TranslateCache(ctx(), cat, CacheSpec{Region: "Frankfurt", Provider: unknown, MemoryGB: 1}); err == nil {
 		t.Error("cache: unknown provider should error")
 	}
-	if _, err := TranslateServerless(ctx(), cat, ServerlessSpec{Region: "Frankfurt", Provider: "vultr"}); err == nil {
+	if _, err := TranslateServerless(ctx(), cat, ServerlessSpec{Region: "Frankfurt", Provider: unknown}); err == nil {
 		t.Error("serverless: unknown provider should error")
 	}
-	if _, err := TranslateKubernetes(ctx(), cat, K8sSpec{Region: "Frankfurt", Provider: "vultr", NodeCPU: 2, NodeRAM: 4}); err == nil {
+	if _, err := TranslateKubernetes(ctx(), cat, K8sSpec{Region: "Frankfurt", Provider: unknown, NodeCPU: 2, NodeRAM: 4}); err == nil {
 		t.Error("kubernetes: unknown provider should error")
 	}
 }

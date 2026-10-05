@@ -39,6 +39,10 @@ func RenderHCL(plan NetworkPlan) (string, error) {
 	case ProviderStackIt:
 		return renderStackItNetwork(plan), nil
 	default:
+		if m := AdapterFor(plan.Provider); m != nil {
+			hcl, err := RenderAdapterNetwork(m, plan)
+			return adapterHeader(m, "network") + hcl, err
+		}
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
 }
@@ -141,6 +145,10 @@ func RenderSGHCL(plan SecurityGroupPlan) (string, error) {
 	case ProviderStackIt:
 		return renderStackItSG(plan), nil
 	default:
+		if m := AdapterFor(plan.Provider); m != nil {
+			hcl, err := RenderAdapterSG(m, plan)
+			return adapterHeader(m, "security-group") + hcl, err
+		}
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
 }
@@ -384,6 +392,10 @@ func RenderVMHCL(plan VMPlan) (string, error) {
 	case ProviderStackIt:
 		return renderStackItVM(plan), nil
 	default:
+		if m := AdapterFor(plan.Provider); m != nil {
+			hcl, err := RenderAdapterVM(m, plan)
+			return adapterHeader(m, "virtual-machine") + hcl, err
+		}
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
 }
@@ -1383,6 +1395,14 @@ func RenderManagedDatabaseHCL(plan ManagedDatabasePlan) (string, error) {
 	case ProviderStackIt:
 		return renderStackItMDB(plan), nil
 	default:
+		if m := AdapterFor(plan.Provider); m != nil {
+			if !AdapterMDBSupported(m) {
+				return "", fmt.Errorf("render: adapter provider %q has no native managed-database; "+
+					"use the self-host mitigation (managed-database on a VM) or a provider with native MDB", plan.Provider)
+			}
+			hcl, err := RenderAdapterMDB(m, plan)
+			return adapterHeader(m, "managed-database") + hcl, err
+		}
 		return "", fmt.Errorf("render: unsupported provider %q", plan.Provider)
 	}
 }

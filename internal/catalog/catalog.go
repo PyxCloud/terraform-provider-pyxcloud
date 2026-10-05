@@ -38,6 +38,14 @@ const (
 	// "do"/"digitalocean" the provider-facing name and the csp token coincide.
 	cspAlibaba = "alicloud"
 	cspStackIt = "stackit" // wave-2: StackIt (Schwarz Group, EU sovereign cloud)
+
+	// Tier-2 adapter providers (roadmap P6): catalog csp tokens. Their rows live in
+	// the adapter snapshots (adapter_catalogs.go) and fold into the same indexes.
+	cspTencent   = "tencent"
+	cspHetzner   = "hetzner"
+	cspVultr     = "vultr"
+	cspScaleway  = "scaleway"
+	cspRackspace = "rackspace"
 )
 
 // Provider-facing names (Terraform `provider` attribute / ENABLED_LAUNCH_PROVIDERS).
@@ -64,6 +72,16 @@ const (
 	// stackitcloud/stackit). Unlike the wave-1 providers the catalog csp token and
 	// the provider-facing name are identical ("stackit").
 	ProviderStackIt = "stackit"
+
+	// Tier-2 adapter providers (roadmap P6, adapter manifests in
+	// adapter_manifests.go): tencent/hetzner/vultr/scaleway render via native
+	// terraform providers; rackspace renders via the openstack provider against
+	// Rackspace OpenStack-compatible endpoints.
+	ProviderTencent   = "tencent"
+	ProviderHetzner   = "hetzner"
+	ProviderVultr     = "vultr"
+	ProviderScaleway  = "scaleway"
+	ProviderRackspace = "rackspace"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -84,6 +102,12 @@ var providerToCSP = map[string]string{
 	ProviderAlibaba:      cspAlibaba,
 	ProviderOVH:          cspOVH,
 	ProviderStackIt:      cspStackIt,
+	// Tier-2 adapter providers (roadmap P6).
+	ProviderTencent:   cspTencent,
+	ProviderHetzner:   cspHetzner,
+	ProviderVultr:     cspVultr,
+	ProviderScaleway:  cspScaleway,
+	ProviderRackspace: cspRackspace,
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

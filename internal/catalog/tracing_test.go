@@ -120,7 +120,7 @@ func TestTracingValidation(t *testing.T) {
 	cases := []TracingSpec{
 		{Provider: "aws"},                                          // missing region
 		{Region: "Frankfurt"},                                      // missing provider
-		{Region: "Frankfurt", Provider: "vultr"},                   // unknown provider
+		{Region: "Frankfurt", Provider: "wopr"},                   // unknown provider
 		{Region: "Frankfurt", Provider: "aws", RetentionHours: -1}, // bad retention
 	}
 	for i, c := range cases {
