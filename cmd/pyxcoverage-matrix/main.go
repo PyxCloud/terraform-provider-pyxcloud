@@ -50,6 +50,88 @@ var typeAliases = map[string]string{
 	"uptime-check":  "synthetics",
 }
 
+// marketShare is the pinned worldwide IaaS/PaaS share dataset (estimated, ±1pt).
+// Source and pinning rationale live in docs/market-coverage.md; update BOTH
+// files together. Deliberately pinned 2026-10-05, roadmap v2 §2.
+//
+//   - akamai/linode counted ONCE (same company since 2022) — the provider list
+//     keeps both entries for render coverage, but the share is not double-counted.
+//   - vsphere is private cloud, NOT public IaaS: supported as a provider but
+//     excluded from the market-share denominator.
+//   - ubicloud has ~0 share (startup, included for the deploy path only).
+var marketShare = map[string]float64{
+	"aws": 30, "azure": 22, "gcp": 12, "alicloud": 4, "oracle": 3,
+	"tencent": 2.5, "cloudflare": 2.5, "ibm": 1.5, "digitalocean": 1.5,
+	"linode": 1.0, "akamai": 0, // dedup: linode carries the 1.0
+	"ovh": 1.0, "hetzner": 0.7, "rackspace": 0.7, "huawei": 0.7,
+	"stackit": 0.2, "ubicloud": 0, "vultr": 0.2, "scaleway": 0.2,
+	"fastly": 0.3, "vsphere": 0, // excluded from the public-IaaS quota
+}
+
+// marketGap lists censited providers NOT yet supported, with their estimated
+// share — the explicit residual the ≥95% claim must account for (roadmap v2 §2).
+var marketGap = map[string]float64{
+	"SAP Cloud (Hyperforce)":              1.5,
+	"Salesforce (Hyperforce)":             1.5,
+	"NTT Communications":                  0.7,
+	"Baidu Cloud":                         0.7,
+	"JD Cloud":                            0.6,
+	"Lumen/Flexential/Equinix-class colo": 1.0,
+	"CoreWeave/Nebius-class GPU":          1.0,
+	"UCloud/Zenlayer-class APAC":          0.7,
+	"tail aggregato (<0.3% ciascuno)":     4.5,
+}
+
+func sortedGap() []gapPair {
+	type pair struct {
+		name  string
+		share float64
+	}
+	var ps []pair
+	for name, s := range marketGap {
+		ps = append(ps, pair{name, s})
+	}
+	sort.Slice(ps, func(i, j int) bool { return ps[i].share > ps[j].share })
+	out := make([]gapPair, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, gapPair{p.name, p.share})
+	}
+	return out
+}
+
+type gapPair struct {
+	name  string
+	share float64
+}
+
+// printMarketShare emits the honest market-coverage verdict: covered share
+// (dedup'd, vsphere-excluded) vs the pinned total, plus the explicit gap list.
+func printMarketShare() {
+	covered := 0.0
+	for _, s := range marketShare {
+		covered += s
+	}
+	total := covered
+	gaps := 0.0
+	for _, s := range marketGap {
+		total += s
+		gaps += s
+	}
+	fmt.Println("\nmarket coverage (pinned dataset 2026-10-05, ±1pt — docs/market-coverage.md)")
+	fmt.Printf("  censited+supported: %.1f%% | gap esplicito: %.1f%% | totale pinato: %.1f%%\n", covered, gaps, total)
+	fmt.Printf("  QUOTA CUMULATIVA ATTUALE: %.1f%%\n", 100*covered/total)
+	fmt.Println("  provider supportati ma fuori quota: vsphere (private cloud); akamai dedup'd su linode")
+	fmt.Println("  gap residuo (adapters FASE G / P6-bis):")
+	for _, g := range sortedGap() {
+		fmt.Printf("    - %s ~%.1f%%\n", g.name, g.share)
+	}
+	if pct := 100 * covered / total; pct < 95 {
+		fmt.Printf("  VERDETTO: %.1f%% < 95%% — il claim totale richiede gli adapter del gap sopra\n", pct)
+	} else {
+		fmt.Printf("  VERDETTO: %.1f%% >= 95%%\n", pct)
+	}
+}
+
 var providers = []string{
 	catalog.ProviderAWS, catalog.ProviderGCP, catalog.ProviderDigitalOcean,
 	catalog.ProviderAzure, catalog.ProviderLinode, catalog.ProviderUbicloud,
@@ -123,4 +205,5 @@ func main() {
 			p, m["native"], m["mitigated"], m["none"], 100*float64(m["native"])/float64(total))
 	}
 	fmt.Printf("\n%d canonical types × %d providers = %d cells\n", total, len(providers), len(cells))
+	printMarketShare()
 }
