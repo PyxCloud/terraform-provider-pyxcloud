@@ -289,3 +289,181 @@ resource "openstack_networking_secgroup_rule_v2" {{printf "%q" (printf "%s_%s_%d
 `,
 	},
 }
+
+// ── Tail providers (market-coverage push, snapshot 2026-10-05) ────────────────
+
+var huaweiVMTemplate = `resource "huaweicloud_compute_instance" {{printf "%q" (tfName .VMName)}} {
+  name               = {{printf "%q" .VMName}}
+  flavor_id          = {{printf "%q" .InstanceType}}
+  availability_zone  = {{printf "%q" .CSPRegion}}
+  image_id           = {{printf "%q" .Image}}
+{{- if .SecurityGroup}}
+  security_group_ids = [{{printf "%q" (tfName .SecurityGroup)}}]
+{{- end}}
+{{- if .UserData}}
+  user_data          = {{printf "%q" .UserData}}
+{{- end}}
+}
+`
+
+var fastlyCDNNote = "fastly is a native edge provider (CDN/DNS-equivalent only); VM components surface the honest unsupported error"
+
+var tailAdapterManifests = map[string]*AdapterManifest{
+	"huawei": {
+		Provider:   "huawei",
+		CSP:        "huawei",
+		TFLocal:    "huaweicloud",
+		TFSource:   "huaweicloud/huaweicloud",
+		Note:       "snapshot 2026-10-05 from public registry docs; live-API verification pending",
+		VMTemplate: huaweiVMTemplate,
+		NetTemplate: `resource "huaweicloud_vpc" {{printf "%q" (tfName .VPCName)}} {
+  name = {{printf "%q" .VPCName}}
+  cidr = {{printf "%q" .CIDR}}
+}
+`,
+		SubnetTemplate: `resource "huaweicloud_vpc_subnet" {{printf "%q" (subnetResourceLabel .Network.VPCName .Subnet.Name)}} {
+  name       = {{printf "%q" .Subnet.Name}}
+  vpc_id     = huaweicloud_vpc.{{tfName .Network.VPCName}}.id
+  cidr       = {{printf "%q" .Subnet.CIDR}}
+  gateway_ip = {{printf "%q" (printf "10.0.%d.1" (subnetOctet .Subnet.CIDR))}}
+}
+`,
+		SGTemplate: `resource "huaweicloud_networking_secgroup" {{printf "%q" (tfName .SGName)}} {
+  name        = {{printf "%q" .SGName}}
+  description = {{printf "%q" .Description}}
+}
+{{- range .Rules}}
+{{- if eq .Direction "ingress"}}
+resource "huaweicloud_networking_secgroup_rule" {{printf "%q" (printf "%s_%s_%d" (tfName $.SGName) .Protocol .FromPort)}} {
+  direction          = "ingress"
+  security_group_id  = huaweicloud_networking_secgroup.{{tfName $.SGName}}.id
+  protocol           = {{printf "%q" .Protocol}}
+  port_range_min     = {{.FromPort}}
+  port_range_max     = {{.ToPort}}
+  remote_ip_prefix   = {{index .CIDRs 0}}
+}
+{{- end}}
+{{- end}}
+`,
+		MDBTemplate: `resource "huaweicloud_rds_instance" {{printf "%q" (tfName .DBName)}} {
+  name              = {{printf "%q" .DBName}}
+  flavor            = {{printf "%q" .DBClass}}
+  availability_zone = [{{printf "%q" .CSPRegion}}]
+  db {
+    type     = "PostgreSQL"
+    version  = {{printf "%q" .EngineVersion}}
+  }
+}
+`,
+	},
+	"akamai": {
+		Provider: "akamai",
+		CSP:      "akamai",
+		TFLocal:  "akamai",
+		TFSource: "akamai/akamai",
+		Note:     "Akamai Connected Cloud is Linode-based (akamai_linode_* resources); snapshot 2026-10-05",
+		VMTemplate: `resource "akamai_linode_instance" {{printf "%q" (tfName .VMName)}} {
+  label      = {{printf "%q" .VMName}}
+  region     = {{printf "%q" .CSPRegion}}
+  type       = {{printf "%q" .InstanceType}}
+  image      = {{printf "%q" .Image}}
+{{- if .UserData}}
+  root_pass  = "GENERATED-AT-APPLY"
+  boot_script = {{printf "%q" .UserData}}
+{{- end}}
+}
+`,
+		NetTemplate: `resource "akamai_linode_vpc" {{printf "%q" (tfName .VPCName)}} {
+  label = {{printf "%q" .VPCName}}
+  region = {{printf "%q" .CSPRegion}}
+  subnet {
+    label = {{printf "%q" (printf "%s-subnet-1" .VPCName)}}
+    cidr  = {{printf "%q" .CIDR}}
+  }
+}
+`,
+		SGTemplate: `resource "akamai_linode_firewall" {{printf "%q" (tfName .SGName)}} {
+  label = {{printf "%q" .SGName}}
+{{- range .Rules}}
+{{- if eq .Direction "ingress"}}
+  inbound {
+    label    = {{printf "%q" (printf "%s-%d" .Protocol .FromPort)}}
+    action   = "ACCEPT"
+    protocol = {{printf "%q" .Protocol}}
+    ports    = {{printf "%q" (printf "%d-%d" .FromPort .ToPort)}}
+    ipv4     = [{{range $i, $c := .CIDRs}}{{if $i}}, {{end}}{{printf "%q" $c}}{{end}}]
+  }
+{{- end}}
+{{- end}}
+}
+`,
+	},
+	"fastly": {
+		Provider: "fastly",
+		CSP:      "fastly",
+		TFLocal:  "fastly",
+		TFSource: "fastly/fastly",
+		Note:     fastlyCDNNote,
+		VMTemplate: `# fastly Compute@Edge service (degraded VM substitute): fastly cannot host
+# general-purpose VMs; this renders a Compute service shell that must be filled
+# with a deployed edge application package.
+resource "fastly_service_v1" {{printf "%q" (tfName .VMName)}} {
+  name = {{printf "%q" .VMName}}
+  domain {
+    name = {{printf "%q" (printf "%s.pyxcloud-edge.net" (tfName .VMName))}}
+  }
+}
+`,
+		SGTemplate: `# fastly has no network firewall primitive; the edge service IS the boundary.
+resource "fastly_service_v1" {{printf "%q" (tfName .SGName)}} {
+  name = {{printf "%q" .SGName}}
+}
+`,
+	},
+	"vsphere": {
+		Provider: "vsphere",
+		CSP:      "vsphere",
+		TFLocal:  "vsphere",
+		TFSource: "hashicorp/vsphere",
+		Note:     "private-cloud vSphere (VM-only, no managed services); snapshot 2026-10-05; template name is deployment-config, not catalog-resolved",
+		VMTemplate: `resource "vsphere_virtual_machine" {{printf "%q" (tfName .VMName)}} {
+  name             = {{printf "%q" .VMName}}
+  resource_pool_id = var.vsphere_resource_pool_id
+  datastore_id     = var.vsphere_datastore_id
+  num_cpus         = {{.CPU}}
+  memory           = {{printf "%d" (mul .RAM 1024)}}
+  guest_id         = "ubuntu64Guest"
+  network_interface {
+    network_id = var.vsphere_network_id
+  }
+  disk {
+    label = "disk0"
+    size  = 20
+  }
+  clone {
+    template_uuid = var.vsphere_template_uuid
+  }
+}
+`,
+		SGTemplate: `# vSphere has no SG primitive in the hashicorp/vsphere provider; network policy
+# is enforced by NSX. This renders a placeholder doc so the plan stays inspectable.
+resource "vsphere_virtual_machine" {{printf "%q" (tfName .SGName)}} {
+  name             = {{printf "%q" .SGName}}
+  resource_pool_id = var.vsphere_resource_pool_id
+  datastore_id     = var.vsphere_datastore_id
+  num_cpus         = 1
+  memory           = 1024
+  guest_id         = "otherGuest"
+  network_interface {
+    network_id = var.vsphere_network_id
+  }
+}
+`,
+	},
+}
+
+func init() {
+	for k, v := range tailAdapterManifests {
+		AdapterManifests[k] = v
+	}
+}

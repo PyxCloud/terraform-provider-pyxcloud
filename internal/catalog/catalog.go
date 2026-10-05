@@ -86,6 +86,14 @@ const (
 	// Cloudflare (P5 promotion): edge provider — DNS + CDN only. Cloudflare
 	// cannot host VMs; any compute component on it surfaces the honest error.
 	ProviderCloudflare = "cloudflare"
+
+	// Market-coverage tail providers (adapter API, 2026-10-05): huawei and
+	// akamai are IaaS adapters, fastly is an edge provider (CDN/Compute), and
+	// vsphere renders on-prem/private-cloud VMs.
+	ProviderHuawei  = "huawei"
+	ProviderAkamai  = "akamai"
+	ProviderFastly  = "fastly"
+	ProviderVSphere = "vsphere"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -114,6 +122,11 @@ var providerToCSP = map[string]string{
 	ProviderRackspace: cspRackspace,
 	// Cloudflare (P5 promotion): edge provider, DNS/CDN only.
 	ProviderCloudflare: "cloudflare",
+	// Market-coverage tail providers (adapter API, 2026-10-05).
+	ProviderHuawei:  "huawei",
+	ProviderAkamai:  "akamai",
+	ProviderFastly:  "fastly",
+	ProviderVSphere: "vsphere",
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

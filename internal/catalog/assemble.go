@@ -1878,6 +1878,11 @@ var cloudProviderSource = map[string][2]string{
 	ProviderRackspace: {"openstack", "terraform-provider-openstack/openstack"},
 	// Cloudflare (P5 promotion): edge provider — DNS/CDN only.
 	ProviderCloudflare: {"cloudflare", "cloudflare/cloudflare"},
+	// Market-coverage tail providers (adapter API).
+	ProviderHuawei:  {"huaweicloud", "huaweicloud/huaweicloud"},
+	ProviderAkamai:  {"akamai", "akamai/akamai"},
+	ProviderFastly:  {"fastly", "fastly/fastly"},
+	ProviderVSphere: {"vsphere", "hashicorp/vsphere"},
 }
 
 // cloudflareZoneIDVarDecl is the inline variable declaration the Cloudflare

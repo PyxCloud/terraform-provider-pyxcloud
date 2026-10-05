@@ -94,7 +94,7 @@ var nativeSupport = map[string]map[string]bool{
 		// Tier-2 adapters with a native MDB template (roadmap P6). hetzner and
 		// rackspace have NO native managed DB — absent on purpose, so the
 		// standard self-host mitigation applies.
-		ProviderTencent: true, ProviderVultr: true, ProviderScaleway: true,
+		ProviderTencent: true, ProviderVultr: true, ProviderScaleway: true, ProviderHuawei: true,
 	},
 	"cache": {
 		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,

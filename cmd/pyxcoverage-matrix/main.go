@@ -42,6 +42,7 @@ var providers = []string{
 	// native TF providers, rackspace via openstack against Rackspace endpoints.
 	catalog.ProviderTencent, catalog.ProviderHetzner, catalog.ProviderVultr,
 	catalog.ProviderScaleway, catalog.ProviderRackspace, catalog.ProviderCloudflare,
+	catalog.ProviderHuawei, catalog.ProviderAkamai, catalog.ProviderFastly, catalog.ProviderVSphere,
 }
 
 type cell struct {

@@ -74,6 +74,22 @@ func IsAdapterProvider(provider string) bool {
 var adapterFuncs = template.FuncMap{
 	"tfName":              tfName,
 	"subnetResourceLabel": subnetResourceLabel,
+	"mul":                 func(a, b int) int { return a * b },
+	"subnetOctet": func(cidr string) int {
+		// third octet of an IPv4 CIDR, used to derive deterministic gateway IPs
+		parts := strings.Split(cidr, ".")
+		if len(parts) < 3 {
+			return 0
+		}
+		n := 0
+		for _, c := range parts[2] {
+			if c < '0' || c > '9' {
+				break
+			}
+			n = n*10 + int(c-'0')
+		}
+		return n
+	},
 }
 
 func adapterTemplate(name, body string) *template.Template {

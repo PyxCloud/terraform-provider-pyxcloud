@@ -89,3 +89,43 @@ os,LON,ubuntu,22.04,x86_64,Ubuntu 22.04 LTS (Focal Fossa)
 os,ORD,ubuntu,22.04,x86_64,Ubuntu 22.04 LTS (Focal Fossa)
 os,DFW,ubuntu,22.04,x86_64,Ubuntu 22.04 LTS (Focal Fossa)
 `
+
+// ── Tail provider snapshots (market-coverage push, 2026-10-05) ────────────────
+
+const huaweiAdapterCSV = `# Huawei Cloud adapter snapshot 2026-10-05 (cn-north-4 / eu-west) — pseudo-flavors from public docs
+region,Asia Pacific,China,Beijing,cn-north-4,Beijing-4,huawei
+region,Europe,Ireland,Dublin,eu-west-0,Dublin,huawei
+vm,s6.small.1,s6,cn-north-4,x86_64,1,2,0,true
+vm,s6.large.2,s6,cn-north-4,x86_64,2,8,0,true
+vm,s6.large.2,s6,eu-west-0,x86_64,2,8,0,true
+os,cn-north-4,ubuntu,22.04,x86_64,ubuntu-22.04-lts
+os,eu-west-0,ubuntu,22.04,x86_64,ubuntu-22.04-lts
+mdb,rds.pg.c2.large,rds.pg,cn-north-4,postgres,2,8
+`
+
+const akamaiAdapterCSV = `# Akamai Connected Cloud snapshot 2026-10-05 (Linode-compatible regions/SKUs)
+region,North America,USA,Chicago,us-ord,Chicago,akamai
+region,Europe,UK,London,eu-lon,London,akamai
+region,Asia Pacific,Japan,Osaka,ap-osaka,Osaka,akamai
+vm,g6-standard-2,g6,us-ord,x86_64,2,8,0,true
+vm,g6-standard-4,g6,eu-lon,x86_64,4,8,0,true
+vm,g6-standard-2,g6,ap-osaka,x86_64,2,8,0,true
+os,us-ord,ubuntu,22.04,x86_64,linode/ubuntu22.04
+os,eu-lon,ubuntu,22.04,x86_64,linode/ubuntu22.04
+os,ap-osaka,ubuntu,22.04,x86_64,linode/ubuntu22.04
+`
+
+const fastlyAdapterCSV = `# Fastly snapshot 2026-10-05 — global anycast edge, no VMs
+region,Global,Global,Global,global,Fastly global anycast edge network,fastly
+`
+
+const vsphereAdapterCSV = `# vSphere snapshot 2026-10-05 — on-prem/private cloud; one pseudo-region per datacenter policy
+region,Private,On-prem,Datacenter,datacenter,Default vSphere datacenter,vsphere
+`
+
+var tailAdapterCatalogs = map[string]string{
+	"huawei":  huaweiAdapterCSV,
+	"akamai":  akamaiAdapterCSV,
+	"fastly":  fastlyAdapterCSV,
+	"vsphere": vsphereAdapterCSV,
+}
