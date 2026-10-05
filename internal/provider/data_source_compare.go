@@ -272,7 +272,7 @@ func compareComponentsFromModel(m compareModel) []client.Component {
 	appendComponents("waf", m.PyxWAF)
 	appendComponents("kubernetes", m.PyxKubernetes)
 	appendComponents("email", m.PyxEmail)
-	appendComponents("block-storage", m.PyxBlockStorage)
+	appendComponents("vm-volume", m.PyxBlockStorage)
 	appendComponents("prefix-list", m.PyxPrefixList)
 	appendComponents("synthetics", m.PyxSynthetics)
 	appendComponents("attach-to-existing-alb", m.PyxALBAttachment)

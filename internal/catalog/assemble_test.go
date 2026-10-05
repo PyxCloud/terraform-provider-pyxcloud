@@ -255,7 +255,7 @@ func TestAssembleHCLBlockStorageAndPrefixList(t *testing.T) {
 		Name: "demo", Provider: "aws", Region: "Dublin",
 		Components: []AssembleComponent{
 			{Name: "data", Type: "virtual-machine", Count: 1, VM: &AssembleVM{Architecture: "x86_64", CPU: "2", RAM: "4", OS: "ubuntu"}},
-			{Name: "datavol", Type: "block-storage", BlockStorage: &AssembleBlockStorage{SizeGB: 100, TargetVM: "data"}},
+			{Name: "datavol", Type: "vm-volume", VMVolume: &AssembleVMVolume{SizeGB: 100, TargetVM: "data"}},
 			{Name: "office", Type: "prefix-list", PrefixList: &AssemblePrefixList{Entries: []PrefixEntry{{CIDR: "203.0.113.0/24", Description: "office"}}}},
 		},
 	})

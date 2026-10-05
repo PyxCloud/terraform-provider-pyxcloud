@@ -123,7 +123,7 @@ type AssembleComponent struct {
 	K8s                  *AssembleK8s
 	LB                   *AssembleLB
 	Email                *AssembleEmail
-	BlockStorage         *AssembleBlockStorage
+	VMVolume             *AssembleVMVolume
 	PrefixList           *AssemblePrefixList
 	Synthetics           *AssembleSynthetics
 	ScheduledTrigger     *AssembleScheduledTrigger
@@ -274,8 +274,9 @@ type AssembleSynthetics struct {
 	ExecRoleARN    string
 }
 
-// AssembleBlockStorage is the config for a `block-storage` component (attaches to a VM).
-type AssembleBlockStorage struct {
+// AssembleVMVolume is the config for a `vm-volume` component (attaches to a VM;
+// aliases block-storage/volume).
+type AssembleVMVolume struct {
 	SizeGB     int
 	VolumeType string
 	DeviceName string
@@ -1400,19 +1401,19 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, emHCL)
-		case "block-storage":
-			if c.BlockStorage == nil {
-				return nil, fmt.Errorf("component %q (block-storage): config is required", c.Name)
+		case "vm-volume", "block-storage", "volume":
+			if c.VMVolume == nil {
+				return nil, fmt.Errorf("component %q (vm-volume): config is required", c.Name)
 			}
-			bsPlan, err := TranslateBlockStorage(ctx, cat, BlockStorageSpec{
+			bsPlan, err := TranslateVMVolume(ctx, cat, VMVolumeSpec{
 				Name: c.Name, Region: in.Region, Provider: in.Provider,
-				SizeGB: c.BlockStorage.SizeGB, VolumeType: c.BlockStorage.VolumeType,
-				DeviceName: c.BlockStorage.DeviceName, TargetVM: c.BlockStorage.TargetVM,
+				SizeGB: c.VMVolume.SizeGB, VolumeType: c.VMVolume.VolumeType,
+				DeviceName: c.VMVolume.DeviceName, TargetVM: c.VMVolume.TargetVM,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
 			}
-			bsHCL, err := RenderBlockStorageHCL(bsPlan)
+			bsHCL, err := RenderVMVolumeHCL(bsPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}

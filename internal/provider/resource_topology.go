@@ -90,7 +90,7 @@ var pyxComponentTypes = []pyxComponentType{
 	{BlockName: "pyx_waf", CanonicalType: "waf", Description: "PyxCloud WAF component."},
 	{BlockName: "pyx_kubernetes", CanonicalType: "kubernetes", Description: "PyxCloud Kubernetes component."},
 	{BlockName: "pyx_email", CanonicalType: "email", Description: "PyxCloud email component."},
-	{BlockName: "pyx_block_storage", CanonicalType: "block-storage", Description: "PyxCloud block storage component."},
+	{BlockName: "pyx_block_storage", CanonicalType: "vm-volume", Description: "PyxCloud vm-volume (persistent VM-attached volume) component."},
 	{BlockName: "pyx_prefix_list", CanonicalType: "prefix-list", Description: "PyxCloud prefix list component."},
 	{BlockName: "pyx_synthetics", CanonicalType: "synthetics", Description: "PyxCloud synthetics component."},
 	{BlockName: "pyx_alb_attachment", CanonicalType: "attach-to-existing-alb", Description: "PyxCloud existing ALB attachment component."},
@@ -2160,7 +2160,7 @@ func topologyComponentsFromModel(m topologyModel) []client.Component {
 	appendComponents("waf", m.PyxWAF)
 	appendComponents("kubernetes", m.PyxKubernetes)
 	appendComponents("email", m.PyxEmail)
-	appendComponents("block-storage", m.PyxBlockStorage)
+	appendComponents("vm-volume", m.PyxBlockStorage)
 	appendComponents("prefix-list", m.PyxPrefixList)
 	appendComponents("synthetics", m.PyxSynthetics)
 	appendComponents("attach-to-existing-alb", m.PyxALBAttachment)
@@ -2241,7 +2241,7 @@ func appendTopologyComponentModel(m *topologyModel, canonicalType string, cm com
 		m.PyxKubernetes = append(m.PyxKubernetes, cm)
 	case "email", "email-service":
 		m.PyxEmail = append(m.PyxEmail, cm)
-	case "block-storage":
+	case "vm-volume", "block-storage", "volume":
 		m.PyxBlockStorage = append(m.PyxBlockStorage, cm)
 	case "prefix-list":
 		m.PyxPrefixList = append(m.PyxPrefixList, cm)

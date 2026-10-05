@@ -59,7 +59,8 @@ var selfHostRecipes = map[string]selfHostRecipe{
 	"cdn":                 {Image: "varnish:7", Port: 80, CPU: 2, RAM: 4, envNote: "Varnish HTTP cache (cdn)", degraded: true},
 	"email-service":       {Image: "bytemark/smtp:latest", Port: 25, CPU: 1, RAM: 2, envNote: "SMTP relay (email-service substitute)", degraded: true},
 	"email":               {Image: "bytemark/smtp:latest", Port: 25, CPU: 1, RAM: 2, envNote: "SMTP relay (email substitute)", degraded: true},
-	"block-storage":       {Image: "itsthenetwork/nfs-server-alpine:latest", Port: 2049, CPU: 1, RAM: 2, envNote: "NFS server (block-storage substitute)", degraded: true},
+	"vm-volume":           {Image: "itsthenetwork/nfs-server-alpine:latest", Port: 2049, CPU: 1, RAM: 2, envNote: "NFS server (vm-volume substitute)", degraded: true},
+	"block-storage":       {Image: "itsthenetwork/nfs-server-alpine:latest", Port: 2049, CPU: 1, RAM: 2, envNote: "NFS server (vm-volume substitute)", degraded: true}, // alias token
 }
 
 // Mitigatable reports whether a component type has a VM-hosted substitute.
@@ -173,7 +174,8 @@ var nativeSupport = map[string]map[string]bool{
 	// operator-alias precedents (queue/WAF/secrets). See docs/cutover/EMAIL-PATH.md.
 	"email-service": {ProviderAWS: true, ProviderDigitalOcean: true},
 	"email":         {ProviderAWS: true, ProviderDigitalOcean: true},
-	"block-storage": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"vm-volume":     {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"block-storage": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true}, // alias token
 }
 
 // NativelySupported reports whether the provider offers a managed service for the

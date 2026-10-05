@@ -258,7 +258,7 @@ type envSyntheticsModel struct {
 	ExecRoleARN    types.String `tfsdk:"exec_role_arn"`
 }
 
-type envBlockStorageModel struct {
+type envVMVolumeModel struct {
 	SizeGB     types.Int64  `tfsdk:"size_gb"`
 	VolumeType types.String `tfsdk:"volume_type"`
 	DeviceName types.String `tfsdk:"device_name"`
@@ -986,8 +986,8 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		if typed.canonicalType == "email" || nonEmptyString(cm.Domain) {
 			comp.Email = &catalog.AssembleEmail{Domain: cm.Domain.ValueString()}
 		}
-		if typed.canonicalType == "block-storage" || intSet(cm.SizeGB) || nonEmptyString(cm.TargetVM) {
-			comp.BlockStorage = &catalog.AssembleBlockStorage{SizeGB: int(cm.SizeGB.ValueInt64()), VolumeType: cm.VolumeType.ValueString(), DeviceName: cm.DeviceName.ValueString(), TargetVM: cm.TargetVM.ValueString()}
+		if typed.canonicalType == "vm-volume" || typed.canonicalType == "block-storage" || intSet(cm.SizeGB) || nonEmptyString(cm.TargetVM) {
+			comp.VMVolume = &catalog.AssembleVMVolume{SizeGB: int(cm.SizeGB.ValueInt64()), VolumeType: cm.VolumeType.ValueString(), DeviceName: cm.DeviceName.ValueString(), TargetVM: cm.TargetVM.ValueString()}
 		}
 		if typed.canonicalType == "prefix-list" || len(cm.Entries) > 0 {
 			pl := &catalog.AssemblePrefixList{}
@@ -1057,7 +1057,7 @@ func environmentComponentsFromModel(m environmentModel) []typedEnvComponentModel
 	appendComponents("waf", m.PyxWAF)
 	appendComponents("kubernetes", m.PyxKubernetes)
 	appendComponents("email", m.PyxEmail)
-	appendComponents("block-storage", m.PyxBlockStorage)
+	appendComponents("vm-volume", m.PyxBlockStorage)
 	appendComponents("prefix-list", m.PyxPrefixList)
 	appendComponents("synthetics", m.PyxSynthetics)
 	appendComponents("attach-to-existing-alb", m.PyxALBAttachment)
