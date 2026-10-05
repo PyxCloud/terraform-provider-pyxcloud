@@ -298,6 +298,8 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 		AdapterManifests[ProviderRackspace],
 		AdapterManifests["huawei"], AdapterManifests["akamai"],
 		AdapterManifests["fastly"], AdapterManifests["vsphere"],
+		AdapterManifests[ProviderBaidu], AdapterManifests[ProviderJD],
+		AdapterManifests[ProviderNTT], AdapterManifests[ProviderUCloud],
 	} {
 		var csv string
 		switch am.Provider {
@@ -313,6 +315,9 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 			csv = rackspaceAdapterCSV
 		default:
 			csv = tailAdapterCatalogs[am.Provider]
+			if csv == "" {
+				csv = gapTailCatalogs[am.Provider]
+			}
 			if csv == "" {
 				return nil, fmt.Errorf("adapter %q: no embedded snapshot registered", am.Provider)
 			}

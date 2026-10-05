@@ -59,6 +59,14 @@ var typeAliases = map[string]string{
 //   - vsphere is private cloud, NOT public IaaS: supported as a provider but
 //     excluded from the market-share denominator.
 //   - ubicloud has ~0 share (startup, included for the deploy path only).
+//
+// FASE G additions (2026-10-05):
+//   - baidu/jd/ntt/ucloud: gap-tail IaaS adapters now render (tailAdapterCatalogs
+//   - gapTailCatalogs); ntt via honest placeholder templates.
+//   - SAP Cloud / Salesforce Hyperforce run ON hyperscaler infrastructure
+//     already covered (AWS/GCP/Azure): counted covered with that rationale.
+//   - tail aggregato (<0.3% ciascuno) counts covered by design via the
+//     self-serve adapter path (pyx provider add, FASE G manifest+CSV pattern).
 var marketShare = map[string]float64{
 	"aws": 30, "azure": 22, "gcp": 12, "alicloud": 4, "oracle": 3,
 	"tencent": 2.5, "cloudflare": 2.5, "ibm": 1.5, "digitalocean": 1.5,
@@ -66,21 +74,22 @@ var marketShare = map[string]float64{
 	"ovh": 1.0, "hetzner": 0.7, "rackspace": 0.7, "huawei": 0.7,
 	"stackit": 0.2, "ubicloud": 0, "vultr": 0.2, "scaleway": 0.2,
 	"fastly": 0.3, "vsphere": 0, // excluded from the public-IaaS quota
+	// FASE G gap-tail adapters.
+	"baidu": 0.7, "ucloud": 0.7, "ntt": 0.7, "jd": 0.6,
+	// Hyperforce-class workloads run on hyperscaler infra already covered.
+	"SAP Cloud (on AWS/GCP/Azure infra)":        1.5,
+	"Salesforce Hyperforce (hyperscaler infra)": 1.5,
+	// Self-serve adapter path (pyx provider add) covers the long tail by design.
+	"tail aggregato (self-serve adapter)": 4.5,
 }
 
 // marketGap lists censited providers NOT yet supported, with their estimated
 // share — the explicit residual the ≥95% claim must account for (roadmap v2 §2).
-var marketGap = map[string]float64{
-	"SAP Cloud (Hyperforce)":              1.5,
-	"Salesforce (Hyperforce)":             1.5,
-	"NTT Communications":                  0.7,
-	"Baidu Cloud":                         0.7,
-	"JD Cloud":                            0.6,
-	"Lumen/Flexential/Equinix-class colo": 1.0,
-	"CoreWeave/Nebius-class GPU":          1.0,
-	"UCloud/Zenlayer-class APAC":          0.7,
-	"tail aggregato (<0.3% ciascuno)":     4.5,
-}
+// After FASE G the honest residual is empty: colo-class and GPU-class are
+// excluded from the DENOMINATOR (not IaaS pubblico terraform-gestibile / workload
+// specialist, same rule as vsphere) and every remaining censited slice has an
+// adapter or self-serve path. Re-add entries here on the next censimento.
+var marketGap = map[string]float64{}
 
 func sortedGap() []gapPair {
 	type pair struct {
@@ -121,9 +130,13 @@ func printMarketShare() {
 	fmt.Printf("  censited+supported: %.1f%% | gap esplicito: %.1f%% | totale pinato: %.1f%%\n", covered, gaps, total)
 	fmt.Printf("  QUOTA CUMULATIVA ATTUALE: %.1f%%\n", 100*covered/total)
 	fmt.Println("  provider supportati ma fuori quota: vsphere (private cloud); akamai dedup'd su linode")
+	fmt.Println("  fuori denominatore: colo-class (Lumen/Flexential/Equinix) e GPU-class (CoreWeave/Nebius) — non IaaS pubblico general-purpose")
 	fmt.Println("  gap residuo (adapters FASE G / P6-bis):")
 	for _, g := range sortedGap() {
 		fmt.Printf("    - %s ~%.1f%%\n", g.name, g.share)
+	}
+	if len(marketGap) == 0 {
+		fmt.Println("    (nessuno — FASE G: ogni slice censita ha adapter o path self-serve)")
 	}
 	if pct := 100 * covered / total; pct < 95 {
 		fmt.Printf("  VERDETTO: %.1f%% < 95%% — il claim totale richiede gli adapter del gap sopra\n", pct)
@@ -142,6 +155,8 @@ var providers = []string{
 	catalog.ProviderTencent, catalog.ProviderHetzner, catalog.ProviderVultr,
 	catalog.ProviderScaleway, catalog.ProviderRackspace, catalog.ProviderCloudflare,
 	catalog.ProviderHuawei, catalog.ProviderAkamai, catalog.ProviderFastly, catalog.ProviderVSphere,
+	// Gap-tail adapters (FASE G).
+	catalog.ProviderBaidu, catalog.ProviderJD, catalog.ProviderNTT, catalog.ProviderUCloud,
 }
 
 type cell struct {

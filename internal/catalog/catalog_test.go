@@ -103,7 +103,8 @@ func TestEmbeddedSnapshotWellFormed(t *testing.T) {
 		switch r.CSP {
 		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci", "ibm", "alicloud", "ovh", "stackit",
 			"tencent", "hetzner", "vultr", "scaleway", "rackspace", "cloudflare", // tier-2 adapters + edge (roadmap P5/P6)
-			"huawei", "akamai", "fastly", "vsphere": // market-coverage tail (adapter API)
+			"huawei", "akamai", "fastly", "vsphere", // market-coverage tail (adapter API)
+			"baidu", "jd", "ntt", "ucloud": // gap-tail adapters (FASE G)
 		default:
 			t.Errorf("unexpected csp %q in catalog snapshot (row %+v)", r.CSP, r)
 		}

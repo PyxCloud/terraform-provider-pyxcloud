@@ -1884,6 +1884,11 @@ var cloudProviderSource = map[string][2]string{
 	ProviderAkamai:  {"akamai", "akamai/akamai"},
 	ProviderFastly:  {"fastly", "fastly/fastly"},
 	ProviderVSphere: {"vsphere", "hashicorp/vsphere"},
+	// Gap-tail providers (FASE G).
+	ProviderBaidu:  {"baiducloud", "baidubce/baiducloud"},
+	ProviderJD:     {"jdcloud", "jdcloudsec/jdcloud"},
+	ProviderNTT:    {"nttcom", "nttcom/nttcom"},
+	ProviderUCloud: {"ucloud", "ucloud/ucloud"},
 }
 
 // cloudflareZoneIDVarDecl is the inline variable declaration the Cloudflare

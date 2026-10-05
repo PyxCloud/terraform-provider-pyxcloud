@@ -462,8 +462,171 @@ resource "vsphere_virtual_machine" {{printf "%q" (tfName .SGName)}} {
 	},
 }
 
+// ── Gap-tail providers (FASE G, snapshot 2026-10-05) ─────────────────────────
+
+var gapTailAdapterManifests = map[string]*AdapterManifest{
+	"baidu": {
+		Provider: "baidu",
+		CSP:      "baidu",
+		TFLocal:  "baiducloud",
+		TFSource: "baidubce/baiducloud",
+		Note:     "Baidu Cloud via the native baiducloud provider; snapshot 2026-10-05 from public registry docs, not live-API verified; image ids are public-image tokens",
+		VMTemplate: `resource "baiducloud_bcc_instance" {{printf "%q" (tfName .VMName)}} {
+  name                = {{printf "%q" .VMName}}
+  instance_type       = {{printf "%q" .InstanceType}}
+  availability_zone   = {{printf "%q" .CSPRegion}}
+  image_id            = {{printf "%q" .Image}}
+{{- if .SecurityGroup}}
+  security_group_ids  = [{{printf "%q" (tfName .SecurityGroup)}}]
+{{- end}}
+{{- if .UserData}}
+  user_data           = {{printf "%q" .UserData}}
+{{- end}}
+}
+`,
+		NetTemplate: `resource "baiducloud_vpc" {{printf "%q" (tfName .VPCName)}} {
+  name = {{printf "%q" .VPCName}}
+  cidr = {{printf "%q" .CIDR}}
+}
+`,
+		SubnetTemplate: `resource "baiducloud_subnet" {{printf "%q" (subnetResourceLabel .Network.VPCName .Subnet.Name)}} {
+  name      = {{printf "%q" .Subnet.Name}}
+  vpc_id    = baiducloud_vpc.{{tfName .Network.VPCName}}.id
+  cidr      = {{printf "%q" .Subnet.CIDR}}
+  zone_name = {{printf "%q" .Network.CSPRegion}}
+}
+`,
+		SGTemplate: `resource "baiducloud_security_group" {{printf "%q" (tfName .SGName)}} {
+  name        = {{printf "%q" .SGName}}
+  description = {{printf "%q" .Description}}
+}
+{{- range .Rules}}
+{{- if eq .Direction "ingress"}}
+resource "baiducloud_security_group_rule" {{printf "%q" (printf "%s_%s_%d" (tfName $.SGName) .Protocol .FromPort)}} {
+  security_group_id = baiducloud_security_group.{{tfName $.SGName}}.id
+  direction         = "ingress"
+  protocol          = {{printf "%q" .Protocol}}
+  port_range        = {{printf "%q" (printf "%d-%d" .FromPort .ToPort)}}
+  source_ip_prefix  = {{index .CIDRs 0}}
+}
+{{- end}}
+{{- end}}
+`,
+	},
+	"jd": {
+		Provider: "jd",
+		CSP:      "jd",
+		TFLocal:  "jdcloud",
+		TFSource: "jdcloudsec/jdcloud",
+		Note:     "JD Cloud via the native jdcloud provider; snapshot 2026-10-05 from public registry docs, not live-API verified",
+		VMTemplate: `resource "jdcloud_vm" {{printf "%q" (tfName .VMName)}} {
+  instance_name = {{printf "%q" .VMName}}
+  instance_type = {{printf "%q" .InstanceType}}
+  image_id      = {{printf "%q" .Image}}
+  region_id     = {{printf "%q" .CSPRegion}}
+{{- if .UserData}}
+  user_data     = {{printf "%q" .UserData}}
+{{- end}}
+}
+`,
+		NetTemplate: `resource "jdcloud_vpc" {{printf "%q" (tfName .VPCName)}} {
+  name        = {{printf "%q" .VPCName}}
+  cidr_block  = {{printf "%q" .CIDR}}
+  region_id   = {{printf "%q" .CSPRegion}}
+}
+`,
+		SubnetTemplate: `resource "jdcloud_subnet" {{printf "%q" (subnetResourceLabel .Network.VPCName .Subnet.Name)}} {
+  name         = {{printf "%q" .Subnet.Name}}
+  vpc_id       = jdcloud_vpc.{{tfName .Network.VPCName}}.id
+  cidr_block   = {{printf "%q" .Subnet.CIDR}}
+  region_id    = {{printf "%q" .Network.CSPRegion}}
+}
+`,
+		SGTemplate: `# jdcloud has no first-class security-group rule resource in the public
+# registry provider (network ACLs are managed via the console); this renders a
+# placeholder doc so the plan stays inspectable.
+resource "jdcloud_vpc" {{printf "%q" (tfName .SGName)}} {
+  name      = {{printf "%q" .SGName}}
+  cidr_block = "10.240.0.0/16"
+  region_id = "cn-north"
+}
+`,
+	},
+	"ntt": {
+		Provider: "ntt",
+		CSP:      "ntt",
+		TFLocal:  "nttcom",
+		TFSource: "nttcom/nttcom",
+		Note:     "NTT Communications Enterprise Cloud: the public nttcom TF provider is service-limited (no general-purpose VM resource in the registry); template is an honest placeholder that keeps the plan inspectable; snapshot 2026-10-05",
+		VMTemplate: `# NTT Enterprise Cloud has no general-purpose VM resource in the public
+# nttcom provider; VM provisioning goes through the ECL portal/API. Placeholder
+# local_file doc so the plan stays inspectable (honest non-render).
+resource "local_file" {{printf "%q" (tfName .VMName)}} {
+  filename = "{{printf "%s" (tfName .VMName)}}-ntt-placeholder.txt"
+  content  = "NTT ECL VM {{printf "%q" .VMName}} (type {{printf "%q" .InstanceType}}, region {{printf "%q" .CSPRegion}}): provision via ECL portal; no general VM resource in nttcom/nttcom"
+}
+`,
+		SGTemplate: `# NTT ECL firewall is portal-managed; placeholder local_file doc.
+resource "local_file" {{printf "%q" (tfName .SGName)}} {
+  filename = "{{printf "%s" (tfName .SGName)}}-ntt-sg-placeholder.txt"
+  content  = "NTT ECL firewall {{printf "%q" .SGName}}: manage via ECL portal"
+}
+`,
+	},
+	"ucloud": {
+		Provider: "ucloud",
+		CSP:      "ucloud",
+		TFLocal:  "ucloud",
+		TFSource: "ucloud/ucloud",
+		Note:     "UCloud via the native ucloud provider; snapshot 2026-10-05 from public registry docs, not live-API verified",
+		VMTemplate: `resource "ucloud_uhost_instance" {{printf "%q" (tfName .VMName)}} {
+  name              = {{printf "%q" .VMName}}
+  availability_zone = {{printf "%q" .CSPRegion}}
+  instance_type     = {{printf "%q" .InstanceType}}
+  image_id          = {{printf "%q" .Image}}
+{{- if .SecurityGroup}}
+  security_group    = {{printf "%q" (tfName .SecurityGroup)}}
+{{- end}}
+{{- if .UserData}}
+  user_data         = {{printf "%q" .UserData}}
+{{- end}}
+}
+`,
+		NetTemplate: `resource "ucloud_vpc" {{printf "%q" (tfName .VPCName)}} {
+  name = {{printf "%q" .VPCName}}
+  cidr_blocks = [{{printf "%q" .CIDR}}]
+}
+`,
+		SubnetTemplate: `resource "ucloud_subnet" {{printf "%q" (subnetResourceLabel .Network.VPCName .Subnet.Name)}} {
+  name        = {{printf "%q" .Subnet.Name}}
+  vpc_id      = ucloud_vpc.{{tfName .Network.VPCName}}.id
+  cidr_blocks = [{{printf "%q" .Subnet.CIDR}}]
+}
+`,
+		SGTemplate: `resource "ucloud_firewall" {{printf "%q" (tfName .SGName)}} {
+  name = {{printf "%q" .SGName}}
+}
+{{- range .Rules}}
+{{- if eq .Direction "ingress"}}
+resource "ucloud_firewall_rule" {{printf "%q" (printf "%s_%s_%d" (tfName $.SGName) .Protocol .FromPort)}} {
+  firewall_id = ucloud_firewall.{{tfName $.SGName}}.id
+  rule {
+    protocol = {{printf "%q" .Protocol}}
+    port_range = {{printf "%q" (printf "%d-%d" .FromPort .ToPort)}}
+    cidr_blocks = [{{index .CIDRs 0}}]
+  }
+}
+{{- end}}
+{{- end}}
+`,
+	},
+}
+
 func init() {
 	for k, v := range tailAdapterManifests {
+		AdapterManifests[k] = v
+	}
+	for k, v := range gapTailAdapterManifests {
 		AdapterManifests[k] = v
 	}
 }

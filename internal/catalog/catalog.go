@@ -94,6 +94,15 @@ const (
 	ProviderAkamai  = "akamai"
 	ProviderFastly  = "fastly"
 	ProviderVSphere = "vsphere"
+
+	// Gap-tail providers (FASE G market-coverage push, 2026-10-05): VM-only
+	// IaaS adapters; all non-VM types fall back to the standard self-host
+	// mitigation (same as hetzner). ntt renders an honest placeholder because
+	// the public nttcom provider has no general VM resource.
+	ProviderBaidu  = "baidu"
+	ProviderJD     = "jd"
+	ProviderNTT    = "ntt"
+	ProviderUCloud = "ucloud"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -127,6 +136,11 @@ var providerToCSP = map[string]string{
 	ProviderAkamai:  "akamai",
 	ProviderFastly:  "fastly",
 	ProviderVSphere: "vsphere",
+	// Gap-tail providers (FASE G).
+	ProviderBaidu:  "baidu",
+	ProviderJD:     "jd",
+	ProviderNTT:    "ntt",
+	ProviderUCloud: "ucloud",
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

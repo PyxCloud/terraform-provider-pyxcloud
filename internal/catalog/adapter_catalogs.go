@@ -123,9 +123,53 @@ const vsphereAdapterCSV = `# vSphere snapshot 2026-10-05 — on-prem/private clo
 region,Private,On-prem,Datacenter,datacenter,Default vSphere datacenter,vsphere
 `
 
+const baiduAdapterCSV = `# Baidu Cloud adapter snapshot 2026-10-05 (fwh/gz) — bcc.g4/bcc.c4 families from public docs
+region,Asia Pacific,China,Beijing,fwh,Baidu Cloud Beijing (fwh),baidu
+region,Asia Pacific,China,Guangzhou,gz,Baidu Cloud Guangzhou (gz),baidu
+vm,bcc.g4.c2m4,bcc.g4,fwh,x86_64,2,4,0,true
+vm,bcc.g4.c4m8,bcc.g4,fwh,x86_64,4,8,0,true
+vm,bcc.c4.c2m4,bcc.c4,gz,x86_64,2,4,0,true
+vm,bcc.c4.c4m8,bcc.c4,gz,x86_64,4,8,0,true
+os,fwh,ubuntu,22.04,x86_64,uimg-ubuntu-22-04
+os,gz,ubuntu,22.04,x86_64,uimg-ubuntu-22-04
+`
+
+const jdAdapterCSV = `# JD Cloud adapter snapshot 2026-10-05 (cn-north) — g.n4/c.n4 families from public docs
+region,Asia Pacific,China,Beijing,cn-north,JD Cloud North China,jd
+vm,g.n4.standard,g.n4,cn-north,x86_64,2,4,0,true
+vm,c.n4.medium,c.n4,cn-north,x86_64,2,4,0,true
+os,cn-north,ubuntu,22.04,x86_64,img-ubuntu-22-04
+`
+
+const nttAdapterCSV = `# NTT Communications adapter snapshot 2026-10-05 (ECL Tokyo/Osaka) — VM-only;
+# pseudo-flavors, the nttcom TF provider has no general VM resource (see manifest Note)
+region,Asia Pacific,Japan,Tokyo,ntt-tokyo,NTT ECL Tokyo,ntt
+region,Asia Pacific,Japan,Osaka,ntt-osaka,NTT ECL Osaka,ntt
+vm,Standard-2,Standard,ntt-tokyo,x86_64,2,4,0,true
+vm,Standard-2,Standard,ntt-osaka,x86_64,2,4,0,true
+os,ntt-tokyo,ubuntu,22.04,x86_64,ubuntu-22.04
+`
+
+const ucloudAdapterCSV = `# UCloud adapter snapshot 2026-10-05 (cn-bj2/hk) — UHost families from public docs
+region,Asia Pacific,China,Beijing,cn-bj2,UCloud Beijing 2,ucloud
+region,Asia Pacific,Hong Kong,Hong Kong,hk,UCloud Hong Kong,ucloud
+vm,n-highcpu-2,n-highcpu,cn-bj2,x86_64,2,4,0,true
+vm,n-standard-4,n-standard,cn-bj2,x86_64,4,8,0,true
+vm,n-highcpu-2,n-highcpu,hk,x86_64,2,4,0,true
+os,cn-bj2,ubuntu,22.04,x86_64,ubuntu-22.04
+os,hk,ubuntu,22.04,x86_64,ubuntu-22.04
+`
+
 var tailAdapterCatalogs = map[string]string{
 	"huawei":  huaweiAdapterCSV,
 	"akamai":  akamaiAdapterCSV,
 	"fastly":  fastlyAdapterCSV,
 	"vsphere": vsphereAdapterCSV,
+}
+
+var gapTailCatalogs = map[string]string{
+	"baidu":  baiduAdapterCSV,
+	"jd":     jdAdapterCSV,
+	"ntt":    nttAdapterCSV,
+	"ucloud": ucloudAdapterCSV,
 }
