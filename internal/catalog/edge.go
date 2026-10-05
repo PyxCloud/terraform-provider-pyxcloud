@@ -243,6 +243,17 @@ func TranslateCDN(ctx context.Context, cat RegionCatalog, spec CDNSpec) (CDNPlan
 			UsesCloudflare: true,
 		}, nil
 	}
+	if provider == ProviderCloudflare {
+		// P5 promotion: Cloudflare IS the edge. The provider routes to the native
+		// Cloudflare CDN/DNS render (the same route the DO non-Spaces-origin path
+		// takes). Compute components on cloudflare are unsupported by design.
+		return CDNPlan{
+			Provider: provider, CSP: row.CSP, RegionName: row.RegionName, CSPRegion: row.CSPRegion,
+			Name: canonicalName(spec.Name, "pyxcloud-cdn"), OriginKind: originKind,
+			OriginName: canonicalName(spec.OriginName, ""), ResourceType: "cloudflare_dns_record",
+			UsesCloudflare: true,
+		}, nil
+	}
 	if provider == ProviderIBM {
 		// IBM Cloud has no origin-scoped CDN distribution resource (CloudFront/Cloud
 		// CDN analogue). IBM Cloud Internet Services (CIS) caching is DOMAIN-scoped

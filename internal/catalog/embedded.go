@@ -93,6 +93,14 @@ var linodeCatalogCSV string
 //go:embed ibm_catalog.csv
 var ibmRegionCatalogCSV string
 
+// cloudflareRegionCatalogCSV (P5 promotion) declares Cloudflare's global anycast
+// edge as one pseudo-region so DNS/CDN components translate like any other
+// provider. Cloudflare cannot host VMs — the edge rows are dns/cdn-only by
+// design; any compute component surfaces the honest unsupported error.
+var cloudflareRegionCatalogCSV = `macro_region,country,region_name,csp_region,csp_region_description,csp
+Global,Global,Global,global,Cloudflare global anycast edge network,cloudflare
+`
+
 //go:embed ibm_vm_catalog.csv
 var ibmVMCatalogCSV string
 
@@ -175,6 +183,12 @@ func NewEmbedded() (*EmbeddedCatalog, error) {
 		return nil, err
 	}
 	rows = append(rows, ibmRows...)
+	// P5 promotion: Cloudflare global edge (DNS/CDN only) joins the same index.
+	cfRows, err := parseRegionCSV(cloudflareRegionCatalogCSV)
+	if err != nil {
+		return nil, err
+	}
+	rows = append(rows, cfRows...)
 	c := &EmbeddedCatalog{byCSPRegion: make(map[string]RegionRow, len(rows)), rows: rows}
 	for _, r := range rows {
 		// First row for a (csp, region_name) wins; the snapshot is already

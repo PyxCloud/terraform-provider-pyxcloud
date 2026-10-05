@@ -41,7 +41,7 @@ var providers = []string{
 	// Tier-2 adapter providers (roadmap P6): tencent/hetzner/vultr/scaleway
 	// native TF providers, rackspace via openstack against Rackspace endpoints.
 	catalog.ProviderTencent, catalog.ProviderHetzner, catalog.ProviderVultr,
-	catalog.ProviderScaleway, catalog.ProviderRackspace,
+	catalog.ProviderScaleway, catalog.ProviderRackspace, catalog.ProviderCloudflare,
 }
 
 type cell struct {

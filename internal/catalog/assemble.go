@@ -1876,6 +1876,8 @@ var cloudProviderSource = map[string][2]string{
 	ProviderVultr:     {"vultr", "vultr/vultr"},
 	ProviderScaleway:  {"scaleway", "scaleway/scaleway"},
 	ProviderRackspace: {"openstack", "terraform-provider-openstack/openstack"},
+	// Cloudflare (P5 promotion): edge provider — DNS/CDN only.
+	ProviderCloudflare: {"cloudflare", "cloudflare/cloudflare"},
 }
 
 // cloudflareZoneIDVarDecl is the inline variable declaration the Cloudflare

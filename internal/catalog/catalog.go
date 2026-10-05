@@ -82,6 +82,10 @@ const (
 	ProviderVultr     = "vultr"
 	ProviderScaleway  = "scaleway"
 	ProviderRackspace = "rackspace"
+
+	// Cloudflare (P5 promotion): edge provider — DNS + CDN only. Cloudflare
+	// cannot host VMs; any compute component on it surfaces the honest error.
+	ProviderCloudflare = "cloudflare"
 )
 
 // providerToCSP maps a Terraform-facing provider name to the catalog csp token.
@@ -108,6 +112,8 @@ var providerToCSP = map[string]string{
 	ProviderVultr:     cspVultr,
 	ProviderScaleway:  cspScaleway,
 	ProviderRackspace: cspRackspace,
+	// Cloudflare (P5 promotion): edge provider, DNS/CDN only.
+	ProviderCloudflare: "cloudflare",
 }
 
 // ProviderToCSP returns the catalog csp token for a provider-facing name, and

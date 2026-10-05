@@ -102,7 +102,7 @@ func TestEmbeddedSnapshotWellFormed(t *testing.T) {
 		}
 		switch r.CSP {
 		case "aws", "gcp", "do", "azure", "linode", "ubicloud", "oci", "ibm", "alicloud", "ovh", "stackit",
-			"tencent", "hetzner", "vultr", "scaleway", "rackspace": // tier-2 adapters (roadmap P6)
+			"tencent", "hetzner", "vultr", "scaleway", "rackspace", "cloudflare": // tier-2 adapters (roadmap P6)
 		default:
 			t.Errorf("unexpected csp %q in catalog snapshot (row %+v)", r.CSP, r)
 		}

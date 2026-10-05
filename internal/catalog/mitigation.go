@@ -163,8 +163,8 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,
 		ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderStackIt: true,
 	},
-	"cdn-service": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
-	"cdn":         {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
+	"cdn-service": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true, ProviderCloudflare: true}, // P5: cloudflare is a native edge provider
+	"cdn":         {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true, ProviderCloudflare: true},
 	// email on DO has no managed transactional-email primitive, but F1-05
 	// (pd-MIG-CUTOVER-F1-05, BESPOKE GAP-2) routes it through the native catalog
 	// SMTP-relay render (AWS SES SMTP cross-cloud by default, or a 3rd-party relay)
