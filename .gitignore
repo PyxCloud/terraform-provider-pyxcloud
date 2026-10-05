@@ -29,3 +29,4 @@ graphify-out/
 # Temp
 /tmp/
 
+pyxcoverage-matrix
