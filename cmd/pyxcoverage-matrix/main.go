@@ -24,13 +24,28 @@ import (
 // mitigation layer knows about). Additional types can be appended here as the
 // vocabulary grows; the tool fails loudly on an empty list.
 var canonicalTypes = []string{
-	"managed-database", "cache", "object-storage", "blob-storage",
-	"managed-queue", "message-queue", "event-streaming", "event-bus",
+	"managed-database", "cache", "object-storage",
+	"managed-queue", "event-streaming",
 	"secrets-manager", "kms", "encryption-key",
-	"waf-service", "waf", "cdn-service", "cdn", "load-balancer",
+	"waf", "cdn", "load-balancer",
 	"serverless-function", "managed-kubernetes", "container-service",
-	"email-service", "email", "block-storage", "monitoring",
-	"synthetics", "uptime-check",
+	"email", "block-storage", "monitoring",
+	"synthetics",
+}
+
+// typeAliases maps accepted alias tokens (SPEC §3.1 vocabulary variants) to
+// their canonical type so the matrix never counts the same service twice.
+// blob-storage == object-storage (same handler: assemble.go "object-storage",
+// "blob-storage"; CanonicalObjectStorageType). block-storage is NOT an alias —
+// it is a distinct VM-attached volume component.
+var typeAliases = map[string]string{
+	"blob-storage":    "object-storage",
+	"message-queue":   "managed-queue",
+	"event-bus":       "event-streaming",
+	"waf-service":     "waf",
+	"cdn-service":     "cdn",
+	"email-service":   "email",
+	"uptime-check":    "synthetics",
 }
 
 var providers = []string{
@@ -73,7 +88,11 @@ func main() {
 	for _, p := range providers {
 		perProvider[p] = map[string]int{"native": 0, "mitigated": 0, "none": 0}
 	}
-	for _, t := range canonicalTypes {
+	for _, raw := range canonicalTypes {
+		t := raw
+		if c, ok := typeAliases[raw]; ok {
+			t = c // alias tokens fold into their canonical service
+		}
 		for _, p := range providers {
 			s := status(t, p)
 			cells = append(cells, cell{
