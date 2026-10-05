@@ -39,13 +39,13 @@ var canonicalTypes = []string{
 // "blob-storage"; CanonicalObjectStorageType). block-storage is NOT an alias —
 // it is a distinct VM-attached volume component.
 var typeAliases = map[string]string{
-	"blob-storage":    "object-storage",
-	"message-queue":   "managed-queue",
-	"event-bus":       "event-streaming",
-	"waf-service":     "waf",
-	"cdn-service":     "cdn",
-	"email-service":   "email",
-	"uptime-check":    "synthetics",
+	"blob-storage":  "object-storage",
+	"message-queue": "managed-queue",
+	"event-bus":     "event-streaming",
+	"waf-service":   "waf",
+	"cdn-service":   "cdn",
+	"email-service": "email",
+	"uptime-check":  "synthetics",
 }
 
 var providers = []string{
