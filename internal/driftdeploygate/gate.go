@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/iacsecscan"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/tfplanparser"
+	"github.com/PyxCloud/terraform-provider-pyxcloud/pkg/iacsecscan"
 )
 
 // PolicyVerdict represents the outcome of a drift policy evaluation.

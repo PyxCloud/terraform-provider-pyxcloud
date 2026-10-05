@@ -26,7 +26,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/billingscan"
+	"github.com/PyxCloud/terraform-provider-pyxcloud/pkg/billingscan"
 )
 
 func main() {

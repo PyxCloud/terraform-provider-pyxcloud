@@ -39,7 +39,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/iacsecscan"
+	"github.com/PyxCloud/terraform-provider-pyxcloud/pkg/iacsecscan"
 )
 
 func main() {
