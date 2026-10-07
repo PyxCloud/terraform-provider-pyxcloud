@@ -108,6 +108,8 @@ type AssembleComponent struct {
 	// (the mitigation path) EVEN on providers that have a native managed
 	// service. Empty (default) keeps the native managed path. Any other value
 	// is rejected at assemble time.
+	HostVM               string
+	HostBootstrap        string
 	Placement            string
 	VM                   *AssembleVM
 	ScaleGroup           *AssembleScaleGroup
@@ -148,6 +150,7 @@ type AssembleComponent struct {
 // AssembleStaticSite is the config for a `static-site` component (AWS Amplify ->
 // DO Spaces static website + Cloudflare CDN). pd-MIG-CUTOVER-F1-01 (GAP-1).
 type AssembleStaticSite struct {
+	CDNDisabled      bool
 	CustomDomain     string
 	BuildOutputDir   string
 	IndexDocument    string
@@ -607,6 +610,11 @@ func assembleVaultHAAlias(ctx context.Context, cat Catalog, c AssembleComponent,
 
 // AssembleHCL translates the environment to concrete terraform documents.
 func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, error) {
+	var hostErr error
+	in, hostErr = bindServiceHosts(in)
+	if hostErr != nil {
+		return nil, hostErr
+	}
 	if in.Name == "" {
 		return nil, fmt.Errorf("environment: name is required")
 	}
@@ -827,6 +835,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		if c.Placement == "vm" && !ExplicitVMPlacement(c.Type) {
 			return nil, fmt.Errorf("component %q (%s): placement=\"vm\" is not supported for this component type (supported: managed-database, cache)", c.Name, c.Type)
 		}
+		if c.HostVM != "" {
+			continue
+		}
 		// Mitigation: provider lacks the managed service -> self-host it on a VM.
 		// DEP-01.10: an explicit placement="vm" on managed-database/cache takes the
 		// SAME path even on providers that have a native managed service.
@@ -1030,6 +1041,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		case "static-site", "static-website", "static-hosting", "frontend-app", "spa":
 			ssSpec := StaticSiteSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.StaticSite != nil {
+				ssSpec.CDNDisabled = c.StaticSite.CDNDisabled
 				ssSpec.CustomDomain = c.StaticSite.CustomDomain
 				ssSpec.BuildOutputDir = c.StaticSite.BuildOutputDir
 				ssSpec.IndexDocument = c.StaticSite.IndexDocument

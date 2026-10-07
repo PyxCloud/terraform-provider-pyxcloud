@@ -91,3 +91,14 @@ func Render(ctx context.Context, in catalog.AssembleInput) ([]string, error) {
 	}
 	return AssembleHCL(ctx, cat, in)
 }
+
+// LoadBalancerAddressReference uses the canonical translated resource identity.
+type LoadBalancerPlan = catalog.LoadBalancerPlan
+
+var LoadBalancerAddressReference = catalog.LoadBalancerAddressReference
+
+type StaticSiteSpec = catalog.StaticSiteSpec
+type StaticSitePlan = catalog.StaticSitePlan
+
+var TranslateStaticSite = catalog.TranslateStaticSite
+var StaticSiteOriginHost = catalog.StaticSiteOriginHost
