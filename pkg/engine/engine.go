@@ -47,6 +47,17 @@ type AssembleScaleGroup = catalog.AssembleScaleGroup
 // AssembleMDB is the managed-database component shape.
 type AssembleMDB = catalog.AssembleMDB
 
+// V1 component payloads are aliases of the same authoritative engine model.
+// This lets server-side consumers construct inputs without internal imports.
+type AssembleCache = catalog.AssembleCache
+type AssembleDNS = catalog.AssembleDNS
+type AssembleLB = catalog.AssembleLB
+type AssembleLBListener = catalog.AssembleLBListener
+type AssembleLBRoutingRule = catalog.AssembleLBRoutingRule
+type AssembleObjectStorage = catalog.AssembleObjectStorage
+type AssembleStaticSite = catalog.AssembleStaticSite
+type AssembleBlockStorage = catalog.AssembleBlockStorage
+
 // SecurityRule is one ingress rule of AssembleInput.
 type SecurityRule = catalog.SecurityRule
 
