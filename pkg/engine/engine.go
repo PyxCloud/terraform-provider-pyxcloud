@@ -57,6 +57,14 @@ type AssembleLBRoutingRule = catalog.AssembleLBRoutingRule
 type AssembleObjectStorage = catalog.AssembleObjectStorage
 type AssembleStaticSite = catalog.AssembleStaticSite
 type AssembleBlockStorage = catalog.AssembleBlockStorage
+type DNSRecord = catalog.DNSRecord
+type VMSpec = catalog.VMSpec
+type VMPlan = catalog.VMPlan
+
+// TranslateVM and VMAddressReference expose canonical resolution and resource
+// references to consumers that bind DNS records to rendered instances.
+var TranslateVM = catalog.TranslateVM
+var VMAddressReference = catalog.VMAddressReference
 
 // SecurityRule is one ingress rule of AssembleInput.
 type SecurityRule = catalog.SecurityRule

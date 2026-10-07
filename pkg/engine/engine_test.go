@@ -40,3 +40,37 @@ func TestPublicEngineRendersDigitalOceanWithoutInternalImports(t *testing.T) {
 		t.Fatal("unsupported component accepted")
 	}
 }
+
+func TestVMAddressReferenceMatchesCanonicalRenderedResource(t *testing.T) {
+	cat, err := engine.NewEmbedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.TranslateVM(context.Background(), cat, engine.VMSpec{Name: "app", Provider: "digitalocean", Region: "Frankfurt", Architecture: "x86_64", CPU: 2, RAM: 4, OS: "ubuntu", Count: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := engine.VMAddressReference(plan, 0)
+	if err != nil || ref != "${digitalocean_droplet.app-1.ipv4_address}" {
+		t.Fatalf("reference %q, %v", ref, err)
+	}
+	docs, err := engine.AssembleHCL(context.Background(), cat, engine.AssembleInput{Name: "scope", Provider: "digitalocean", Region: "Frankfurt", Components: []engine.AssembleComponent{
+		{Name: "app", Type: "virtual-machine", Count: 1, VM: &engine.AssembleVM{Architecture: "x86_64", CPU: "2", RAM: "4", OS: "ubuntu"}},
+		{Name: "url", Type: "dns", DNS: &engine.AssembleDNS{ZoneID: "approved-test-zone", Records: []engine.DNSRecord{{Name: "app.example.test", Type: "A", Content: ref, TTL: 60}}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(docs, "\n")
+	if !strings.Contains(all, `resource "digitalocean_droplet" "app-1"`) || !strings.Contains(all, ref) {
+		t.Fatal("DNS reference does not bind rendered VM")
+	}
+	if _, err := engine.VMAddressReference(plan, 1); err == nil {
+		t.Fatal("unknown instance accepted")
+	}
+	plan.Provider = "aws"
+	plan.ResourceType = "aws_instance"
+	if _, err := engine.VMAddressReference(plan, 0); err == nil {
+		t.Fatal("unsupported provider reference guessed")
+	}
+}
