@@ -82,9 +82,8 @@ func DeriveSecurityBaseline(in AssembleInput) SecurityBaseline {
 		}
 	}
 
-	// Egress lock-down: only when the environment places compute AND opens ingress,
-	// i.e. exactly the condition under which the assembler emits an environment SG
-	// (see AssembleHCL step 2). Otherwise there is no SG to harden.
+	// Egress lock-down applies to compute even when no ingress is approved.
+	// The assembler emits the baseline SG with an empty inbound rule set.
 	hasCompute := false
 	for _, c := range in.Components {
 		switch c.Type {
@@ -96,8 +95,7 @@ func DeriveSecurityBaseline(in AssembleInput) SecurityBaseline {
 			hasCompute = true
 		}
 	}
-	exposesIngress := len(in.Expose) > 0 || len(in.IngressRules) > 0
-	if hasCompute && exposesIngress {
+	if hasCompute {
 		b.EgressRules = baselineEgress()
 	}
 

@@ -37,11 +37,11 @@ func TestDeriveSecurityBaselineEgress(t *testing.T) {
 		}
 	}
 
-	// No ingress exposed -> no SG emitted -> no egress baseline.
+	// No approved ingress still requires compute egress hardening.
 	noIngress := in
 	noIngress.Expose = nil
-	if got := DeriveSecurityBaseline(noIngress); len(got.EgressRules) != 0 {
-		t.Errorf("no ingress should derive no egress baseline, got %d", len(got.EgressRules))
+	if got := DeriveSecurityBaseline(noIngress); len(got.EgressRules) != 4 {
+		t.Errorf("no ingress must retain four baseline egress rules, got %d", len(got.EgressRules))
 	}
 
 	// No compute -> no SG -> no egress baseline (storage-only env).

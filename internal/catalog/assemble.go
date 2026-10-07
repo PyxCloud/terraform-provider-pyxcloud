@@ -610,6 +610,30 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	if in.Name == "" {
 		return nil, fmt.Errorf("environment: name is required")
 	}
+	// Baseline plain DO VMs carry the exact firewall selector. Clone payloads:
+	// rendering must not mutate caller-owned component authority.
+	if in.ApplySecurityBaseline && in.Provider == ProviderDigitalOcean {
+		components := append([]AssembleComponent(nil), in.Components...)
+		for i, c := range components {
+			if c.Type != "virtual-machine" || c.VM == nil {
+				continue
+			}
+			if strings.TrimSpace(c.Name) == "" {
+				return nil, fmt.Errorf("baseline VM: component name is required")
+			}
+			vm := *c.VM
+			tag := strings.TrimSpace(vm.Tag)
+			if strings.EqualFold(tag, "pyxcloud") {
+				return nil, fmt.Errorf("baseline VM: generic fleet tag refused")
+			}
+			if tag == "" {
+				tag = "pyx-" + tfName(in.Name) + "-" + tfName(c.Name)
+			}
+			vm.Tag = tag
+			components[i].VM = &vm
+		}
+		in.Components = components
+	}
 	cidr := in.CIDR
 	if cidr == "" {
 		cidr = "10.0.0.0/16"
@@ -720,7 +744,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// 2. Security group — only when VMs are present AND ports are exposed. A SG with
 	//    no rule is rejected by the translator, so with no expose we skip it and the
 	//    VMs fall back to the VPC default SG. vmSG is the name to wire onto VMs ("" = none).
-	if hasVM && (len(in.Expose) > 0 || len(in.IngressRules) > 0) {
+	if hasVM && (len(in.Expose) > 0 || len(in.IngressRules) > 0 || len(baseline.EgressRules) > 0) {
 		p := strings.ToLower(in.Provider)
 		var rules []SecurityRule
 		if p == ProviderDigitalOcean || p == ProviderLinode || p == ProviderStackIt {
@@ -774,6 +798,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			for _, c := range in.Components {
 				if c.Type == "virtual-machine-scale-group" {
 					dropletTags = append(dropletTags, doScaleGroupTag(c.Name))
+				} else if c.Type == "virtual-machine" && c.VM != nil && c.VM.Tag != "" {
+					dropletTags = append(dropletTags, c.VM.Tag)
 				}
 			}
 		}
