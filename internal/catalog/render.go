@@ -286,6 +286,13 @@ func renderSGDO(p SecurityGroupPlan) string {
 	tags := make([]string, len(p.DropletTags))
 	copy(tags, p.DropletTags)
 	sort.Strings(tags)
+	unique := tags[:0]
+	for _, tag := range tags {
+		if len(unique) == 0 || unique[len(unique)-1] != tag {
+			unique = append(unique, tag)
+		}
+	}
+	tags = unique
 
 	renderRules := func(b *strings.Builder) {
 		for _, r := range p.Rules {

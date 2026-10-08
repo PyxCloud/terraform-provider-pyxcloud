@@ -47,6 +47,25 @@ type AssembleScaleGroup = catalog.AssembleScaleGroup
 // AssembleMDB is the managed-database component shape.
 type AssembleMDB = catalog.AssembleMDB
 
+// V1 component payloads are aliases of the same authoritative engine model.
+// This lets server-side consumers construct inputs without internal imports.
+type AssembleCache = catalog.AssembleCache
+type AssembleDNS = catalog.AssembleDNS
+type AssembleLB = catalog.AssembleLB
+type AssembleLBListener = catalog.AssembleLBListener
+type AssembleLBRoutingRule = catalog.AssembleLBRoutingRule
+type AssembleObjectStorage = catalog.AssembleObjectStorage
+type AssembleStaticSite = catalog.AssembleStaticSite
+type AssembleBlockStorage = catalog.AssembleBlockStorage
+type DNSRecord = catalog.DNSRecord
+type VMSpec = catalog.VMSpec
+type VMPlan = catalog.VMPlan
+
+// TranslateVM and VMAddressReference expose canonical resolution and resource
+// references to consumers that bind DNS records to rendered instances.
+var TranslateVM = catalog.TranslateVM
+var VMAddressReference = catalog.VMAddressReference
+
 // SecurityRule is one ingress rule of AssembleInput.
 type SecurityRule = catalog.SecurityRule
 
@@ -72,3 +91,14 @@ func Render(ctx context.Context, in catalog.AssembleInput) ([]string, error) {
 	}
 	return AssembleHCL(ctx, cat, in)
 }
+
+// LoadBalancerAddressReference uses the canonical translated resource identity.
+type LoadBalancerPlan = catalog.LoadBalancerPlan
+
+var LoadBalancerAddressReference = catalog.LoadBalancerAddressReference
+
+type StaticSiteSpec = catalog.StaticSiteSpec
+type StaticSitePlan = catalog.StaticSitePlan
+
+var TranslateStaticSite = catalog.TranslateStaticSite
+var StaticSiteOriginHost = catalog.StaticSiteOriginHost
