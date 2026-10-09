@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars and re-measure tokens before EVERY apply (fail-closed:
+# if SES rotates the DKIM keys, re-read them — see README step 2).
+
+cloudflare_zone_passo    = "155b6fa434a24bdaba68a60ba87ea134" # passo.build zone (measured 2026-10-09)
+ses_verification_token   = "rGBksqVMeg2iF/0ZkFTVB5eyNwWA59sH+PH7CPSju/4="
+ses_dkim_tokens = [
+  "23gjbcgsuuygryvty5fcx4v3zsdoiwwd",
+  "4gwhui5shwet3g7ncxlaxq6resw2r2xe",
+  "j666y3ommaeljmg6nw6up763vxcv7z3g",
+]

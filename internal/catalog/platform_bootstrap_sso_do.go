@@ -359,7 +359,12 @@ func RenderSSODOBootstrapUserData(spec SSODOBootstrapSpec) (string, error) {
 	w("Environment=KC_SPI_EXPORT_IMPORT_DIR_STRATEGY=OVERWRITE_EXISTING")
 	if strings.TrimSpace(s.SMTPKVPath) != "" {
 		w("Environment=KC_SMTP_HOST=email-smtp.%s.amazonaws.com", s.SESRegion)
-		w("Environment=KC_SMTP_PORT=587")
+		// 2587 = SES alternate STARTTLS submission port. Measured 2026-10-09
+		// (sso-logs run 37943730978, twice): droplet egress to
+		// email-smtp.eu-west-1.amazonaws.com on 587/465/25 is BLOCKED (DO
+		// outbound filtering); 2587 and 2465 are OPEN. STARTTLS semantics are
+		// unchanged (KC_SMTP_STARTTLS=true still applies).
+		w("Environment=KC_SMTP_PORT=2587")
 		w("Environment=KC_SMTP_FROM=no-reply@%s", s.DomainName)
 		w("Environment=KC_SMTP_USER=%s", smtpUserRef)
 		w("Environment=KC_SMTP_PASSWORD=%s", smtpPasswordRef)
