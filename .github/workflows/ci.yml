@@ -16,6 +16,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+          # Runner cache upload stalled after successful tests; keep gate completion bounded.
+          cache: false
       - name: install pinned terraform
         # DEP-01.1: the full-estate validate test skips without a terraform
         # binary on PATH; install a pinned version (checksum-verified) so the
