@@ -40,9 +40,11 @@ const TypeStaticSite = "static-site"
 // StaticSiteSpec is the abstract description of a managed static frontend app.
 // Provider-neutral.
 type StaticSiteSpec struct {
-	Name     string // component name, e.g. "console" / "marketing" / "vibe"
-	Region   string // abstract pyx region_name (for the Spaces bucket placement on DO)
-	Provider string // aws | digitalocean | ...
+	// CDNDisabled is an explicit origin-only request; legacy zero value retains CDN.
+	CDNDisabled bool
+	Name        string // component name, e.g. "console" / "marketing" / "vibe"
+	Region      string // abstract pyx region_name (for the Spaces bucket placement on DO)
+	Provider    string // aws | digitalocean | ...
 
 	// CustomDomain is the public hostname the site is served at, e.g.
 	// "app.passo.build". On DO it becomes the Cloudflare proxied CNAME host; on AWS
@@ -71,10 +73,11 @@ type StaticSiteSpec struct {
 // object-storage (Spaces static website) plan and the Cloudflare CDN plan; on AWS
 // it carries the Amplify app parameters.
 type StaticSitePlan struct {
-	Provider   string `json:"provider"`
-	CSP        string `json:"csp"`
-	RegionName string `json:"region_name"`
-	CSPRegion  string `json:"csp_region"`
+	CDNDisabled bool   `json:"cdn_disabled,omitempty"`
+	Provider    string `json:"provider"`
+	CSP         string `json:"csp"`
+	RegionName  string `json:"region_name"`
+	CSPRegion   string `json:"csp_region"`
 
 	Name           string `json:"name"`
 	CustomDomain   string `json:"custom_domain,omitempty"`
@@ -160,6 +163,11 @@ func TranslateStaticSite(ctx context.Context, cat RegionCatalog, spec StaticSite
 			return StaticSitePlan{}, fmt.Errorf("static-site: composing object-storage origin: %w", err)
 		}
 		plan.ObjectStorage = &osPlan
+		plan.ResourceType = "digitalocean_spaces_bucket"
+		if spec.CDNDisabled {
+			plan.CDNDisabled = true
+			return plan, nil
+		}
 
 		// The Cloudflare CDN fronts the Spaces website endpoint. The origin host is
 		// the Spaces static-website endpoint derived deterministically from the
@@ -293,7 +301,7 @@ func renderStaticSiteAmplify(p StaticSitePlan) string {
 }
 
 func renderStaticSiteDO(p StaticSitePlan) (string, error) {
-	if p.ObjectStorage == nil || p.CloudflareCDN == nil {
+	if p.ObjectStorage == nil || (!p.CDNDisabled && p.CloudflareCDN == nil) {
 		return "", fmt.Errorf("static-site: DO plan missing composed object-storage / cloudflare-cdn plan")
 	}
 	var b strings.Builder
@@ -310,6 +318,10 @@ func renderStaticSiteDO(p StaticSitePlan) (string, error) {
 	}
 	b.WriteString("\n")
 
+	if p.CDNDisabled {
+		return b.String(), nil
+	}
+
 	// 2. Cloudflare CDN front (proxied CNAME + zone cache/TLS settings) — via the
 	//    existing cloudflare-cdn renderer.
 	cdnHCL, err := RenderCloudfareCDNHCL(*p.CloudflareCDN)
@@ -318,4 +330,12 @@ func renderStaticSiteDO(p StaticSitePlan) (string, error) {
 	}
 	b.WriteString(cdnHCL)
 	return b.String(), nil
+}
+
+// StaticSiteOriginHost uses the translated object-storage provider identity.
+func StaticSiteOriginHost(p StaticSitePlan) (string, error) {
+	if p.Provider != ProviderDigitalOcean || p.ObjectStorage == nil || p.ObjectStorage.BucketName == "" || p.ObjectStorage.CSPRegion == "" {
+		return "", fmt.Errorf("static site origin: unsupported or incomplete plan")
+	}
+	return spacesWebsiteEndpoint(p.ObjectStorage.BucketName, p.ObjectStorage.CSPRegion), nil
 }

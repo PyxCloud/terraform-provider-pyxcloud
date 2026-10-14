@@ -294,6 +294,13 @@ func renderSGDO(p SecurityGroupPlan) string {
 	tags := make([]string, len(p.DropletTags))
 	copy(tags, p.DropletTags)
 	sort.Strings(tags)
+	unique := tags[:0]
+	for _, tag := range tags {
+		if len(unique) == 0 || unique[len(unique)-1] != tag {
+			unique = append(unique, tag)
+		}
+	}
+	tags = unique
 
 	renderRules := func(b *strings.Builder) {
 		for _, r := range p.Rules {
@@ -448,13 +455,39 @@ func renderVMAWS(p VMPlan) string {
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
-// vmHeredoc renders s as an HCL indented heredoc for VM user_data (no escaping).
+// vmHeredoc renders s as an HCL indented heredoc for VM user_data.
+//
+// user_data is user-derived and must render literally: template directives
+// (${...} and %{...}) are escaped, and the heredoc delimiter is grown with
+// underscores (PYXUSERDATA, PYXUSERDATA_, ...) until no payload line can
+// collide with it. Growing the delimiter (rather than indenting a colliding
+// line) is required because HCL strips leading whitespace when matching the
+// heredoc terminator — terraform validate confirmed an indented colliding
+// line still terminates the heredoc early (DEP-01.4).
 func vmHeredoc(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	if !strings.HasSuffix(s, "\n") {
 		s += "\n"
 	}
-	return "<<-PYXUSERDATA\n" + s + "PYXUSERDATA\n  "
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = strings.ReplaceAll(strings.ReplaceAll(line, "${", "$${"), "%{", "%%{")
+	}
+	delim := "PYXUSERDATA"
+	for {
+		collides := false
+		for _, line := range lines {
+			if strings.TrimSpace(line) == delim {
+				collides = true
+				break
+			}
+		}
+		if !collides {
+			break
+		}
+		delim += "_"
+	}
+	return "<<-" + delim + "\n" + strings.Join(lines, "\n") + delim + "\n  "
 }
 
 func renderVMGCP(p VMPlan) string {

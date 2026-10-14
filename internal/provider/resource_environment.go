@@ -11,6 +11,7 @@ import (
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/catalog"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/client"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -165,6 +166,7 @@ type envComponentModel struct {
 	RotationDays             types.Int64           `tfsdk:"rotation_days"`
 	Engine                   types.String          `tfsdk:"engine"`
 	Version                  types.String          `tfsdk:"version"`
+	Placement                types.String          `tfsdk:"placement"`
 	StorageGB                types.Int64           `tfsdk:"storage_gb"`
 	HA                       types.Bool            `tfsdk:"ha"`
 	Encrypted                types.Bool            `tfsdk:"encrypted"`
@@ -649,6 +651,7 @@ func flatEnvironmentComponentAttributes() map[string]schema.Attribute {
 		"description":                schema.StringAttribute{Optional: true},
 		"rotation_days":              schema.Int64Attribute{Optional: true, MarkdownDescription: "0 = no automatic rotation."},
 		"engine":                     schema.StringAttribute{Optional: true, MarkdownDescription: "postgres | mysql, or cache engine."},
+		"placement":                  schema.StringAttribute{Optional: true, MarkdownDescription: "managed-database and cache only: `vm` explicitly self-hosts the service on a VM (PostgreSQL/Redis container) instead of rendering a managed cluster (DEP-01.10). Empty/default = managed service."},
 		"version":                    schema.StringAttribute{Optional: true},
 		"storage_gb":                 schema.Int64Attribute{Optional: true},
 		"ha":                         schema.BoolAttribute{Optional: true},
@@ -779,6 +782,33 @@ func prefixEntriesAttribute() schema.ListNestedAttribute {
 	}
 }
 
+// ValidateConfig enforces the placement vocabulary (DEP-01.10): placement=\"vm\"
+// is only valid on managed-database and cache components; any other value is
+// rejected so typos never silently fall back to the managed path.
+func (r *environmentResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var m environmentModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &m)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	for _, c := range environmentComponentsFromModel(m) {
+		p := c.model.Placement.ValueString()
+		if p == "" {
+			continue
+		}
+		if p != "vm" {
+			resp.Diagnostics.AddAttributeError(path.Empty(), "Unknown placement",
+				fmt.Sprintf("component %q: unknown placement %q (supported: \"vm\")", c.model.Name.ValueString(), p))
+			return
+		}
+		if !catalog.ExplicitVMPlacement(c.canonicalType) {
+			resp.Diagnostics.AddAttributeError(path.Empty(), "Placement not supported",
+				fmt.Sprintf("component %q (%s): placement=\"vm\" is only supported on managed-database and cache components", c.model.Name.ValueString(), c.canonicalType))
+			return
+		}
+	}
+}
+
 func (r *environmentResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
@@ -806,12 +836,12 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 	if v := m.VaultHA; v != nil {
 		seal := strings.TrimSpace(v.Seal.ValueString())
 		in.VaultHADroplet = &catalog.AssembleVaultHADroplet{
-			Name:           strings.TrimSpace(v.Name.ValueString()),
-			Seal:           catalog.VaultSealMode(seal), // "" -> renderer default (shamir)
-			TransitAddr:    v.TransitAddr.ValueString(),
-			TransitToken:   v.TransitToken.ValueString(),
-			ReservedIPs:    v.ReservedIPs.ValueBool(),
-			NodeCount:      int(v.NodeCount.ValueInt64()),
+			Name:         strings.TrimSpace(v.Name.ValueString()),
+			Seal:         catalog.VaultSealMode(seal), // "" -> renderer default (shamir)
+			TransitAddr:  v.TransitAddr.ValueString(),
+			TransitToken: v.TransitToken.ValueString(),
+			ReservedIPs:  v.ReservedIPs.ValueBool(),
+			NodeCount:    int(v.NodeCount.ValueInt64()),
 		}
 	}
 	for _, s := range m.Subnets {
@@ -846,7 +876,7 @@ func (r *environmentResource) assembleInputFromModel(m environmentModel) catalog
 		if count <= 0 {
 			count = 1
 		}
-		comp := catalog.AssembleComponent{Path: cm.Path.ValueString(), Name: cm.Name.ValueString(), Type: typed.canonicalType, Count: count}
+		comp := catalog.AssembleComponent{Path: cm.Path.ValueString(), Name: cm.Name.ValueString(), Type: typed.canonicalType, Count: count, Placement: cm.Placement.ValueString()}
 
 		if typed.canonicalType == "virtual-machine" || hasFlatVM(cm.Architecture, cm.CPU, cm.RAM, cm.OSName) {
 			var vmSSHKeys []string

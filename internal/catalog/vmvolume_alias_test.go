@@ -113,3 +113,30 @@ func TestAssembleHCLVMVolumeMitigatedOnLinode(t *testing.T) {
 		t.Errorf("expected linode VM mitigation host, got:\n%s", all)
 	}
 }
+
+// The exported engine retained BlockStorage on main; merging the canonical
+// vm-volume vocabulary must preserve that caller payload and its rendering.
+func TestLegacyBlockStoragePayloadMatchesVMVolume(t *testing.T) {
+	cat, err := NewEmbedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := AssembleInput{Name: "demo", Provider: "aws", Region: "Dublin", Components: []AssembleComponent{
+		{Name: "app", Type: "virtual-machine", Count: 1, VM: &AssembleVM{Architecture: ArchX8664, CPU: "2", RAM: "4", OS: OSUbuntu}},
+		{Name: "data", Type: "block-storage", BlockStorage: &AssembleVMVolume{SizeGB: 100, TargetVM: "app"}},
+	}}
+	legacy, err := AssembleHCL(context.Background(), cat, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Components[1].VMVolume = input.Components[1].BlockStorage
+	input.Components[1].BlockStorage = nil
+	input.Components[1].Type = "vm-volume"
+	canonical, err := AssembleHCL(context.Background(), cat, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(legacy, "\n") != strings.Join(canonical, "\n") {
+		t.Fatal("legacy and canonical volume renders differ")
+	}
+}

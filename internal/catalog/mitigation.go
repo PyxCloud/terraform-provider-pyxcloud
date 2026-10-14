@@ -63,6 +63,30 @@ var selfHostRecipes = map[string]selfHostRecipe{
 	"block-storage":       {Image: "itsthenetwork/nfs-server-alpine:latest", Port: 2049, CPU: 1, RAM: 2, envNote: "NFS server (vm-volume substitute)", degraded: true}, // alias token
 }
 
+// ExplicitVMPlacement reports whether a component type supports an EXPLICIT
+// "placement = vm" author choice (DEP-01.10): the author wants the service
+// self-hosted on a VM even though the provider has a native managed service.
+// Scope is deliberately limited to managed-database (PostgreSQL) and cache
+// (Redis) — the two stateful data services where a self-hosted single VM is a
+// legitimate deliberate choice, not a degraded substitute. Other types keep
+// their native/alias path; placement=vm on them is rejected at assemble time.
+func ExplicitVMPlacement(componentType string) bool {
+	switch mitigationType(componentType) {
+	case "managed-database", "cache":
+		return true
+	}
+	return false
+}
+
+// ForcesVMPlacement reports whether a component explicitly opts into VM
+// placement (Placement == "vm"), which makes AssembleHCL take the mitigation
+// (self-host on a VM) path even when the provider natively supports the
+// managed service. Components without a recipe, or types outside the
+// ExplicitVMPlacement scope, never force the VM path.
+func ForcesVMPlacement(comp AssembleComponent) bool {
+	return comp.Placement == "vm" && ExplicitVMPlacement(comp.Type)
+}
+
 // Mitigatable reports whether a component type has a VM-hosted substitute.
 func Mitigatable(componentType string) bool {
 	_, ok := mitigationRecipe(componentType)
@@ -217,6 +241,10 @@ func mitigateComponent(ctx context.Context, cat VMCatalog, provider, region stri
 	}
 	header := fmt.Sprintf("# pyxcloud mitigation: %s has no managed %q — self-hosting %s on a VM%s using container image %s\n",
 		provider, comp.Type, recipe.envNote, degraded, recipe.Image)
+	if comp.Placement == "vm" && ExplicitVMPlacement(comp.Type) {
+		header = fmt.Sprintf("# pyxcloud vm placement: %s explicitly self-hosting %s on a VM using container image %s\n",
+			provider, recipe.envNote, recipe.Image)
+	}
 	return []string{header + hcl}, nil
 }
 

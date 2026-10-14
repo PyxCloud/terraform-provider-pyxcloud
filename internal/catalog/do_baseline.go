@@ -31,7 +31,7 @@ import (
 //
 // The estate this reproduces (see the S3 state, serial 12):
 //   - 1 VPC (passo-do-baseline-net, 10.0.1.0/24, fra1)
-//   - 1 firewall (passo-do-baseline-sg): inbound 443, egress icmp/tcp/udp all
+//   - 1 firewall (passo-do-baseline-sg): inbound 443 (pyx-edge) + 22 (pyx-edge-1 admin, pyx-otel-bastion CI), egress icmp/tcp/udp all
 //   - 2 managed PG clusters (pyx-main-db, keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes
 //   - 2 droplet-autoscale groups: sso / staging-fe
 //   - no per-service public load balancers or platform certificate resources;
@@ -382,6 +382,16 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 	protocol    = "tcp"
 	port_range  = "443"
 	source_tags = ["pyx-edge"]
+  }
+  inbound_rule {
+	protocol    = "tcp"
+	port_range  = "22"
+	source_addresses = ["10.0.1.15/32"]
+  }
+  inbound_rule {
+	protocol    = "tcp"
+	port_range  = "22"
+	source_tags = ["pyx-otel-bastion"]
   }
 %s
 }`, doBaselineName+"-sg"+suffix, doBaselineName+"-sg"+suffix, hclStringList(chunk), doBaselineEgressRules()))

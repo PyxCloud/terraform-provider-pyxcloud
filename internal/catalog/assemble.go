@@ -99,31 +99,41 @@ type AssembleIAM struct {
 
 // AssembleComponent is one canonical component in the environment.
 type AssembleComponent struct {
-	Path                 string
-	Name                 string
-	Type                 string
-	Count                int
-	VM                   *AssembleVM
-	ScaleGroup           *AssembleScaleGroup
-	AttachToExistingALB  *AssembleAttachToExistingALB
-	IAM                  *AssembleIAM
-	Monitoring           *AssembleMonitoring
-	DNS                  *AssembleDNS
-	ObjectStorage        *AssembleObjectStorage
-	Secrets              *AssembleSecrets
-	MDB                  *AssembleMDB
-	Queue                *AssembleQueue
-	Stream               *AssembleStream
-	Serverless           *AssembleServerless
-	WebService           *AssembleWebService
-	KMS                  *AssembleKMS
-	Cache                *AssembleCache
-	CDN                  *AssembleCDN
-	WAF                  *AssembleWAF
-	K8s                  *AssembleK8s
-	LB                   *AssembleLB
-	Email                *AssembleEmail
-	VMVolume             *AssembleVMVolume
+	Path  string
+	Name  string
+	Type  string
+	Count int
+	// Placement, when "vm", forces a managed service component (currently
+	// managed-database and cache only — DEP-01.10) to be self-hosted on a VM
+	// (the mitigation path) EVEN on providers that have a native managed
+	// service. Empty (default) keeps the native managed path. Any other value
+	// is rejected at assemble time.
+	HostVM              string
+	HostBootstrap       string
+	Placement           string
+	VM                  *AssembleVM
+	ScaleGroup          *AssembleScaleGroup
+	AttachToExistingALB *AssembleAttachToExistingALB
+	IAM                 *AssembleIAM
+	Monitoring          *AssembleMonitoring
+	DNS                 *AssembleDNS
+	ObjectStorage       *AssembleObjectStorage
+	Secrets             *AssembleSecrets
+	MDB                 *AssembleMDB
+	Queue               *AssembleQueue
+	Stream              *AssembleStream
+	Serverless          *AssembleServerless
+	WebService          *AssembleWebService
+	KMS                 *AssembleKMS
+	Cache               *AssembleCache
+	CDN                 *AssembleCDN
+	WAF                 *AssembleWAF
+	K8s                 *AssembleK8s
+	LB                  *AssembleLB
+	Email               *AssembleEmail
+	VMVolume            *AssembleVMVolume
+	// BlockStorage is the legacy public payload name; VMVolume takes precedence.
+	BlockStorage         *AssembleVMVolume
 	PrefixList           *AssemblePrefixList
 	Synthetics           *AssembleSynthetics
 	ScheduledTrigger     *AssembleScheduledTrigger
@@ -142,6 +152,7 @@ type AssembleComponent struct {
 // AssembleStaticSite is the config for a `static-site` component (AWS Amplify ->
 // DO Spaces static website + Cloudflare CDN). pd-MIG-CUTOVER-F1-01 (GAP-1).
 type AssembleStaticSite struct {
+	CDNDisabled      bool
 	CustomDomain     string
 	BuildOutputDir   string
 	IndexDocument    string
@@ -602,8 +613,37 @@ func assembleVaultHAAlias(ctx context.Context, cat Catalog, c AssembleComponent,
 
 // AssembleHCL translates the environment to concrete terraform documents.
 func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, error) {
+	var hostErr error
+	in, hostErr = bindServiceHosts(in)
+	if hostErr != nil {
+		return nil, hostErr
+	}
 	if in.Name == "" {
 		return nil, fmt.Errorf("environment: name is required")
+	}
+	// Baseline plain DO VMs carry the exact firewall selector. Clone payloads:
+	// rendering must not mutate caller-owned component authority.
+	if in.ApplySecurityBaseline && in.Provider == ProviderDigitalOcean {
+		components := append([]AssembleComponent(nil), in.Components...)
+		for i, c := range components {
+			if c.Type != "virtual-machine" || c.VM == nil {
+				continue
+			}
+			if strings.TrimSpace(c.Name) == "" {
+				return nil, fmt.Errorf("baseline VM: component name is required")
+			}
+			vm := *c.VM
+			tag := strings.TrimSpace(vm.Tag)
+			if strings.EqualFold(tag, "pyxcloud") {
+				return nil, fmt.Errorf("baseline VM: generic fleet tag refused")
+			}
+			if tag == "" {
+				tag = "pyx-" + tfName(in.Name) + "-" + tfName(c.Name)
+			}
+			vm.Tag = tag
+			components[i].VM = &vm
+		}
+		in.Components = components
 	}
 	cidr := in.CIDR
 	if cidr == "" {
@@ -665,8 +705,10 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		hasVM, hasNetworked = true, true
 	}
 	for _, c := range in.Components {
-		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
-			// Mitigation runs the service on a VM, which needs network placement and
+		if (Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider)) || ForcesVMPlacement(c) {
+			// Mitigation runs the service on a VM (either because the provider lacks
+			// the managed service, or because the author explicitly opted into VM
+			// placement — DEP-01.10), which needs network placement and
 			// should receive the environment security group when expose rules exist.
 			hasVM, hasNetworked = true, true
 			continue
@@ -713,7 +755,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 	// 2. Security group — only when VMs are present AND ports are exposed. A SG with
 	//    no rule is rejected by the translator, so with no expose we skip it and the
 	//    VMs fall back to the VPC default SG. vmSG is the name to wire onto VMs ("" = none).
-	if hasVM && (len(in.Expose) > 0 || len(in.IngressRules) > 0) {
+	if hasVM && (len(in.Expose) > 0 || len(in.IngressRules) > 0 || len(baseline.EgressRules) > 0) {
 		p := strings.ToLower(in.Provider)
 		var rules []SecurityRule
 		if p == ProviderDigitalOcean || p == ProviderLinode || p == ProviderStackIt {
@@ -767,6 +809,8 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			for _, c := range in.Components {
 				if c.Type == "virtual-machine-scale-group" {
 					dropletTags = append(dropletTags, doScaleGroupTag(c.Name))
+				} else if c.Type == "virtual-machine" && c.VM != nil && c.VM.Tag != "" {
+					dropletTags = append(dropletTags, c.VM.Tag)
 				}
 			}
 		}
@@ -788,8 +832,19 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 
 	// 3. Components.
 	for _, c := range in.Components {
+		if c.Placement != "" && c.Placement != "vm" {
+			return nil, fmt.Errorf("component %q: unknown placement %q (supported: \"vm\")", c.Name, c.Placement)
+		}
+		if c.Placement == "vm" && !ExplicitVMPlacement(c.Type) {
+			return nil, fmt.Errorf("component %q (%s): placement=\"vm\" is not supported for this component type (supported: managed-database, cache)", c.Name, c.Type)
+		}
+		if c.HostVM != "" {
+			continue
+		}
 		// Mitigation: provider lacks the managed service -> self-host it on a VM.
-		if Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider) {
+		// DEP-01.10: an explicit placement="vm" on managed-database/cache takes the
+		// SAME path even on providers that have a native managed service.
+		if (Mitigatable(c.Type) && !NativelySupported(c.Type, in.Provider)) || ForcesVMPlacement(c) {
 			mdocs, err := mitigateComponent(ctx, cat, in.Provider, in.Region, c, netName, subnetName, vmSG)
 			if err != nil {
 				return nil, err
@@ -989,6 +1044,7 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 		case "static-site", "static-website", "static-hosting", "frontend-app", "spa":
 			ssSpec := StaticSiteSpec{Name: c.Name, Region: in.Region, Provider: in.Provider}
 			if c.StaticSite != nil {
+				ssSpec.CDNDisabled = c.StaticSite.CDNDisabled
 				ssSpec.CustomDomain = c.StaticSite.CustomDomain
 				ssSpec.BuildOutputDir = c.StaticSite.BuildOutputDir
 				ssSpec.IndexDocument = c.StaticSite.IndexDocument
@@ -1402,6 +1458,9 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 			}
 			docs = append(docs, emHCL)
 		case "vm-volume", "block-storage", "volume":
+			if c.VMVolume == nil {
+				c.VMVolume = c.BlockStorage
+			}
 			if c.VMVolume == nil {
 				return nil, fmt.Errorf("component %q (vm-volume): config is required", c.Name)
 			}
