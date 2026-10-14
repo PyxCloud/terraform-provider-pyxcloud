@@ -9,11 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / '.github/scripts/install-pinned-terraform.sh'
 
 class InstallerTest(unittest.TestCase):
-    def run_script(self, host, corrupt=False, selection_only=False):
+    def run_script(self, host, corrupt=False, selection_only=False, physical_arm64=False):
         with tempfile.TemporaryDirectory() as temp:
             d = Path(temp)
             (d / 'uname').write_text('#!/bin/sh\ncase "$1" in -s) echo ' + host[0] + ';; -m) echo ' + host[1] + ';; esac\n')
             (d / 'uname').chmod(0o755)
+            (d / 'sysctl').write_text('#!/bin/sh\necho ' + ('1' if physical_arm64 else '0') + '\n')
+            (d / 'sysctl').chmod(0o755)
             if corrupt:
                 (d / 'curl').write_text('#!/bin/sh\nfor last; do :; done\nprintf corrupt > "$last"\n')
                 (d / 'curl').chmod(0o755)
@@ -36,6 +38,11 @@ class InstallerTest(unittest.TestCase):
                 sha, selected = out.stdout.strip().split()
                 self.assertEqual(selected, platform)
                 self.assertIn(sha + '  terraform_1.13.4_' + platform + '.zip', manifest)
+
+    def test_rosetta_prefers_native_apple_silicon(self):
+        out, _ = self.run_script(('Darwin', 'x86_64'), selection_only=True, physical_arm64=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip().split()[1], 'darwin_arm64')
 
     def test_unknown_host_refused_before_install(self):
         out, paths = self.run_script(('Linux', 'mips64'))

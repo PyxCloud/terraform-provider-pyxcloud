@@ -3,7 +3,14 @@
 # Select the actual host, since self-hosted runner labels can be stale.
 set -euo pipefail
 TF_VERSION=1.13.4
-case "$(uname -s)-$(uname -m)" in
+TF_HOST_OS="$(uname -s)"
+TF_HOST_ARCH="$(uname -m)"
+# Rosetta reports x86_64 even on Apple Silicon. Native provider processes
+# avoid the measured x64 AWS plugin startup timeout on these hosts.
+if [[ "$TF_HOST_OS" == Darwin ]] && [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == 1 ]]; then
+  TF_HOST_ARCH=arm64
+fi
+case "$TF_HOST_OS-$TF_HOST_ARCH" in
   Linux-x86_64) TF_PLATFORM=linux_amd64; TF_SHA=98aa516201e948306698efd9954ab4cc0d1227c2578ba56245898b5f679e590b ;;
   Linux-aarch64|Linux-arm64) TF_PLATFORM=linux_arm64; TF_SHA=a17bde150a4d6c9e7ece063ab634c07723b8242e078f3ae9017486277d6690c4 ;;
   Darwin-x86_64) TF_PLATFORM=darwin_amd64; TF_SHA=0a4441f6aaf37bb18cbaf5c7538f9be638f0d93eb325d285b4b452d014a7737a ;;
