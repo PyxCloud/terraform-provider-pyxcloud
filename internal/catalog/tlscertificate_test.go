@@ -154,7 +154,7 @@ func TestTLSCertificateValidation(t *testing.T) {
 	cases := []TLSCertificateSpec{
 		{Provider: "aws", Domains: []string{"a.example.com"}},                // missing region
 		{Region: "Frankfurt", Domains: []string{"a.example.com"}},            // missing provider
-		{Region: "Frankfurt", Provider: "vultr", Domains: []string{"a.com"}}, // unknown provider
+		{Region: "Frankfurt", Provider: "wopr", Domains: []string{"a.com"}}, // unknown provider
 		{Region: "Frankfurt", Provider: "aws"},                               // no domains
 	}
 	for i, c := range cases {

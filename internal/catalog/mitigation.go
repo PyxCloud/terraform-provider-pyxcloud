@@ -59,7 +59,8 @@ var selfHostRecipes = map[string]selfHostRecipe{
 	"cdn":                 {Image: "varnish:7", Port: 80, CPU: 2, RAM: 4, envNote: "Varnish HTTP cache (cdn)", degraded: true},
 	"email-service":       {Image: "bytemark/smtp:latest", Port: 25, CPU: 1, RAM: 2, envNote: "SMTP relay (email-service substitute)", degraded: true},
 	"email":               {Image: "bytemark/smtp:latest", Port: 25, CPU: 1, RAM: 2, envNote: "SMTP relay (email substitute)", degraded: true},
-	"block-storage":       {Image: "itsthenetwork/nfs-server-alpine:latest", Port: 2049, CPU: 1, RAM: 2, envNote: "NFS server (block-storage substitute)", degraded: true},
+	"vm-volume":           {Image: "itsthenetwork/nfs-server-alpine:latest", Port: 2049, CPU: 1, RAM: 2, envNote: "NFS server (vm-volume substitute)", degraded: true},
+	"block-storage":       {Image: "itsthenetwork/nfs-server-alpine:latest", Port: 2049, CPU: 1, RAM: 2, envNote: "NFS server (vm-volume substitute)", degraded: true}, // alias token
 }
 
 // ExplicitVMPlacement reports whether a component type supports an EXPLICIT
@@ -115,6 +116,10 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,
 		ProviderLinode: true, ProviderUbicloud: true, ProviderOracle: true, ProviderIBM: true,
 		ProviderAlibaba: true, ProviderOVH: true, ProviderStackIt: true,
+		// Tier-2 adapters with a native MDB template (roadmap P6). hetzner and
+		// rackspace have NO native managed DB — absent on purpose, so the
+		// standard self-host mitigation applies.
+		ProviderTencent: true, ProviderVultr: true, ProviderScaleway: true, ProviderHuawei: true,
 	},
 	"cache": {
 		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,
@@ -183,8 +188,8 @@ var nativeSupport = map[string]map[string]bool{
 		ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true,
 		ProviderLinode: true, ProviderOracle: true, ProviderIBM: true, ProviderAlibaba: true, ProviderStackIt: true,
 	},
-	"cdn-service": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
-	"cdn":         {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true},
+	"cdn-service": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true, ProviderCloudflare: true}, // P5: cloudflare is a native edge provider
+	"cdn":         {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true, ProviderAzure: true, ProviderAlibaba: true, ProviderCloudflare: true},
 	// email on DO has no managed transactional-email primitive, but F1-05
 	// (pd-MIG-CUTOVER-F1-05, BESPOKE GAP-2) routes it through the native catalog
 	// SMTP-relay render (AWS SES SMTP cross-cloud by default, or a 3rd-party relay)
@@ -193,7 +198,8 @@ var nativeSupport = map[string]map[string]bool{
 	// operator-alias precedents (queue/WAF/secrets). See docs/cutover/EMAIL-PATH.md.
 	"email-service": {ProviderAWS: true, ProviderDigitalOcean: true},
 	"email":         {ProviderAWS: true, ProviderDigitalOcean: true},
-	"block-storage": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"vm-volume":     {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true},
+	"block-storage": {ProviderAWS: true, ProviderGCP: true, ProviderDigitalOcean: true}, // alias token
 }
 
 // NativelySupported reports whether the provider offers a managed service for the

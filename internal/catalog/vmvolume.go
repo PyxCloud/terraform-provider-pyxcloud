@@ -6,7 +6,11 @@ import (
 	"strings"
 )
 
-// BlockStorage is the abstract `block-storage` component: a persistent disk
+// TypeVMVolume is the canonical type token; block-storage/volume are aliases.
+const TypeVMVolume = "vm-volume"
+
+// VMVolume is the abstract `vm-volume` component (canonical token; accepted
+// aliases: `block-storage`, `volume` — legacy vocabulary kept for compatibility): a persistent disk
 // attached to a VM — the canonical form of the per-provider scripts'
 // aws_ebs_volume + aws_volume_attachment glue.
 //
@@ -17,8 +21,8 @@ import (
 // It attaches to a VM component in the same environment (TargetVM); the disk is
 // placed in that VM's availability zone.
 
-// BlockStorageSpec is the abstract persistent-disk description.
-type BlockStorageSpec struct {
+// VMVolumeSpec is the abstract persistent-disk description.
+type VMVolumeSpec struct {
 	Name       string
 	Region     string
 	Provider   string
@@ -29,7 +33,7 @@ type BlockStorageSpec struct {
 }
 
 // BlockStoragePlan is the resolved concrete plan.
-type BlockStoragePlan struct {
+type VMVolumePlan struct {
 	Provider     string `json:"provider"`
 	CSP          string `json:"csp"`
 	RegionName   string `json:"region_name"`
@@ -43,25 +47,37 @@ type BlockStoragePlan struct {
 }
 
 // TranslateBlockStorage resolves a BlockStorageSpec.
-func TranslateBlockStorage(ctx context.Context, cat RegionCatalog, spec BlockStorageSpec) (BlockStoragePlan, error) {
+// CanonicalVMVolumeType maps an accepted type token (vm-volume / block-storage /
+// volume) to the canonical vm-volume token.
+func CanonicalVMVolumeType(t string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case TypeVMVolume, "block-storage", "volume":
+		return TypeVMVolume, true
+	default:
+		return "", false
+	}
+}
+
+// TranslateVMVolume resolves a VMVolumeSpec.
+func TranslateVMVolume(ctx context.Context, cat RegionCatalog, spec VMVolumeSpec) (VMVolumePlan, error) {
 	if strings.TrimSpace(spec.Name) == "" {
-		return BlockStoragePlan{}, fmt.Errorf("block-storage: name is required")
+		return VMVolumePlan{}, fmt.Errorf("vm-volume: name is required")
 	}
 	if spec.SizeGB <= 0 {
-		return BlockStoragePlan{}, fmt.Errorf("block-storage %q: size_gb must be > 0", spec.Name)
+		return VMVolumePlan{}, fmt.Errorf("vm-volume %q: size_gb must be > 0", spec.Name)
 	}
 	if strings.TrimSpace(spec.TargetVM) == "" {
-		return BlockStoragePlan{}, fmt.Errorf("block-storage %q: target_vm (the VM to attach to) is required", spec.Name)
+		return VMVolumePlan{}, fmt.Errorf("vm-volume %q: target_vm (the VM to attach to) is required", spec.Name)
 	}
 	csp, ok := ProviderToCSP(spec.Provider)
 	if !ok {
-		return BlockStoragePlan{}, fmt.Errorf("block-storage: unknown provider %q", spec.Provider)
+		return VMVolumePlan{}, fmt.Errorf("vm-volume: unknown provider %q", spec.Provider)
 	}
 	row, err := cat.ResolveRegion(ctx, spec.Region, spec.Provider)
 	if err != nil {
-		return BlockStoragePlan{}, err
+		return VMVolumePlan{}, err
 	}
-	plan := BlockStoragePlan{
+	plan := VMVolumePlan{
 		Provider: strings.ToLower(spec.Provider), CSP: csp,
 		RegionName: row.RegionName, CSPRegion: row.CSPRegion,
 		Name: spec.Name, SizeGB: spec.SizeGB, VolumeType: spec.VolumeType,
@@ -84,13 +100,13 @@ func TranslateBlockStorage(ctx context.Context, cat RegionCatalog, spec BlockSto
 	case ProviderDigitalOcean:
 		plan.ResourceType = "digitalocean_volume"
 	default:
-		return BlockStoragePlan{}, fmt.Errorf("block-storage: unsupported provider %q", spec.Provider)
+		return VMVolumePlan{}, fmt.Errorf("block-storage: unsupported provider %q", spec.Provider)
 	}
 	return plan, nil
 }
 
 // RenderBlockStorageHCL renders a BlockStoragePlan, attached to its target VM.
-func RenderBlockStorageHCL(p BlockStoragePlan) (string, error) {
+func RenderVMVolumeHCL(p VMVolumePlan) (string, error) {
 	vm := tfName(p.TargetVM + "-1") // first instance of the target VM component
 	name := tfName(p.Name)
 	var b strings.Builder
@@ -132,6 +148,6 @@ func RenderBlockStorageHCL(p BlockStoragePlan) (string, error) {
 		b.WriteString("}\n")
 		return b.String(), nil
 	default:
-		return "", fmt.Errorf("block-storage: render unsupported for provider %q", p.Provider)
+		return "", fmt.Errorf("vm-volume: render unsupported for provider %q", p.Provider)
 	}
 }

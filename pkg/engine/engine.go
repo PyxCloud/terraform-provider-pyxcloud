@@ -56,7 +56,10 @@ type AssembleLBListener = catalog.AssembleLBListener
 type AssembleLBRoutingRule = catalog.AssembleLBRoutingRule
 type AssembleObjectStorage = catalog.AssembleObjectStorage
 type AssembleStaticSite = catalog.AssembleStaticSite
-type AssembleBlockStorage = catalog.AssembleBlockStorage
+type AssembleVMVolume = catalog.AssembleVMVolume
+
+// AssembleBlockStorage retains the original public name for VM volumes.
+type AssembleBlockStorage = catalog.AssembleVMVolume
 type DNSRecord = catalog.DNSRecord
 type VMSpec = catalog.VMSpec
 type VMPlan = catalog.VMPlan

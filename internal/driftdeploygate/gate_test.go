@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/iacsecscan"
 	"github.com/PyxCloud/terraform-provider-pyxcloud/internal/tfplanparser"
+	"github.com/PyxCloud/terraform-provider-pyxcloud/pkg/iacsecscan"
 )
 
 func TestEvaluateDriftPolicy(t *testing.T) {

@@ -89,7 +89,7 @@ func TestAssembleHCLFallbackServicesSelfHostOnVM(t *testing.T) {
 			name:       "ubicloud block-storage uses NFS",
 			provider:   ProviderUbicloud,
 			region:     "Frankfurt",
-			component:  AssembleComponent{Name: "data", Type: "block-storage", BlockStorage: &AssembleBlockStorage{SizeGB: 100, TargetVM: "app"}},
+			component:  AssembleComponent{Name: "data", Type: "vm-volume", VMVolume: &AssembleVMVolume{SizeGB: 100, TargetVM: "app"}},
 			vmResource: "resource \"ubicloud_vm\"",
 			image:      "itsthenetwork/nfs-server-alpine",
 		},
@@ -194,7 +194,7 @@ func TestNativeSupportMatchesRendererSurface(t *testing.T) {
 			fallback:  []string{ProviderGCP, ProviderAzure, ProviderLinode, ProviderUbicloud, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderOVH, ProviderStackIt},
 		},
 		{
-			component: "block-storage",
+			component: "vm-volume",
 			native:    []string{ProviderAWS, ProviderGCP, ProviderDigitalOcean},
 			fallback:  []string{ProviderAzure, ProviderLinode, ProviderUbicloud, ProviderOracle, ProviderIBM, ProviderAlibaba, ProviderOVH, ProviderStackIt},
 		},

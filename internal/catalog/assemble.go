@@ -108,30 +108,32 @@ type AssembleComponent struct {
 	// (the mitigation path) EVEN on providers that have a native managed
 	// service. Empty (default) keeps the native managed path. Any other value
 	// is rejected at assemble time.
-	HostVM               string
-	HostBootstrap        string
-	Placement            string
-	VM                   *AssembleVM
-	ScaleGroup           *AssembleScaleGroup
-	AttachToExistingALB  *AssembleAttachToExistingALB
-	IAM                  *AssembleIAM
-	Monitoring           *AssembleMonitoring
-	DNS                  *AssembleDNS
-	ObjectStorage        *AssembleObjectStorage
-	Secrets              *AssembleSecrets
-	MDB                  *AssembleMDB
-	Queue                *AssembleQueue
-	Stream               *AssembleStream
-	Serverless           *AssembleServerless
-	WebService           *AssembleWebService
-	KMS                  *AssembleKMS
-	Cache                *AssembleCache
-	CDN                  *AssembleCDN
-	WAF                  *AssembleWAF
-	K8s                  *AssembleK8s
-	LB                   *AssembleLB
-	Email                *AssembleEmail
-	BlockStorage         *AssembleBlockStorage
+	HostVM              string
+	HostBootstrap       string
+	Placement           string
+	VM                  *AssembleVM
+	ScaleGroup          *AssembleScaleGroup
+	AttachToExistingALB *AssembleAttachToExistingALB
+	IAM                 *AssembleIAM
+	Monitoring          *AssembleMonitoring
+	DNS                 *AssembleDNS
+	ObjectStorage       *AssembleObjectStorage
+	Secrets             *AssembleSecrets
+	MDB                 *AssembleMDB
+	Queue               *AssembleQueue
+	Stream              *AssembleStream
+	Serverless          *AssembleServerless
+	WebService          *AssembleWebService
+	KMS                 *AssembleKMS
+	Cache               *AssembleCache
+	CDN                 *AssembleCDN
+	WAF                 *AssembleWAF
+	K8s                 *AssembleK8s
+	LB                  *AssembleLB
+	Email               *AssembleEmail
+	VMVolume            *AssembleVMVolume
+	// BlockStorage is the legacy public payload name; VMVolume takes precedence.
+	BlockStorage         *AssembleVMVolume
 	PrefixList           *AssemblePrefixList
 	Synthetics           *AssembleSynthetics
 	ScheduledTrigger     *AssembleScheduledTrigger
@@ -283,8 +285,9 @@ type AssembleSynthetics struct {
 	ExecRoleARN    string
 }
 
-// AssembleBlockStorage is the config for a `block-storage` component (attaches to a VM).
-type AssembleBlockStorage struct {
+// AssembleVMVolume is the config for a `vm-volume` component (attaches to a VM;
+// aliases block-storage/volume).
+type AssembleVMVolume struct {
 	SizeGB     int
 	VolumeType string
 	DeviceName string
@@ -1454,19 +1457,22 @@ func AssembleHCL(ctx context.Context, cat Catalog, in AssembleInput) ([]string, 
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
 			docs = append(docs, emHCL)
-		case "block-storage":
-			if c.BlockStorage == nil {
-				return nil, fmt.Errorf("component %q (block-storage): config is required", c.Name)
+		case "vm-volume", "block-storage", "volume":
+			if c.VMVolume == nil {
+				c.VMVolume = c.BlockStorage
 			}
-			bsPlan, err := TranslateBlockStorage(ctx, cat, BlockStorageSpec{
+			if c.VMVolume == nil {
+				return nil, fmt.Errorf("component %q (vm-volume): config is required", c.Name)
+			}
+			bsPlan, err := TranslateVMVolume(ctx, cat, VMVolumeSpec{
 				Name: c.Name, Region: in.Region, Provider: in.Provider,
-				SizeGB: c.BlockStorage.SizeGB, VolumeType: c.BlockStorage.VolumeType,
-				DeviceName: c.BlockStorage.DeviceName, TargetVM: c.BlockStorage.TargetVM,
+				SizeGB: c.VMVolume.SizeGB, VolumeType: c.VMVolume.VolumeType,
+				DeviceName: c.VMVolume.DeviceName, TargetVM: c.VMVolume.TargetVM,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("component %q: %w", c.Name, err)
 			}
-			bsHCL, err := RenderBlockStorageHCL(bsPlan)
+			bsHCL, err := RenderVMVolumeHCL(bsPlan)
 			if err != nil {
 				return nil, fmt.Errorf("component %q render: %w", c.Name, err)
 			}
@@ -1922,6 +1928,21 @@ var cloudProviderSource = map[string][2]string{
 	ProviderAlibaba:      {"alicloud", "aliyun/alicloud"},
 	ProviderOVH:          {"ovh", "ovh/ovh"},
 	ProviderStackIt:      {"stackit", "stackitcloud/stackit"},
+	// Tier-2 adapter providers (roadmap P6): tencent/hetzner/vultr/scaleway via
+	// their native terraform providers, rackspace via the openstack provider
+	// against Rackspace OpenStack-compatible endpoints.
+	ProviderTencent:   {"tencentcloud", "tencentstack/tencentcloud"},
+	ProviderHetzner:   {"hcloud", "hetznercloud/hcloud"},
+	ProviderVultr:     {"vultr", "vultr/vultr"},
+	ProviderScaleway:  {"scaleway", "scaleway/scaleway"},
+	ProviderRackspace: {"openstack", "terraform-provider-openstack/openstack"},
+	// Cloudflare (P5 promotion): edge provider — DNS/CDN only.
+	ProviderCloudflare: {"cloudflare", "cloudflare/cloudflare"},
+	// Market-coverage tail providers (adapter API).
+	ProviderHuawei:  {"huaweicloud", "huaweicloud/huaweicloud"},
+	ProviderAkamai:  {"akamai", "akamai/akamai"},
+	ProviderFastly:  {"fastly", "fastly/fastly"},
+	ProviderVSphere: {"vsphere", "hashicorp/vsphere"},
 }
 
 // cloudflareZoneIDVarDecl is the inline variable declaration the Cloudflare

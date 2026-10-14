@@ -272,7 +272,7 @@ func TestProdEstateTerraformValidate(t *testing.T) {
 				t.Fatalf("terraform validate failed (%s): %v", tc.provider, verr)
 			}
 			if !vout.Valid {
-				t.Fatalf("terraform validate reported %s estate INVALID: %d diagnostics", tc.provider, vout.ErrorCount)
+				t.Fatalf("terraform validate reported %s estate INVALID: %d diagnostics: %+v", tc.provider, vout.ErrorCount, vout.Diagnostics)
 			}
 			t.Logf("terraform init && validate: GREEN — full %s prod estate is valid, plannable HCL", tc.provider)
 		})
