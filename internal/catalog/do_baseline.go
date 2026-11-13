@@ -358,8 +358,18 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
   ip_range = %q
 }`, doBaselineName+"-net", doBaselineName+"-net", region, in.CIDR))
 
-	// 2. Firewall (matches passo-do-baseline-sg): staging has no public service
-	// ingress. The private VPC edge is the only caller allowed onto origin TLS.
+	// 2. Firewall (matches passo-do-baseline-sg).
+	// 443 on the shared baseline firewall stays PUBLIC (0.0.0.0/0) — DEFERRED
+	// CLOSURE, 2026-10-07: staging-auth.pyxcloud.io still resolves (grey-cloud
+	// DNS) straight to the sso droplet's public IP, and pyx-backend's OIDC
+	// issuer (staging_runtime_composition.go: staging-auth.../realms/passobuild)
+	// reaches it over the public hairpin from the backend droplet (source is
+	// NOT tag pyx-edge). Closing 443 now breaks OIDC discovery/token exchange.
+	// Closure becomes safe only AFTER staging-auth DNS is repointed to the
+	// pyx-edge droplets (DNS = human/pipeline; evidence: handoffs/claude-codex/
+	// replies/obs3-sg-plan-decisions.md D2). staging-fe keeps its private,
+	// pyx-edge-only firewall below — its DNS already points at the edge.
+	// The private VPC edge is the only caller allowed onto origin TLS.
 	tags := make([]string, 0, len(DOBaselineServices()))
 	for _, s := range DOBaselineServices() {
 		if s.Name != stagingFEServiceName {
@@ -381,7 +391,7 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
   inbound_rule {
 	protocol    = "tcp"
 	port_range  = "443"
-	source_tags = ["pyx-edge"]
+	source_addresses = ["0.0.0.0/0", "::/0"]
   }
   inbound_rule {
 	protocol    = "tcp"
