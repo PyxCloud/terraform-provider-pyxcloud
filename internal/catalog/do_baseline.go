@@ -16,8 +16,8 @@ import (
 //
 // This file is the COMMITTED, deterministic source for that baseline. It renders
 // the EXACT deployed estate so a `terraform plan` against the existing S3 state is
-// clean, and it makes the mcp control-plane droplet DURABLE across replacement by
-// baking a correct BOARD_DATABASE_URL (the mesh_app URL) into the launch template.
+// clean. (The historical mcp-durable BOARD_DATABASE_URL baking is gone with the
+// mcp service itself — see the "RECONCILED AGAINST LIVE" note below.)
 //
 // WHY A DEDICATED ASSEMBLER (not the generic AssembleHCL scale-group path):
 // the canonical `virtual-machine-scale-group` descends to a DOKS
@@ -32,11 +32,12 @@ import (
 // The estate this reproduces (see the S3 state, serial 12):
 //   - 1 VPC (passo-do-baseline-net, 10.0.1.0/24, fra1)
 //   - 1 firewall (passo-do-baseline-sg): inbound 443 (pyx-edge) + 22 (pyx-edge-1 admin, pyx-otel-bastion CI), egress icmp/tcp/udp all
+//     (public-443 closure deferred to the staging-auth DNS-repoint milestone — see #170)
 //   - 2 managed PG clusters (pyx-main-db, keycloak-db), pg 17, db-s-2vcpu-4gb, 2 nodes
 //   - 2 droplet-autoscale groups: sso / staging-fe
 //   - no per-service public load balancers or platform certificate resources;
 //     the private VPC edge SNI-routes VPN traffic to origin tags
-//   - 1 Spaces bucket (pyx-artifacts-fra1) — the mcp/backend artifact store
+//   - 1 Spaces bucket (pyx-artifacts-fra1) — the release-artifact store
 //     (INCLUDED now that beta-DigitalOceanSpacesKeys exists)
 //
 // RECONCILED AGAINST LIVE (2026-07-20, doctl droplet/droplet-autoscale/apps
@@ -80,9 +81,6 @@ type DOBaselineService struct {
 	// the catalog (the SAME ResolveSKU path every VM uses) — never hand-picked.
 	CPU int
 	RAM int
-	// Durable marks the mcp service whose user_data must carry the mesh_app
-	// BOARD_DATABASE_URL so a droplet replacement re-bootstraps correctly.
-	Durable bool
 }
 
 const (
@@ -214,30 +212,24 @@ func DOBaselineInput(region, arch, os, kubernetesVersion string) AssembleInput {
 }
 
 // DOBaselineSecrets carries the render-time-injected credentials so NOTHING
-// secret is committed. Every field is fetched from AWS Secrets Manager by the
-// harness (cutover/render.go) at render time and baked into the launch template,
-// exactly as EMBED_TOKEN_SECRET already was — the droplet has no AWS role, so it
-// cannot fetch these itself.
+// secret is committed. The remaining literal fields are fetched from AWS Secrets
+// Manager by the harness (cutover/render.go) at render time — the droplets have
+// no AWS role, so they cannot fetch these themselves; everything else is sourced
+// from Vault by Terraform (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2).
 type DOBaselineSecrets struct {
 	// SpacesAccessKey / SpacesSecretKey are beta-DigitalOceanSpacesKeys — the S3
 	// (SigV4) client credentials used ONLY to pull the release artifact from DO
 	// Spaces at boot. Also used for the Spaces bucket provider config.
 	SpacesAccessKey string
 	SpacesSecretKey string
-	// BoardDatabaseURL is beta-DO-pyx-main-db-url (the mesh_app URL) — the DURABLE
-	// fix: BOARD_DATABASE_URL now points at mesh_app on pyx-main-db, NOT doadmin /
-	// defaultdb / beta-DO-pyx-db-password. Injected here so a droplet replacement
-	// re-bootstraps with the correct DB identity.
+	// # DEFERRED(2026-11-13): BoardDatabaseURL + privateURL/PrivateDBHost below are
+	// leftovers of the removed mcp durable render (mcp reconciled gone live,
+	// 2026-07-20): no remaining render path interpolates BoardDatabaseURL into any
+	// user_data. They are kept ONLY because cutover/render.go still requires
+	// DO_BOARD_DATABASE_URL and wires it through; full removal is a harness-facing
+	// change (drops a required env var) deferred to a dedicated follow-up.
+	// BoardDatabaseURL is beta-DO-pyx-main-db-url (the mesh_app URL).
 	BoardDatabaseURL string
-	// EmbedTokenSecret is beta/passobuild-mcp-embed-token — the MCP embed token,
-	// injected at render time (unchanged behaviour, kept durable).
-	EmbedTokenSecret string
-	// DigitalOceanToken (beta-DigitalOceanToken) + McpReservedIP let the mcp droplet
-	// CLAIM a stable DO reserved IP to itself on boot. With Cloudflare pointing at the
-	// reserved IP, an autoscale roll no longer needs a DNS repoint: the fresh droplet
-	// reassigns the reserved IP to itself. Both empty => claim step is skipped (no-op).
-	DigitalOceanToken string
-	McpReservedIP     string
 
 	// --- SSO (Keycloak) secrets (pd-MIG-CUTOVER durable edge) ---
 	// EPIC-BOOTFETCH-AWS-SM-TO-VAULT (wave 2): most sso secrets (keycloak-db URL/
@@ -296,10 +288,6 @@ type DOBaselineOptions struct {
 	// implied for sso (the :443 terminator is appended to its full bootstrap).
 	// Off by default so the legacy render is unchanged.
 	FullServiceBootstraps bool
-	// LBTermination is retained for input compatibility only. Staging no longer
-	// renders any service load balancer/certificate, regardless of this value.
-	// TLS terminates at the private origins reached through the VPC edge.
-	LBTermination bool
 	// VaultHA, when true, appends the 3-node Raft Vault droplet cluster
 	// (vaultha_droplet_do.go) to the baseline: 3 fixed digitalocean_droplet nodes
 	// with a block volume each, a private-only :8200/:8201 firewall, cloud-auto-join
@@ -318,11 +306,6 @@ type DOBaselineOptions struct {
 // AssembleDOBaseline renders the cutover baseline as concrete terraform documents
 // that MATCH the deployed S3 state (droplet-autoscale shape). This is the
 // committed, deterministic replacement for the ad-hoc /tmp renderer.
-//
-// The mcp droplet's user_data is made durable: BOARD_DATABASE_URL is sourced from
-// secrets.BoardDatabaseURL (the mesh_app URL from beta-DO-pyx-main-db-url),
-// injected at render time — so a future roll (droplet replacement) re-bootstraps
-// against mesh_app, not the stale doadmin/defaultdb URL that was baked into state.
 func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secrets DOBaselineSecrets, opts DOBaselineOptions) ([]string, error) {
 	if in.Provider != ProviderDigitalOcean {
 		return nil, fmt.Errorf("do-baseline: provider must be digitalocean, got %q", in.Provider)
@@ -335,9 +318,6 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 	}
 	if secrets.BoardDatabaseURL == "" {
 		return nil, fmt.Errorf("do-baseline: BoardDatabaseURL is required (beta-DO-pyx-main-db-url / mesh_app)")
-	}
-	if secrets.EmbedTokenSecret == "" {
-		return nil, fmt.Errorf("do-baseline: EmbedTokenSecret is required (beta/passobuild-mcp-embed-token)")
 	}
 
 	// Resolve the abstract region_name (e.g. "Frankfurt") to the concrete DO slug
@@ -358,18 +338,8 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
   ip_range = %q
 }`, doBaselineName+"-net", doBaselineName+"-net", region, in.CIDR))
 
-	// 2. Firewall (matches passo-do-baseline-sg).
-	// 443 on the shared baseline firewall stays PUBLIC (0.0.0.0/0) — DEFERRED
-	// CLOSURE, 2026-10-07: staging-auth.pyxcloud.io still resolves (grey-cloud
-	// DNS) straight to the sso droplet's public IP, and pyx-backend's OIDC
-	// issuer (staging_runtime_composition.go: staging-auth.../realms/passobuild)
-	// reaches it over the public hairpin from the backend droplet (source is
-	// NOT tag pyx-edge). Closing 443 now breaks OIDC discovery/token exchange.
-	// Closure becomes safe only AFTER staging-auth DNS is repointed to the
-	// pyx-edge droplets (DNS = human/pipeline; evidence: handoffs/claude-codex/
-	// replies/obs3-sg-plan-decisions.md D2). staging-fe keeps its private,
-	// pyx-edge-only firewall below — its DNS already points at the edge.
-	// The private VPC edge is the only caller allowed onto origin TLS.
+	// 2. Firewall (matches passo-do-baseline-sg): staging has no public service
+	// ingress. The private VPC edge is the only caller allowed onto origin TLS.
 	tags := make([]string, 0, len(DOBaselineServices()))
 	for _, s := range DOBaselineServices() {
 		if s.Name != stagingFEServiceName {
@@ -391,17 +361,7 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
   inbound_rule {
 	protocol    = "tcp"
 	port_range  = "443"
-	source_addresses = ["0.0.0.0/0", "::/0"]
-  }
-  inbound_rule {
-	protocol    = "tcp"
-	port_range  = "22"
-	source_addresses = ["10.0.1.15/32"]
-  }
-  inbound_rule {
-	protocol    = "tcp"
-	port_range  = "22"
-	source_tags = ["pyx-otel-bastion"]
+	source_tags = ["pyx-edge"]
   }
 %s
 }`, doBaselineName+"-sg"+suffix, doBaselineName+"-sg"+suffix, hclStringList(chunk), doBaselineEgressRules()))
@@ -472,23 +432,8 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 			}
 			userData = ud
 			heredocEscaped = true
-		case svc.Durable:
-			// Legacy mcp-only durable render (literal mesh_app URL, reserved-IP claim,
-			// re-fetch-on-restart). Kept for the base harness path (FullServiceBootstraps off).
-			userData = renderMCPUserData(secrets, opts)
-			// Append the origin :443 terminator when requested. The VPC edge is an
-			// SNI router, so TLS always terminates on the private origin.
-			if opts.EdgeTLSOrigins {
-				snip, terr := edgeTerminatorFor(svc.Name)
-				if terr != nil {
-					return nil, terr
-				}
-				if snip != "" {
-					userData = userData + "\n\n" + snip
-				}
-			}
 		case opts.EdgeTLSOrigins:
-			// Base harness (no full bootstrap): standalone terminator for sso/backend.
+			// Base harness (no full bootstrap): standalone terminator for sso.
 			snip, terr := edgeTerminatorFor(svc.Name)
 			if terr != nil {
 				return nil, terr
@@ -585,158 +530,6 @@ func AssembleDOBaseline(ctx context.Context, cat Catalog, in AssembleInput, secr
 	return docs, nil
 }
 
-// mcpUserDataTemplate is the durable mcp bootstrap. %[1]s = Spaces access key,
-// %[2]s = Spaces secret key, %[3]s = Spaces bucket, %[4]s = BOARD_DATABASE_URL
-// (mesh_app), %[5]s = EMBED token. It keeps :8787, systemd, and the Spaces
-// artifact fetch identical to the deployed unit; the ONLY durability change is
-// that BOARD_DATABASE_URL is the mesh_app URL, injected at render time.
-const mcpUserDataTemplate = `#!/bin/bash
-# mcp board-OS MCP server — DigitalOcean droplet bootstrap (F2-02, durable).
-# BOARD_DATABASE_URL sources beta-DO-pyx-main-db-url (mesh_app), injected at
-# render time (no AWS role on the box), same mechanism as EMBED_TOKEN_SECRET.
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-log() { echo "[mcp-bootstrap] $*"; }
-
-log "apt update + base deps"
-apt-get update -y
-apt-get install -y ca-certificates curl unzip tar coreutils
-
-if ! command -v aws >/dev/null 2>&1; then
-  log "install aws cli v2 (spaces client)"
-  arch="$(dpkg --print-architecture)"
-  case "$arch" in
-    amd64) awsurl="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" ;;
-    arm64) awsurl="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" ;;
-    *)     awsurl="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" ;;
-  esac
-  curl -fsSL "$awsurl" -o /tmp/awscliv2.zip
-  (cd /tmp && unzip -q awscliv2.zip && ./aws/install --update)
-fi
-
-log "claim reserved IP to self (stable Cloudflare origin, survives autoscale roll)"
-RESERVED_IP='%[7]s'
-if [ -n "$RESERVED_IP" ]; then
-  DROPLET_ID="$(curl -fsS http://169.254.169.254/metadata/v1/id || true)"
-  if [ -n "$DROPLET_ID" ]; then
-    curl -fsS -X POST \
-      -H "Authorization: Bearer %[6]s" -H "Content-Type: application/json" \
-      "https://api.digitalocean.com/v2/reserved_ips/$RESERVED_IP/actions" \
-      -d "{\"type\":\"assign\",\"droplet_id\":$DROPLET_ID}" \
-      || log "reserved-ip assign failed (continuing; Cloudflare may need a manual repoint)"
-  fi
-fi
-
-log "create service user + dirs"
-id passobuild-mcp >/dev/null 2>&1 || useradd --system --home /opt/passobuild-mcp --shell /usr/sbin/nologin passobuild-mcp
-install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /opt/passobuild-mcp
-install -d -m 0755 -o passobuild-mcp -g passobuild-mcp /var/log/passobuild-mcp
-
-log "write artifact fetch script (re-run on every service start for in-place deploys)"
-# The fetch is a root-owned script (0700) with the Spaces creds embedded, so systemd can re-pull the
-# latest artifact in ExecStartPre. That makes a plain reboot/restart a full deploy — the deploy-mcp-do
-# workflow publishes a new tar.gz then reboots the droplet, and self-heal always boots the current
-# binary — WITHOUT changing the droplet IP (no Cloudflare DNS repoint, no rebuild).
-cat > /usr/local/bin/passobuild-mcp-fetch <<'FETCHEOF'
-#!/usr/bin/env bash
-set -euo pipefail
-export AWS_ACCESS_KEY_ID='%[1]s'
-export AWS_SECRET_ACCESS_KEY='%[2]s'
-export AWS_DEFAULT_REGION='fra1'
-aws s3 cp --endpoint-url https://fra1.digitaloceanspaces.com \
-  s3://%[3]s/beta/mcp.tar.gz /tmp/mcp.tar.gz
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-tar -xzf /tmp/mcp.tar.gz -C /opt/passobuild-mcp --strip-components=1
-chown -R passobuild-mcp:passobuild-mcp /opt/passobuild-mcp
-chmod +x /opt/passobuild-mcp/passobuild-mcp
-FETCHEOF
-chmod 0700 /usr/local/bin/passobuild-mcp-fetch
-chown root:root /usr/local/bin/passobuild-mcp-fetch
-
-log "initial artifact fetch"
-/usr/local/bin/passobuild-mcp-fetch
-
-log "write /etc/passobuild-mcp.env"
-umask 027
-cat > /etc/passobuild-mcp.env <<'ENVEOF'
-NODE_ENV=production
-PYXCLOUD_MCP_HTTP_PORT=8787
-PYXCLOUD_MCP_PUBLIC_URL=https://staging-mcp.passo.build
-PYXCLOUD_MCP_AUTH_ISSUER_URL=https://staging-auth.pyxcloud.io/realms/passobuild
-PYXCLOUD_MCP_AUTH_AUDIENCE=https://staging-mcp.passo.build/mcp,passobuild-mcp
-PYXCLOUD_MCP_SERVICE_COMMAND_B64=Li9wYXNzb2J1aWxkLW1jcA==
-# DURABLE: mesh_app on pyx-main-db (beta-DO-pyx-main-db-url), NOT doadmin/defaultdb.
-BOARD_DATABASE_URL=%[4]s
-BOARD_ADMIN_ROLES=board-admin
-BOARD_DECOMPOSE_MIN_COMPLEXITY=6
-BOARD_VERIFY_MIN_COMPLEXITY=9
-BOARD_OPTIMIZE_MIN_COMPLEXITY=6
-EMBED_TOKEN_SECRET=%[5]s
-ENVEOF
-chown root:passobuild-mcp /etc/passobuild-mcp.env
-chmod 0640 /etc/passobuild-mcp.env
-umask 022
-
-log "write start wrapper + systemd unit"
-cat > /usr/local/bin/passobuild-mcp-start <<'WRAPEOF'
-#!/usr/bin/env bash
-set -euo pipefail
-cd /opt/passobuild-mcp/app 2>/dev/null || cd /opt/passobuild-mcp
-command="$(printf '%%s' "${PYXCLOUD_MCP_SERVICE_COMMAND_B64:-}" | base64 --decode 2>/dev/null || true)"
-if [ -z "$command" ]; then
-  echo "PYXCLOUD_MCP_SERVICE_COMMAND is not set." >&2
-  exit 78
-fi
-exec bash -lc "$command"
-WRAPEOF
-chmod 0755 /usr/local/bin/passobuild-mcp-start
-
-cat > /etc/systemd/system/passobuild-mcp.service <<'UNITEOF'
-[Unit]
-Description=passo.build remote MCP server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=passobuild-mcp
-Group=passobuild-mcp
-EnvironmentFile=/etc/passobuild-mcp.env
-WorkingDirectory=/opt/passobuild-mcp
-# Re-fetch the latest artifact before every start (runs as root via '+'), so reboot/self-heal = deploy.
-ExecStartPre=+/usr/local/bin/passobuild-mcp-fetch
-ExecStart=/usr/local/bin/passobuild-mcp-start
-Restart=always
-RestartSec=5
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectHome=true
-ReadWritePaths=/opt/passobuild-mcp /var/log/passobuild-mcp
-StandardOutput=append:/var/log/passobuild-mcp/service.log
-StandardError=append:/var/log/passobuild-mcp/service.log
-
-[Install]
-WantedBy=multi-user.target
-UNITEOF
-
-log "enable + start"
-systemctl daemon-reload
-systemctl enable passobuild-mcp.service
-systemctl restart passobuild-mcp.service
-log "bootstrap done"`
-
-func renderMCPUserData(s DOBaselineSecrets, opts DOBaselineOptions) string {
-	return fmt.Sprintf(mcpUserDataTemplate,
-		s.SpacesAccessKey,
-		s.SpacesSecretKey,
-		doBaselineSpacesBucket,
-		s.privateURL(opts.PrivateDBHost),
-		s.EmbedTokenSecret,
-		s.DigitalOceanToken,
-		s.McpReservedIP,
-	)
-}
-
 // indentUserData prepares the bootstrap script for a terraform <<-USERDATA
 // heredoc: it ESCAPES the terraform template sequences "${" and "%{" (which the
 // shell uses for parameter/arithmetic expansion) to "$${" / "%%{" so terraform
@@ -758,8 +551,9 @@ func indentUserData(s string) string {
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
 
 // edgeTerminatorFor returns the nginx :443 TLS terminator snippet for a service
-// reached through the private VPC edge (sso/backend/mcp per doEdgeOrigins), or
-// "" if the service is not an edge origin.
+// reached through the private VPC edge (sso — the sole doEdgeOrigins entry; the
+// backend/mcp origins were reconciled away, see the file-header note), or "" if
+// the service is not an edge origin.
 func edgeTerminatorFor(svcName string) (string, error) {
 	for _, o := range doEdgeOrigins() {
 		if o.Service != svcName {

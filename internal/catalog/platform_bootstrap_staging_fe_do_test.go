@@ -105,7 +105,7 @@ func TestRenderStagingFEBashParses(t *testing.T) {
 func TestStagingFESecureBootstrapIsWiredIntoPrivateBaseline(t *testing.T) {
 	secrets := DOBaselineSecrets{
 		SpacesAccessKey: "ak", SpacesSecretKey: "sk", BoardDatabaseURL: "postgres://db",
-		EmbedTokenSecret: "embed", SSOVaultOIDCSecret: "oidc", SSORunnerPublicKey: "runner",
+		SSOVaultOIDCSecret: "oidc", SSORunnerPublicKey: "runner",
 	}
 	docs, err := AssembleDOBaseline(context.Background(), MustEmbedded(), DOBaselineInput("Frankfurt", "", "", ""), secrets, DOBaselineOptions{FullServiceBootstraps: true})
 	if err != nil {

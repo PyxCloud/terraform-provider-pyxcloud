@@ -11,7 +11,44 @@ func testDOBaselineSecrets() DOBaselineSecrets {
 		SpacesAccessKey:  "TEST_SPACES_ACCESS",
 		SpacesSecretKey:  "TEST_SPACES_SECRET",
 		BoardDatabaseURL: "postgres://mesh_app:TESTPW@pyx-main-db-do-user-1-0.k.db.ondigitalocean.com:25060/postgres?sslmode=require",
-		EmbedTokenSecret: "TEST_EMBED_TOKEN",
+	}
+}
+
+// TestDOBaselineNoMCPResidue is the cleanup-wave contract (cleanup/dead-mcp-residue):
+// mcp was reconciled GONE live (2026-07-20, see do_baseline.go's file-header note)
+// so NO render path — base, EdgeTLSOrigins, or FullServiceBootstraps — may emit
+// any mcp artifact (passobuild-mcp user_data, EMBED_TOKEN_SECRET env, the mcp
+// reserved-IP claim) and no mcp service may exist in DOBaselineServices(). This
+// is the caso-obiettivo of the dead-mcp-residue removal: the Durable mcp render
+// branch and its dedicated secret fields are gone, and the estate cannot regress
+// back to emitting a droplet for a service that no longer exists live.
+func TestDOBaselineNoMCPResidue(t *testing.T) {
+	for _, s := range DOBaselineServices() {
+		if s.Name == "mcp" || s.Tag == "pyx-mcp" {
+			t.Errorf("DOBaselineServices() must not contain the reconciled-away mcp service, got %+v", s)
+		}
+	}
+	for _, opts := range []DOBaselineOptions{
+		{PrivateDBHost: true},
+		{PrivateDBHost: true, EdgeTLSOrigins: true},
+		{PrivateDBHost: true, FullServiceBootstraps: true},
+	} {
+		var docs []string
+		var err error
+		if opts.FullServiceBootstraps {
+			docs, err = AssembleDOBaseline(context.Background(), MustEmbedded(), DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30"), fullBaselineSecrets(), opts)
+		} else {
+			docs, err = AssembleDOBaseline(context.Background(), MustEmbedded(), DOBaselineInput("Frankfurt", "x86_64", "ubuntu", "1.30"), testDOBaselineSecrets(), opts)
+		}
+		if err != nil {
+			t.Fatalf("AssembleDOBaseline(%+v): %v", opts, err)
+		}
+		joined := strings.Join(docs, "\n")
+		for _, marker := range []string{"passobuild-mcp", "EMBED_TOKEN_SECRET", "PYXCLOUD_MCP_", "reserved_ips", "pyx-mcp"} {
+			if strings.Contains(joined, marker) {
+				t.Errorf("opts %+v: render must not contain reconciled-away mcp marker %q", opts, marker)
+			}
+		}
 	}
 }
 
@@ -88,26 +125,21 @@ func TestDOBaselineResourceSet(t *testing.T) {
 }
 
 // TestDOBaselineStagingOriginsArePrivate is the staging network-boundary
-// contract. The shared baseline firewall (sso) keeps a DEFERRED public :443
-// (staging-auth.pyxcloud.io grey-cloud DNS still lands on the sso public IP
-// and pyx-backend's OIDC issuer reaches it over the public hairpin — closing
-// it now breaks OIDC; see do_baseline.go's dated comment and
-// handoffs/claude-codex/replies/obs3-sg-plan-decisions.md D2). The dedicated
-// staging-fe firewall, however, is strictly private: pyx-edge source tags
-// only, never a public origin rule.
+// contract: auth and FE origins are reachable only through the VPC
+// edge. Authentication remains an independent application-layer requirement;
+// a private source must never create an auth bypass or a public origin rule.
+// (API/MCP are no longer origins here — reconciled away; LBTermination was a
+// never-read no-op option removed in cleanup/dead-mcp-residue.)
 func TestDOBaselineStagingOriginsArePrivate(t *testing.T) {
 	for _, opts := range []DOBaselineOptions{
 		{PrivateDBHost: true},
-		{PrivateDBHost: true, LBTermination: true},
 	} {
 		joined := strings.Join(renderTestBaseline(t, opts), "\n")
-		// Exactly ONE deferred public :443 — the shared baseline firewall.
-		// staging-fe must never inherit it.
-		if n := strings.Count(joined, `source_addresses = ["0.0.0.0/0", "::/0"]`); n != 1 {
-			t.Fatalf("expected exactly 1 deferred public :443 (shared baseline/sso), got %d", n)
+		if strings.Contains(joined, `source_addresses = ["0.0.0.0/0", "::/0"]`) {
+			t.Fatal("staging baseline must not expose TLS origins to the public internet")
 		}
 		if !strings.Contains(joined, `source_tags = ["pyx-edge"]`) {
-			t.Fatal("staging TLS origins must accept traffic from the VPC edge (staging-fe; sso joins at DNS repoint)")
+			t.Fatal("staging TLS origins must only accept traffic from the VPC edge")
 		}
 		if strings.Contains(joined, `source_load_balancer_uids`) {
 			t.Fatal("private staging origins must be selected by pyx-edge source tags, not a public load balancer")
