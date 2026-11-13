@@ -88,20 +88,26 @@ func TestDOBaselineResourceSet(t *testing.T) {
 }
 
 // TestDOBaselineStagingOriginsArePrivate is the staging network-boundary
-// contract: API, auth, MCP and FE origins are reachable only through the VPC
-// edge. Authentication remains an independent application-layer requirement;
-// a private source must never create an auth bypass or a public origin rule.
+// contract. The shared baseline firewall (sso) keeps a DEFERRED public :443
+// (staging-auth.pyxcloud.io grey-cloud DNS still lands on the sso public IP
+// and pyx-backend's OIDC issuer reaches it over the public hairpin — closing
+// it now breaks OIDC; see do_baseline.go's dated comment and
+// handoffs/claude-codex/replies/obs3-sg-plan-decisions.md D2). The dedicated
+// staging-fe firewall, however, is strictly private: pyx-edge source tags
+// only, never a public origin rule.
 func TestDOBaselineStagingOriginsArePrivate(t *testing.T) {
 	for _, opts := range []DOBaselineOptions{
 		{PrivateDBHost: true},
 		{PrivateDBHost: true, LBTermination: true},
 	} {
 		joined := strings.Join(renderTestBaseline(t, opts), "\n")
-		if strings.Contains(joined, `source_addresses = ["0.0.0.0/0", "::/0"]`) {
-			t.Fatal("staging baseline must not expose TLS origins to the public internet")
+		// Exactly ONE deferred public :443 — the shared baseline firewall.
+		// staging-fe must never inherit it.
+		if n := strings.Count(joined, `source_addresses = ["0.0.0.0/0", "::/0"]`); n != 1 {
+			t.Fatalf("expected exactly 1 deferred public :443 (shared baseline/sso), got %d", n)
 		}
 		if !strings.Contains(joined, `source_tags = ["pyx-edge"]`) {
-			t.Fatal("staging TLS origins must only accept traffic from the VPC edge")
+			t.Fatal("staging TLS origins must accept traffic from the VPC edge (staging-fe; sso joins at DNS repoint)")
 		}
 		if strings.Contains(joined, `source_load_balancer_uids`) {
 			t.Fatal("private staging origins must be selected by pyx-edge source tags, not a public load balancer")
