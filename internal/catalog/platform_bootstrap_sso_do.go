@@ -15,7 +15,7 @@ import (
 //
 //   - A droplet_autoscale pool has NO instance role — it cannot `aws secretsmanager
 //     get-secret-value` on boot the way the AWS ASG does. Every secret therefore
-//     has to be INJECTED AT RENDER TIME (the mcp EMBED_TOKEN_SECRET pattern): the
+//     has to be INJECTED AT RENDER TIME: the
 //     CI/render step resolves the value out of Secrets Manager and the renderer
 //     bakes it into the emitted user_data. Nothing is fetched on the droplet.
 //   - The runtime bundle lives in DO Spaces (S3-compatible), not S3, so the boot
@@ -39,8 +39,8 @@ import (
 // SECURITY: the secrets are injected VALUES (there is no other option on DO — the
 // droplet cannot fetch them), so this function must only ever be called with
 // values resolved fresh from Secrets Manager at render time, and the rendered
-// user_data must be treated as sensitive (it is, exactly like the injected mcp
-// EMBED_TOKEN_SECRET). The file vault + keycloak.conf are written 0600/0640 and
+// user_data must be treated as sensitive (it is — these are live credentials).
+// The file vault + keycloak.conf are written 0600/0640 and
 // owned by the service user, same as the AWS port.
 //
 // VAULT MIGRATION (EPIC-BOOTFETCH-AWS-SM-TO-VAULT, wave 2 — the MOST DELICATE of
@@ -98,7 +98,7 @@ const (
 // literal used to sit. The two fields with no provisioned Vault leaf
 // (VaultOIDCSecret, RunnerPublicKey) remain literal INJECTED VALUES, resolved by
 // the operator/CI exactly as before — because a DO droplet has no instance role
-// to fetch anything itself (the mcp EMBED_TOKEN_SECRET reasoning still applies).
+// to fetch anything itself.)
 type SSODOBootstrapSpec struct {
 	// Environment is the deploy environment (e.g. "beta"); drives the public
 	// hostname (<env>-auth.<domain>) and the keystore file names. Required.
@@ -239,8 +239,8 @@ func RenderSSODOBootstrapUserData(spec SSODOBootstrapSpec) (string, error) {
 	w("#!/bin/bash")
 	w("set -euo pipefail")
 	w("# Canonical SSO (Keycloak %s) DigitalOcean bootstrap — pd-MIG-CUTOVER-F2-02.", ssoKeycloakVersion)
-	w("# DO droplet_autoscale has no instance role: all secrets are INJECTED at render")
-	w("# (the mcp EMBED_TOKEN_SECRET pattern); the runtime bundle is fetched from DO")
+	w("# DO droplet_autoscale has no instance role: all secrets are INJECTED at render;")
+	w("# the runtime bundle is fetched from DO")
 	w("# Spaces (S3-compatible endpoint) with injected keys.")
 	w("")
 	w("sudo apt update")
